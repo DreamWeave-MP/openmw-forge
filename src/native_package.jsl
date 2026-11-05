@@ -14,7 +14,11 @@ local function binaryVersion(source: string): string
   local cmake = util.file(source .. '/CMakeLists.txt')
   local parts: { string } = {}
   for _, key in { 'MAJOR', 'MINOR', 'RELEASE' } do
-    local value = string.match(cmake, 'set%(%s*OPENMW_VERSION_' .. key .. '%s+(%d+)')
+    local value = string.match(cmake, 'set%(%s*OPENMW_VERSION_' .. key .. '%s+"?(%d+)')
+    if not value and key == 'RELEASE' then
+      value = string.match(cmake, 'set%(%s*OPENMW_VERSION_PATCH%s+"?(%d+)')
+    end
+
     if not value then error('cannot read OpenMW version ' .. key) end
     table.insert(parts, value)
   end

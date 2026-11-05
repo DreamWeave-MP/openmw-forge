@@ -296,7 +296,8 @@ local function build(options: Options): (Plan?, string?)
   end
   local plan: Plan = { steps = {}, directories = {}, requiredFiles = {} }
   if options.repo ~= '' then
-    step(plan, 'resolve remote OpenMW revision', '@forge', { 'source' }, options.root)
+    step(plan, 'resolve remote OpenMW revision', '@forge',
+      { 'source', '--repo', options.repo, '--ref', options.ref }, options.root)
   end
 
   if options.mode == 'container' and (options.command == 'pipeline' or options.command == 'deps'

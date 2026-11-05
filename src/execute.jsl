@@ -103,7 +103,7 @@ local function execute(plan: Plan, options: Options): (boolean, string?)
   end
 
   if options.command == 'doctor' then
-    local programs = if options.mode == 'container' then { options.engine } else { 'git', 'cmake', 'tar', 'readelf' }
+    local programs = if options.mode == 'container' then { options.engine, 'git' } else { 'git', 'cmake', 'tar', 'readelf' }
 
     for _, program in programs do
       local result, failure = process.run(program, { '--version' }, { stdout = 'capture', stderr = 'capture' })

@@ -7,8 +7,11 @@ local args = require '@forge/args'
 type Options = args.Options
 
 local function validRepo(repo: string): boolean
-  if #repo > 1024 or #repo < 10 or repo:find('%s') or repo:find('\0', 1, true) then return false end
-  if repo:match('^https://[^/@:]+/[^%s]+$') then return true end
+  if #repo > 1024 or #repo < 10 or repo:find('%s') or repo:find('%c') then return false end
+  local authority, gitPath = repo:match('^https://([^/]+)/(.+)$')
+  if authority and gitPath and not authority:find('@', 1, true)
+    and authority:match('^[%w%.%-]+:?%d*$') then return true end
+
   if repo:match('^ssh://[^%s]+$') then return true end
   if repo:match('^git@[%w%.%-]+:[%w%._/%-]+$') then return true end
   return false
@@ -16,9 +19,20 @@ end
 
 local function validRef(ref: string): boolean
   if ref == '' or #ref > 240 or ref:sub(1, 1) == '-' or ref:sub(1, 1) == '/' then return false end
-  if ref:find('..', 1, true) or ref:find('//', 1, true) or ref:find('@{', 1, true) then return false end
-  if ref:sub(-1) == '/' or ref:sub(-1) == '.' or ref:find('\\', 1, true) then return false end
-  return ref:match('^[%w%._/%-]+$') ~= nil
+
+  if ref:find('%s') or ref:find('%c') or ref:find('..', 1, true)
+    or ref:find('//', 1, true) or ref:find('@{', 1, true) then return false end
+
+  if ref:sub(-1) == '/' or ref:sub(-1) == '.' or ref:sub(-5) == '.lock' then return false end
+
+  for _, forbidden in { '~', '^', ':', '?', '*', '[', '\\' } do
+    if ref:find(forbidden, 1, true) then return false end
+  end
+
+  for part in ref:gmatch('[^/]+') do
+    if part:sub(1, 1) == '.' then return false end
+  end
+  return true
 end
 
 -- A stable, predictable checkout key; repository identity is independently
