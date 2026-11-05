@@ -1,0 +1,81 @@
+--!strict
+-- Integrity of the *extracted* vcpkg SDK, independent from archive identity.
+-- Hash files in bounded batches to avoid one process per library while keeping
+-- argument vectors comfortably below Linux's maximum command-line size.
+local fs = require '@dream/fs'
+local util = require '@forge/native-util'
+local sdk = require '@forge/native-sdk-cache'
+
+local Marker = '.forge-extract-tree-id'
+local Fingerprint = '.forge-extract-id'
+local BatchSize = 64
+
+local function fingerprint(root: string): string
+  local walk, failure = fs.walk(root, { include = 'all', sort = true })
+  if not walk then error('cannot inspect SDK tree: ' .. (failure or 'unknown error')) end
+  local parts: { string } = { 'forge-extracted-sdk-tree-v1\0' }
+  local files: { string }, relatives: { string } = {}, {}
+
+  local function flush()
+    if #files == 0 then return end
+    local argv = { '-z', '--' }
+    for _, path in files do table.insert(argv, path) end
+    local output = util.checked('sha256sum', argv)
+    local hashes: { string } = {}
+    for entry in output:gmatch('([^%z]+)%z') do
+      local sha, path = entry:match('^([0-9a-f]+)  (.+)$')
+      if not sha or #sha ~= 64 or path ~= files[#hashes + 1] then
+        error('unexpected SDK tree hashing result')
+      end
+      table.insert(hashes, sha)
+    end
+
+    if #hashes ~= #files then error('incomplete SDK tree hashing result') end
+
+    for index, sha in hashes do
+      table.insert(parts, 'F\0' .. relatives[index] .. '\0' .. sha .. '\0')
+    end
+    table.clear(files)
+    table.clear(relatives)
+  end
+
+  for index, relative in walk.paths do
+    if relative == Marker or relative == Fingerprint then continue end
+    local kind = walk.kinds[index]
+    if kind == 'file' then
+      table.insert(files, root .. '/' .. relative)
+      table.insert(relatives, relative)
+      if #files >= BatchSize then flush() end
+    else
+      flush()
+      if kind == 'dir' then
+        table.insert(parts, 'D\0' .. relative .. '\0')
+      elseif kind == 'symlink' then
+        local link, problem = fs.readLink(root .. '/' .. relative)
+        if not link then error('cannot inspect SDK symlink: ' .. (problem or relative)) end
+        table.insert(parts, 'L\0' .. relative .. '\0' .. link .. '\0')
+      else
+        error('unsupported SDK entry type: ' .. tostring(kind))
+      end
+    end
+  end
+  flush()
+  return sdk.hashText(table.concat(parts))
+end
+
+local function qualified(root: string): boolean
+  -- Untrusted extracted trees are never a required input: a corrupted file,
+  -- unreadable marker/path, changed symlink or deleted file means re-extract.
+  -- Both marker reading and hashing can throw on a damaged cache.
+  local ok, matches = pcall(function(): boolean
+    if not fs.isFile(root .. '/' .. Marker) then return false end
+    return util.file(root .. '/' .. Marker) == fingerprint(root) .. '\n'
+  end)
+  return ok and matches
+end
+
+local function record(root: string)
+  util.write(root .. '/' .. Marker, fingerprint(root) .. '\n')
+end
+
+return table.freeze { fingerprint = fingerprint, qualified = qualified, record = record }

@@ -7,6 +7,7 @@ local args = require '@forge/args'
 local archiveSafety = require '@forge/native-archive'
 local packaging = require '@forge/native-package'
 local qt = require '@forge/native-qt'
+local treeIntegrity = require '@forge/native-tree-integrity'
 
 type Options = args.Options
 
@@ -78,7 +79,8 @@ local function extractDeps(options: Options)
   if util.managed(final) and fs.isFile(final .. '/.forge-extract-id')
     and util.file(final .. '/.forge-extract-id') == fingerprint
     and fs.isFile(final .. '/scripts/buildsystems/vcpkg.cmake')
-    and fs.isDir(final .. '/installed/' .. options.triplet .. '/lib') then
+    and fs.isDir(final .. '/installed/' .. options.triplet .. '/lib')
+    and treeIntegrity.qualified(final) then
     print('Reusing verified dependency extraction ' .. digest:sub(1, 12))
     return
   end
@@ -119,6 +121,7 @@ local function extractDeps(options: Options)
   local renamed, message = fs.rename(root, nextTree)
   if not renamed then error('cannot stage verified dependency export: ' .. (message or 'rename failed')) end
   util.write(nextTree .. '/.forge-extract-id', fingerprint)
+  treeIntegrity.record(nextTree)
   util.publishManagedDirectory(nextTree, final)
   util.remove(temp)
 end
