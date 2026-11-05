@@ -1,0 +1,64 @@
+name: Forge validation and documentation
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Jess strict, style, tests and standalone ELF
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-jess
+        with:
+          version: ${{ vars.JESS_RELEASE_TAG }}
+      - name: Verify Jess source, style and source/JPK tests
+        run: |
+          jess package check .
+          jess run --trusted tools/style.jsl
+          jess workspace test
+      - name: Compile a standalone Linux executable
+        run: |
+          mkdir -p build
+          jess run --trusted tools/release.jsl "$PWD/build/openmw-forge-linux-x64"
+      - name: Adversarial compiled executable integration
+        run: jess run --trusted --package . tools/integration.jsl "$PWD/build/openmw-forge-linux-x64"
+      - name: Scheduled source selection must be a safe dry run
+        run: jess run --trusted --package . tools/uberbranch.jsl --dry-run
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openmw-forge-linux-x64
+          path: build/openmw-forge-linux-x64
+          if-no-files-found: error
+          retention-days: 7
+
+  docs:
+    name: Documentation site (StroggForge-style GitHub Pages)
+    needs: validate
+    if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/jekyll-build-pages@v1
+        with:
+          source: ./docs
+          destination: ./_site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./_site
+      - id: deploy
+        uses: actions/deploy-pages@v4
