@@ -10,6 +10,7 @@ local nativeQt = require '@forge/native-qt'
 local releaseArtifacts = require '@forge/native-release-artifacts'
 local sdkCache = require '@forge/native-sdk-cache'
 local config = require '@forge/config'
+local vcpkgPython = require '@forge/native-vcpkg-python'
 
 local binary = ...
 if type(binary) ~= 'string' or not fs.isFile(binary) then error('usage: tools/integration.jsl /absolute/path/to/compiled-forge') end
@@ -24,6 +25,14 @@ local function check(condition: boolean, message: string)
   if not condition then error('integration assertion: ' .. message) end
   cases += 1
 end
+
+-- Failed upstream Python-port diagnostics must survive the disposable
+-- container and surface the underlying pip stderr, not just vcpkg's exit 1.
+local fakeVcpkg = scratch .. '/vcpkg-pip-failure'
+local pipLog = fakeVcpkg .. '/buildtrees/libsystemd/pip-install-packages-x64-linux-dynamic-err.log'
+util.write(pipLog, 'ERROR: pip fixture could not install Jinja2\n')
+check(vcpkgPython.reportFailure(fakeVcpkg, config.triplet) == 1,
+  'failed libsystemd pip-install diagnostic must be discovered')
 
 -- Managed dependency publication must preserve the last complete SDK if a
 -- replacement fails or a previous process stops between the two renames.

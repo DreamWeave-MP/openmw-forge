@@ -8,6 +8,7 @@ local nativeArchive = require '@forge/native-archive'
 local nativeAbi = require '@forge/native-abi'
 local sdkCache = require '@forge/native-sdk-cache'
 local nativeDeps = require '@forge/native-deps'
+local vcpkgPython = require '@forge/native-vcpkg-python'
 local assets = require '@forge/assets'
 local source = require '@forge/source'
 local uber = require '@forge/uberbranch'
@@ -65,6 +66,25 @@ suite.describe('profile and CLI', function()
     test.expect(nativeDeps.installedRoot(checkout)).toBe(checkout .. '/installed')
     test.expect(nativeDeps.installedRootFlag(checkout)).toBe('--x-install-root=' .. checkout .. '/installed')
     test.expect(nativeDeps.installedRoot(checkout) == '/forge/work/forge-assets/deps/vcpkg_installed').toBeFalsy()
+  end)
+
+  suite.it('pins Jinja2 build-tool wheels and preserves unrelated Python environment settings', function()
+    local wheels = vcpkgPython.wheels
+    test.expect(#wheels).toBe(2)
+    for _, wheel in wheels do
+      test.expect(wheel.url:find('https://files.pythonhosted.org/', 1, true) == 1).toBeTruthy()
+      test.expect(wheel.sha256:match('^[0-9a-f]+$') ~= nil).toBeTruthy()
+      test.expect(#wheel.sha256).toBe(64)
+    end
+    local original = { PATH = '/toolchain/bin', CC = 'gcc' }
+    local updated = vcpkgPython.addEnvironment(original, '/forge/work/vcpkg/.forge-python-wheels')
+    test.expect(updated.PATH).toBe(original.PATH)
+    test.expect(updated.CC).toBe('gcc')
+    test.expect(updated.PIP_FIND_LINKS).toBe('/forge/work/vcpkg/.forge-python-wheels')
+    test.expect(updated.PIP_CONSTRAINT).toBe('/forge/work/vcpkg/.forge-python-wheels/constraints.txt')
+    test.expect(updated.PIP_NO_INPUT).toBe('1')
+    test.expect(updated.PIP_NO_INDEX).toBeNil()
+    test.expect(original.PIP_FIND_LINKS).toBeNil()
   end)
 
   suite.it('pins the AlmaLinux 9 ABI contract', function()
