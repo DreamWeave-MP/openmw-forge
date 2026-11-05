@@ -85,15 +85,32 @@ local function extractDeps(options: Options)
   if string.sub(archive, 1, 8) == 'https://' then
     local suffix = if archive:match('%.tar%.xz$') then '.tar.xz' elseif archive:match('%.7z$') then '.7z' else nil
     if not suffix then error('dependency HTTPS URL must end in .7z or .tar.xz') end
-    local dest = options.deps .. '/archive-cache/download' .. suffix
+    if options.depsSha256 == '' then error('HTTPS dependency archive requires --deps-sha256') end
+    local dest = options.deps .. '/archive-cache/' .. options.depsSha256:lower() .. suffix
     util.mkdir(options.deps .. '/archive-cache')
     if not fs.isFile(dest) then
-      util.stream('curl', { '--fail', '--location', '--retry', '3', '--output', dest, archive })
+      local tempDownload = dest .. '.incomplete'
+      util.remove(tempDownload)
+      util.stream('curl', { '--fail', '--location', '--retry', '3', '--output', tempDownload, archive })
+      local digest = util.checked('sha256sum', { tempDownload }):match('^([0-9a-fA-F]+)')
+      if not digest or digest:lower() ~= options.depsSha256:lower() then
+        util.remove(tempDownload)
+        error('downloaded dependency archive SHA-256 mismatch')
+      end
+      local moved, failure = fs.rename(tempDownload, dest)
+      if not moved then error('cannot publish download cache: ' .. (failure or 'unknown')) end
     end
     archive = dest
   end
 
   if not fs.isFile(archive) then error('missing AlmaLinux 9 dependencies archive: ' .. archive) end
+
+  if options.depsSha256 ~= '' then
+    local digest = util.checked('sha256sum', { archive }):match('^([0-9a-fA-F]+)')
+    if not digest or digest:lower() ~= options.depsSha256:lower() then
+      error('dependency archive SHA-256 mismatch: ' .. archive)
+    end
+  end
   requireSafeArchive(archive)
   local temp = options.deps .. '/extracting'
   util.remove(temp)
@@ -269,6 +286,8 @@ local function smokeBinaries(stage: string, withQt: boolean?)
     end
   end
 
+  if not fs.isFile(stage .. '/openmw.x86_64') then error('required OpenMW executable is missing from package') end
+  local ran = 0
   for _, name in names do
     local binary = stage .. '/' .. name .. '.x86_64'
     if not fs.isFile(binary) then continue end
@@ -281,8 +300,11 @@ local function smokeBinaries(stage: string, withQt: boolean?)
       for _, problem in { 'error while loading shared libraries', 'symbol lookup error', 'undefined symbol', 'cannot open shared object' } do
         if output:find(problem, 1, true) then error(`smoke failure in {name}: {output}`) end
       end
+    ran += 1
     print('PASS smoke ' .. name)
   end
+
+  if ran == 0 then error('no smoke binaries were executed') end
 end
 
 local function package(options: Options)
@@ -309,7 +331,7 @@ local function package(options: Options)
     util.stream('chmod', { '+x', stage .. '/' .. app })
   end
 
-  if count == 0 then error('no OpenMW binaries found in the build directory') end
+  if not fs.isFile(stage .. '/openmw.x86_64') then error('required OpenMW executable not found in build directory') end
   local depsLib = options.deps .. '/openmw-deps/installed/' .. options.triplet
   local lib = depsLib .. (if options.buildType == 'Debug' and fs.isDir(depsLib .. '/debug/lib') then '/debug/lib' else '/lib')
   addLibraries(lib, stage .. '/lib', function(name: string): boolean
@@ -369,16 +391,19 @@ local function package(options: Options)
   if not options.noCompat then scanAbi(stage) end
   if not options.noSmoke then smokeBinaries(stage) end
   util.mkdir(options.output)
-  util.stream('tar', { 'czf', options.output .. '/' .. name .. '.tar.gz', '-C', options.build .. '/package-staging', name })
+  local archive = options.output .. '/' .. name .. '.tar.gz'
+  -- Publish the principal artifact last, after symbols have been exported.
+  -- Failed compression must never truncate a previously published archive.
   if options.buildType ~= 'Debug' then
-    util.stream('tar', { 'czf', options.output .. '/' .. name .. '-debug.tar.gz', '-C', options.build .. '/package-staging-debug', name .. '-debug' })
+    util.atomicArchive('tar', { 'czf', '@OUTPUT@', '-C', options.build .. '/package-staging-debug', name .. '-debug' },
+      options.output .. '/' .. name .. '-debug.tar.gz')
   end
-  print('OpenMW package: ' .. options.output .. '/' .. name .. '.tar.gz')
+  util.atomicArchive('tar', { 'czf', '@OUTPUT@', '-C', options.build .. '/package-staging', name }, archive)
+  print('OpenMW package: ' .. archive)
 end
 
 local function build(options: Options)
-  if options.clean then util.remove(options.build) end
-  util.mkdir(options.build)
+  util.prepareBuildRoot(options.build, options.clean)
   if not options.noPrepare then prepare(options) end
   configure(options)
   util.stream('cmake', { '--build', options.build, '--', '-j' .. tostring(options.jobs) }, nil, setTools())
@@ -414,6 +439,8 @@ local function multiSmoke(options: Options, staging: string)
   end
 
   if #selected == 0 then error('--distros needs at least one known distribution') end
+
+  if not fs.isFile(staging .. '/openmw.x86_64') then error('required OpenMW executable is missing from package') end
 
   for _, tag in selected do
     local image = DistroImages[tag]

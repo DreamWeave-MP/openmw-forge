@@ -76,6 +76,51 @@ local function file(path: string): string
   return value
 end
 
+-- A clean operation may only erase a directory explicitly owned by Forge.
+-- Existing nonempty unmarked directories are never implicitly adopted.
+local BuildMarker = '.openmw-forge-build-root'
+local function prepareBuildRoot(path: string, clean: boolean)
+  local stat = fs.lstat(path)
+  if stat and stat.kind == 'symlink' then error('refusing symlink build root: ' .. path) end
+  if stat and stat.kind ~= 'dir' then error('build root is not a directory: ' .. path) end
+  if not stat then mkdir(path) end
+
+  local marker = path .. '/' .. BuildMarker
+  local owned = fs.isFile(marker) and file(marker) == 'openmw-forge-build-v1\n'
+  if not owned then
+    if fs.exists(marker) then error('invalid Forge build ownership marker: ' .. path) end
+    local contents = list(path)
+    if #contents == 0 then
+      write(marker, 'openmw-forge-build-v1\n')
+      owned = true
+    end
+  end
+
+  if clean then
+    if not owned then error('refusing --clean on non-Forge-owned build directory: ' .. path) end
+
+    -- Never remove a directory itself. Preserve its marker and permissions.
+    for _, name in list(path) do
+      if name ~= BuildMarker then remove(path .. '/' .. name) end
+    end
+  end
+end
+
+local function atomicArchive(program: string, argv: { string }, output: string)
+  local temporary = output .. '.forge-incomplete'
+  remove(temporary)
+  local command = table.clone(argv)
+  -- The argument list contains a distinct archive path placeholder.
+  for index, value in command do
+    if value == '@OUTPUT@' then command[index] = temporary end
+  end
+  stream(program, command)
+  local stat = fs.stat(temporary)
+  if not stat or stat.size == 0 then error('archive output is missing or empty: ' .. temporary) end
+  local ok, problem = fs.rename(temporary, output)
+  if not ok then error('cannot publish ' .. output .. ': ' .. (problem or 'unknown error')) end
+end
+
 local function tool(names: { string }): string
   for _, candidate in names do
     local result = process.run(candidate, { '--help' }, { stdout = 'null', stderr = 'null' })
@@ -87,4 +132,5 @@ end
 return table.freeze {
   checked = checked, stream = stream, mkdir = mkdir, remove = remove,
   write = write, copy = copy, tree = tree, list = list, file = file, tool = tool,
+  prepareBuildRoot = prepareBuildRoot, atomicArchive = atomicArchive,
 }

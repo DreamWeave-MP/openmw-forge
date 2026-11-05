@@ -156,7 +156,7 @@ suite.describe('shell-free execution planning', function()
   end)
 
   suite.it('forwards an explicit HTTPS archive', function()
-    local result = plan({ 'build', '--source', Source, '--deps-archive', 'https://example.org/a.7z' })
+    local result = plan({ 'build', '--source', Source, '--deps-archive', 'https://example.org/a.7z', '--deps-sha256', string.rep('a', 64) })
     test.expect(has(result.steps[2].args, 'https://example.org/a.7z')).toBeTruthy()
   end)
 

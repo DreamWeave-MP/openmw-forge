@@ -12,6 +12,7 @@ export type Options = {
   output: string,
   depsOutput: string,
   archive: string,
+  depsSha256: string,
   triplet: string,
   buildType: string,
   jobs: number,
@@ -56,6 +57,7 @@ local Switches: { [string]: string } = {
   ['--deps-output'] = 'depsOutput',
   ['--deps-archive'] = 'archive',
   ['--archive'] = 'archive',
+  ['--deps-sha256'] = 'depsSha256',
   ['--triplet'] = 'triplet',
   ['--build-type'] = 'buildType',
   ['--qt-version'] = 'qtVersion',
@@ -91,6 +93,7 @@ local function defaults(root: string): Options
     output = root .. '/artifacts/openmw',
     depsOutput = root .. '/artifacts/deps',
     archive = '',
+    depsSha256 = '',
     triplet = config.triplet,
     buildType = config.buildType,
     qtVersion = config.qtVersion,
@@ -193,6 +196,7 @@ local function parse(argv: { string }, root: string): (Options?, string?)
       elseif field == 'output' then options.output = value
       elseif field == 'depsOutput' then options.depsOutput = value
       elseif field == 'archive' then options.archive = value
+      elseif field == 'depsSha256' then options.depsSha256 = value
       elseif field == 'triplet' then options.triplet = value
       elseif field == 'buildType' then options.buildType = value
       elseif field == 'qtVersion' then options.qtVersion = value

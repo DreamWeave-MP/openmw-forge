@@ -59,6 +59,7 @@ local function flags(options: Options, inner: boolean): { string }
   end
 
   if options.runTests then addOption(output, '--gtest-filter', options.gtestFilter) end
+  if options.depsSha256 ~= '' then addOption(output, '--deps-sha256', options.depsSha256) end
   for _, arg in options.cmakeArgs do addOption(output, '--cmake-arg', arg) end
   return output
 end
@@ -107,7 +108,7 @@ local function buildSteps(plan: Plan, options: Options, packageOnly: boolean)
           table.insert(exec, containerVolume(options, options.depsOutput, '/depout', true))
         else
           table.insert(exec, '-v')
-          table.insert(exec, containerVolume(options, options.archive, '/input/deps.7z', true))
+          table.insert(exec, containerVolume(options, options.archive, if options.archive:match('%.tar%.xz$') then '/input/deps.tar.xz' else (if options.archive:match('%.tar%.xz$') then '/input/deps.tar.xz' else '/input/deps.7z'), true))
           table.insert(plan.requiredFiles, options.archive)
         end
       end
@@ -120,7 +121,7 @@ local function buildSteps(plan: Plan, options: Options, packageOnly: boolean)
     if not packageOnly and not options.noPrepare and options.archive ~= '' then
       local archive = options.archive
       if string.sub(archive, 1, 8) ~= 'https://' then
-        archive = if options.command == 'pipeline' then '/depout/vcpkg-' .. options.triplet .. '.7z' else '/input/deps.7z'
+        archive = if options.command == 'pipeline' then '/depout/vcpkg-' .. options.triplet .. '.7z' else (if options.archive:match('%.tar%.xz$') then '/input/deps.tar.xz' else '/input/deps.7z')
       end
       addOption(exec, '--deps-archive', archive)
     end
@@ -191,6 +192,10 @@ local function build(options: Options): (Plan?, string?)
     return nil, 'smoke requires a .tar.gz archive'
   end
 
+  if options.command == 'pipeline' and options.depsSha256 ~= '' then
+    return nil, 'pipeline creates the archive; --deps-sha256 is only for external dependencies'
+  end
+
   if options.command == 'pipeline' and options.archive ~= '' then
     return nil, 'pipeline generates its own dependency archive; omit --archive'
   end
@@ -239,7 +244,19 @@ local function build(options: Options): (Plan?, string?)
     end
   end
 
+  if options.depsSha256 ~= '' and not options.depsSha256:match('^[0-9a-fA-F]+$') then
+    return nil, '--deps-sha256 must be 64 hexadecimal digits'
+  end
+
+  if options.depsSha256 ~= '' and #options.depsSha256 ~= 64 then
+    return nil, '--deps-sha256 must be 64 hexadecimal digits'
+  end
+
   if options.archive ~= '' then
+    if string.sub(options.archive, 1, 8) == 'https://' and options.depsSha256 == '' then
+      return nil, 'HTTPS dependency archives require --deps-sha256'
+    end
+
     if string.sub(options.archive, 1, 8) ~= 'https://' then
       if string.find(options.archive, '://', 1, true) then
         return nil, 'only https:// dependency URLs are allowed'
