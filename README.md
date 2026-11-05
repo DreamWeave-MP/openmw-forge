@@ -61,7 +61,7 @@ The shipped executable requires no Jess runtime. **Developers** who want to edit
 ./tools/validate.jsl /absolute/path/to/openmw-forge-linux-x64
 ```
 
-Alternatively, `jess workspace pack --output /path/to/openmw-forge-linux-x64 --runtime /path/to/jess` produces a standalone ELF binary directly. Build orchestration, dependency verification, OpenMW staging, debug splitting and smoke-test coordination live in `src/native*.jsl` and `src/plan.jsl`; process invocation passes argv vectors, never a Bash `-c` command. `src/assets.jsl` is generated from the retained original vcpkg overlays/templates for embedding in the executable. Jess source tests run in source and packed JPK form.
+Alternatively, `jess workspace pack --output /path/to/openmw-forge-linux-x64 --runtime /path/to/jess` produces a standalone ELF binary directly. Build orchestration, dependency verification, OpenMW staging, debug splitting and smoke-test coordination live in `src/native*.jsl` and `src/plan.jsl`; process invocation passes argv vectors, never a Bash `-c` command. `src/assets.jsl` is regenerated with the shebang-enabled `./tools/embed_assets.jsl` from the retained original vcpkg overlays/templates before rebuilding. Jess source tests run in source and packed JPK form.
 
 The upstream vcpkg project itself supplies `bootstrap-vcpkg.sh`, and distributed OpenMW tarballs include the upstream POSIX `/bin/sh` launcher to set their runtime library paths. Those are **third-party packaging/runtime interfaces**, not Forge build orchestration. CMake, DNF, Git, tar, Python and compiler binaries remain native external processes.
 
