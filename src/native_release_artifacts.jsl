@@ -1,0 +1,99 @@
+--!strict
+-- Package main and debug archives as one recoverable local publication.
+-- Both compressions finish before any previous release file is touched.
+local fs = require '@dream/fs'
+local util = require '@forge/native-util'
+
+local PendingName = '.forge-archive-publication'
+
+type Entry = { name: string, previous: boolean }
+
+local function checkArchive(path: string)
+  local info = fs.stat(path)
+  if not info or info.size == 0 then error('archive compression produced no data: ' .. path) end
+end
+
+local function move(source: string, target: string)
+  local ok, failure = fs.rename(source, target)
+  if not ok then error('cannot publish archive ' .. source .. ': ' .. (failure or 'rename failed')) end
+end
+
+local function recover(output: string)
+  local pending = output .. '/' .. PendingName
+  if not fs.lstat(pending) then return end
+  if not util.managed(pending) then error('refusing unowned archive publication workspace: ' .. pending) end
+  local journal = pending .. '/journal'
+  if not fs.isFile(journal) then
+    -- Compression was interrupted before any published archive changed.
+    util.remove(pending)
+    return
+  end
+
+  local count = 0
+  for line in util.file(journal):gmatch('[^\r\n]+') do
+    local name, prior = line:match('^(openmw%-[%w%.%-]+%.tar%.gz) ([01])$')
+    if not name or not prior then error('invalid archive recovery journal: ' .. pending) end
+    count += 1
+    local current = output .. '/' .. name
+    local backup = pending .. '/previous/' .. name
+    if fs.isFile(backup) then
+      if fs.lstat(current) then util.remove(current) end
+      move(backup, current)
+    elseif prior == '0' then
+      if fs.lstat(current) then util.remove(current) end
+    elseif not fs.isFile(current) then
+      error('cannot recover missing previous archive: ' .. current)
+    end
+  end
+
+  if count == 0 or count > 2 then error('invalid archive recovery journal length') end
+  util.remove(pending)
+end
+
+local function publish(output: string, name: string, stage: string, debugStage: string, includeDebug: boolean)
+  util.mkdir(output)
+  recover(output)
+  local pending = output .. '/' .. PendingName
+  util.resetManaged(pending)
+  local entries: { Entry } = { { name = name .. '.tar.gz', previous = false } }
+  if includeDebug then table.insert(entries, { name = name .. '-debug.tar.gz', previous = false }) end
+
+  -- Build both archives inside the destination filesystem to make the final
+  -- rename cheap and avoid re-compression if one destination already exists.
+  if includeDebug then
+    util.stream('tar', { 'czf', pending .. '/' .. name .. '-debug.tar.gz', '-C', debugStage, name .. '-debug' })
+  end
+  util.stream('tar', { 'czf', pending .. '/' .. name .. '.tar.gz', '-C', stage, name })
+
+  for _, item in entries do
+    checkArchive(pending .. '/' .. item.name)
+    local current = output .. '/' .. item.name
+    local status = fs.lstat(current)
+    if status and status.kind ~= 'file' then error('refusing to replace non-file release output: ' .. current) end
+    item.previous = status ~= nil
+  end
+
+  util.mkdir(pending .. '/previous')
+  local journal: { string } = {}
+  for _, item in entries do
+    table.insert(journal, item.name .. ' ' .. (if item.previous then '1' else '0'))
+  end
+  util.write(pending .. '/journal', table.concat(journal, '\n') .. '\n')
+
+  -- On any I/O failure, restore the previous complete set before returning.
+  local ok, failure = pcall(function()
+    for _, item in entries do
+      if item.previous then move(output .. '/' .. item.name, pending .. '/previous/' .. item.name) end
+    end
+
+    for _, item in entries do move(pending .. '/' .. item.name, output .. '/' .. item.name) end
+  end)
+
+  if not ok then
+    recover(output)
+    error('archive set publication failed: ' .. tostring(failure))
+  end
+  util.remove(pending)
+end
+
+return table.freeze { publish = publish, recover = recover }

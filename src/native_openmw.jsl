@@ -6,6 +6,7 @@ local util = require '@forge/native-util'
 local args = require '@forge/args'
 local archiveSafety = require '@forge/native-archive'
 local packaging = require '@forge/native-package'
+local qt = require '@forge/native-qt'
 
 type Options = args.Options
 
@@ -125,26 +126,16 @@ end
 local function prepare(options: Options)
   if not options.noSystemPackages then installHostDeps() end
   util.mkdir(options.deps)
-  local qtLib = options.deps .. '/QT/' .. options.qtVersion .. '/gcc_64/lib'
-  if not fs.isDir(qtLib) then
-    print(`Installing Qt {options.qtVersion}`)
-    util.stream('python3', { '-m', 'pip', 'install', 'aqtinstall' })
-    util.stream('python3', {
-      '-m', 'aqt', 'install-qt', 'linux', 'desktop', options.qtVersion, 'gcc_64',
-      '--archives', 'qtbase', 'qtdeclarative', 'qtsvg', 'qttools', 'qtwayland', 'icu',
-      '-O', options.deps .. '/QT',
-    })
-  end
+  qt.prepare(options)
   extractDeps(options)
 end
 
 local function configure(options: Options)
   local installed = options.deps .. '/openmw-deps'
   local lib = installed .. '/installed/' .. options.triplet
-  local qt = options.deps .. '/QT/' .. options.qtVersion .. '/gcc_64'
+  local qtRoot = qt.requireInstallation(options)
   if not fs.isDir(lib .. '/lib') then error('missing vcpkg installed libs: ' .. lib) end
   if not fs.isFile(installed .. '/scripts/buildsystems/vcpkg.cmake') then error('missing vcpkg CMake toolchain') end
-  if not fs.isDir(qt .. '/lib') then error('missing Qt installation: ' .. qt) end
 
   local flags = {
     '-S', options.source, '-B', options.build,
@@ -153,7 +144,7 @@ local function configure(options: Options)
     '-DOPENMW_CXX_FLAGS=',
     '-DCMAKE_INSTALL_RPATH=$ORIGIN/../lib',
     '-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON',
-    '-DCMAKE_PREFIX_PATH=' .. lib .. ';' .. qt,
+    '-DCMAKE_PREFIX_PATH=' .. lib .. ';' .. qtRoot,
     '-Dcollada_dom_DIR=' .. lib .. '/share/collada-dom',
     '-DOPENMW_USE_SYSTEM_RECASTNAVIGATION=OFF',
     '-DOPENMW_USE_SYSTEM_SQLITE3=OFF',

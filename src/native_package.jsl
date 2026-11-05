@@ -5,6 +5,8 @@ local process = require '@dream/process'
 local util = require '@forge/native-util'
 local assets = require '@forge/assets'
 local abi = require '@forge/native-abi'
+local qt = require '@forge/native-qt'
+local artifacts = require '@forge/native-release-artifacts'
 local smoke = require '@forge/native-smoke'
 local args = require '@forge/args'
 
@@ -108,13 +110,12 @@ local function package(options: Options)
     return (name:find('.so', 1, true) ~= nil or name:match('^osgPlugins%-') ~= nil)
       and not name:match('^libasound') and not name:match('^libatopology')
   end)
-  local qt = options.deps .. '/QT/' .. options.qtVersion .. '/gcc_64'
-  addLibraries(qt .. '/lib', stage .. '/lib', function(name: string): boolean
+  local qtRoot = qt.requireInstallation(options)
+  addLibraries(qtRoot .. '/lib', stage .. '/lib', function(name: string): boolean
     return name:match('^libQt6.+%.so') ~= nil or name:match('^libicu.+%.so') ~= nil
   end)
 
-  if not fs.isDir(qt .. '/plugins') then error('missing Qt plugins: ' .. qt) end
-  util.tree(qt .. '/plugins', stage .. '/plugins')
+  util.tree(qtRoot .. '/plugins', stage .. '/plugins')
   util.remove(stage .. '/plugins/designer')
   local system = if fs.isDir('/usr/lib64') then '/usr/lib64' elseif fs.isDir('/usr/lib/x86_64-linux-gnu') then '/usr/lib/x86_64-linux-gnu' else '/usr/lib'
   addLibraries(system, stage .. '/lib', function(name: string): boolean
@@ -166,15 +167,9 @@ local function package(options: Options)
 
   if not options.noCompat then abi.scanAbi(stage) end
   if not options.noSmoke then smoke.smokeBinaries(stage) end
-  util.mkdir(options.output)
+  artifacts.publish(options.output, name, options.build .. '/package-staging',
+    options.build .. '/package-staging-debug', options.buildType ~= 'Debug')
   local archive = options.output .. '/' .. name .. '.tar.gz'
-  -- Publish the principal artifact last, after symbols have been exported.
-  -- Failed compression must never truncate a previously published archive.
-  if options.buildType ~= 'Debug' then
-    util.atomicArchive('tar', { 'czf', '@OUTPUT@', '-C', options.build .. '/package-staging-debug', name .. '-debug' },
-      options.output .. '/' .. name .. '-debug.tar.gz')
-  end
-  util.atomicArchive('tar', { 'czf', '@OUTPUT@', '-C', options.build .. '/package-staging', name }, archive)
   print('OpenMW package: ' .. archive)
 end
 

@@ -166,21 +166,6 @@ local function publishManagedDirectory(candidate: string, destination: string)
   if hadPrevious then remove(previous) end
 end
 
-local function atomicArchive(program: string, argv: { string }, output: string)
-  local temporary = output .. '.forge-incomplete'
-  remove(temporary)
-  local command = table.clone(argv)
-  -- The argument list contains a distinct archive path placeholder.
-  for index, value in command do
-    if value == '@OUTPUT@' then command[index] = temporary end
-  end
-  stream(program, command)
-  local stat = fs.stat(temporary)
-  if not stat or stat.size == 0 then error('archive output is missing or empty: ' .. temporary) end
-  local ok, problem = fs.rename(temporary, output)
-  if not ok then error('cannot publish ' .. output .. ': ' .. (problem or 'unknown error')) end
-end
-
 local function tool(names: { string }): string
   for _, candidate in names do
     local result = process.run(candidate, { '--help' }, { stdout = 'null', stderr = 'null' })
@@ -192,7 +177,7 @@ end
 return table.freeze {
   checked = checked, stream = stream, mkdir = mkdir, remove = remove,
   write = write, copy = copy, tree = tree, list = list, file = file, tool = tool,
-  prepareBuildRoot = prepareBuildRoot, atomicArchive = atomicArchive,
+  prepareBuildRoot = prepareBuildRoot,
   resetManaged = resetManaged, managed = managed,
   recoverManagedDirectory = recoverManagedDirectory, publishManagedDirectory = publishManagedDirectory,
 }

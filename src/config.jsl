@@ -10,6 +10,7 @@ local Config = table.freeze {
   triplet = 'x64-linux-dynamic',
   buildType = 'RelWithDebInfo',
   qtVersion = '6.6.3',
+  aqtVersion = '3.3.0', -- verified upstream Python package release
   defaultJobs = 3,
   autoconfSha512 = '3f71d459e2127ef2c98b37f11f5284f0c92318ad8d31c5b6034bed370adfe9f3d0f7a12f87e2efced06c11e2a159de4d4a292b751104e83daf11342f25ba9721',
 }
