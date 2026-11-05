@@ -35,6 +35,17 @@ script resolves the executable from `PATH` if that variable is absent.
 If invoking the script by hand, use `JESS_BIN=/absolute/path/to/jess`.
 Do not pass the bare string `jess` to the packer's `--runtime` option.
 
+## Jess CI reports `jess.lock is out of date` or missing DreamWeave site packages
+
+Forge itself does not depend on the six packages required by the documentation
+site. The root `jess-workspace.toml` and `jess.lock` belong to the **Jess-native
+StroggForge site job**, not the Forge executable. Run `jess package test .`
+for application tests; use `tools/release.jsl` to compile the ELF. It creates an
+isolated package workspace and checks the source digest before packing. Do not
+add site dependencies to Forge's `jess.toml` or disable lock validation to
+silence this error. Use `jess workspace sync --locked` only when preparing to
+run the site generator with its compatible Jess runtime.
+
 ## Docker or AlmaLinux cannot start
 
 The workflow requires only a standard GitHub-hosted `ubuntu-24.04` runner,

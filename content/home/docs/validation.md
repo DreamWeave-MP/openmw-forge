@@ -9,16 +9,16 @@ description = "OpenMW Forge: Validation and testing"
 
 - `jess package check .`: strict type checking of package sources.
 - `jess check --package . tools/*.jsl src/*.jsl tests/run.jsl`: typed checker including scripts.
-- `jess workspace test`: **55 tests in source + 55 tests in packed JPK = 110 passing executions**.
+- `jess package test .`: **56 tests in source + 56 tests in packed JPK = 112 passing executions** without site packages.
 - `jess run --trusted tools/style.jsl`: Jess style checker clean.
-- `jess workspace pack --runtime /path/to/jess --output /path/to/openmw-forge`: produced a real Linux x86-64 ELF executable with an embedded Jess runtime.
+- `jess run --trusted tools/release.jsl /absolute/path/to/openmw-forge`: stages the Forge package into a separate temporary workspace, verifies the package digest, and packs a Linux x86-64 ELF with an embedded Jess runtime, without restoring documentation packages.
 - `JESS_BIN=/path/to/jess jess run --trusted --package . tools/integration.jsl /path/to/openmw-forge`: compiled ELF tests from a checkout-free working directory. These cover generated assets, mock Podman build/run using an **independently packed Jess mock executable**, error propagation, staging of OpenMW+Qt+vcpkg symlinks and packaging templates, and synthetic `.tar.gz` safety scenarios. The expanded suite also covers real
   offline Git fork/branch switching (using Git URL rewriting to a disposable
   local repository), dirty checkout preservation, source provenance in a staged
   release, refused destructive `--clean` on unowned roots, refused unowned staging
   and smoke scratch paths, missing-main-binary smoke failures, and atomic
   archive replacement under a deliberately failing mocked `tar` executable.
-  **134 integration assertions pass** through the compiled ELF. The new
+  **136 integration assertions pass** through the compiled ELF. The new
   checks explicitly reject broken packaged launchers, test source/ref selection,
   verify content-derived builder image caching, and simulate publisher first
   creation, rolling asset pruning and checksum/provenance failures.

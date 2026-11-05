@@ -39,7 +39,7 @@ For GitHub Pages, use **Settings → Pages → Build and deployment → GitHub A
 
 ## Forge CI runtime
 
-Set repository variable `JESS_RELEASE_TAG` to a Jess development release containing Forge's required APIs (currently `dev`, which is mutable). The validation workflow installs that Jess runtime and restores pinned site dev-dependencies with `jess workspace sync --locked` before running the Forge gates. The site workflow independently pins its own Jess version via StroggForge `v69`.
+Set repository variable `JESS_RELEASE_TAG` to a Jess development release containing Forge's required APIs (currently `dev`, which is mutable). The validation and four-hour release workflows run **`jess package test .`**, not `jess workspace test`, and build the executable through `tools/release.jsl`. That script packs a private copy of Forge's package payload, verifies its digest against the source, and does not resolve the documentation lockfile. Therefore a fresh runner needs **no site JPKs** to validate, compile, or run Forge. The separate StroggForge site workflow restores its own pinned tooling and Jess version. `jess workspace sync --locked` is for the documentation authoring workflow, **not** for Forge application CI.
 
 ## Scheduled release
 
