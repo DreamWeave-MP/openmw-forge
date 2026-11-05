@@ -1,3 +1,7 @@
+---
+layout: default
+---
+
 # OpenMW Forge release-readiness checklist
 
 The CLI is built and exercised in a Jess 0.3/Luau 0.745 sandbox, **not yet

@@ -4,6 +4,26 @@
 
 The OpenMW source checkout, external build tools, a container engine (Podman or Docker by default), and network/compute for the real builds are still needed. Forge is an orchestrator, not a replacement for CMake, vcpkg, Qt, compiler toolchains, or a container runtime.
 
+## CI, documentation and the four-hour OpenMW release
+
+Forge provides two independent GitHub Actions workflows following StroggForge's
+Pages/release conventions. The standard `.github/workflows/forge-ci.yml` checks
+Jess strict/style, source+JPK tests and the standalone Linux ELF, then publishes
+GitHub Pages documentation from [`docs/`](docs/index.md) on the default branch.
+The separate `.github/workflows/das-uberbranch.yml` schedules an OpenMW
+**Linux + debug** package every four hours (`23 */4 * * *` UTC), running real
+AlmaLinux 9/Docker builds, GoogleTests, archive and launcher verification, and
+a cross-distro smoke gate before updating the `das-uberbranch` prerelease.
+
+**To switch the scheduled fork or branch, edit only**
+[`ci/uberbranch-config.jsl`](ci/uberbranch-config.jsl): its `repository` and
+`ref` initially select official `https://gitlab.com/OpenMW/openmw.git` at
+`master`. The workflow needs a Docker-enabled self-hosted x86-64 Linux runner
+labeled `openmw-build`; GitHub releases are published by a separate, narrowly
+write-permitted job. For setup, see [CI](docs/CI.md), [scheduled releases](docs/RELEASE.md),
+[CLI examples](docs/CLI.md) and [release qualification](docs/RELEASE-READINESS.md).
+The heavy production build **has not been executed in this test sandbox**.
+
 ## Quick start: compiled binary
 
 ```sh

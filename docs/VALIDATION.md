@@ -1,10 +1,14 @@
+---
+layout: default
+---
+
 # Verification of the standalone Jess-native OpenMW Forge
 
 ## Performed with the supplied Jess 0.3 / Luau 0.745 runtime
 
 - `jess package check .`: strict type checking of package sources.
 - `jess check --package . tools/*.jsl src/*.jsl tests/run.jsl`: typed checker including scripts.
-- `jess workspace test`: **45 tests in source + 45 tests in packed JPK = 90 passing executions**.
+- `jess workspace test`: **49 tests in source + 49 tests in packed JPK = 98 passing executions**.
 - `jess run --trusted tools/style.jsl`: Jess style checker clean.
 - `jess workspace pack --runtime /path/to/jess --output /path/to/openmw-forge`: produced a real Linux x86-64 ELF executable with an embedded Jess runtime.
 - `JESS_BIN=/path/to/jess jess run --trusted --package . tools/integration.jsl /path/to/openmw-forge`: compiled ELF tests from a checkout-free working directory. These cover generated assets, mock Podman build/run using an **independently packed Jess mock executable**, error propagation, staging of OpenMW+Qt+vcpkg symlinks and packaging templates, and synthetic `.tar.gz` safety scenarios. The expanded suite also covers real
@@ -13,7 +17,10 @@
   release, refused destructive `--clean` on unowned roots, refused unowned staging
   and smoke scratch paths, missing-main-binary smoke failures, and atomic
   archive replacement under a deliberately failing mocked `tar` executable.
-  **49 integration assertions pass** through the compiled ELF.
+  **71 integration assertions pass** through the compiled ELF. The new
+  checks explicitly reject broken packaged launchers, test source/ref selection,
+  verify content-derived builder image caching, and simulate publisher first
+  creation, rolling asset pruning and checksum/provenance failures.
 - `tools/validate.jsl` (Jess shebang) runs these checks together and fails closed on any error.
 
 The final executable has no dependency on a checked-out Jess workspace. Its runtime and overlay assets are embedded, and the generated Podman/Docker image carries the executable itself.

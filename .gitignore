@@ -6,3 +6,5 @@ artifacts/
 *.7z
 *.tar.xz
 *.tar.gz
+build/
+_site/

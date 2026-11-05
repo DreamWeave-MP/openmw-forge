@@ -1,3 +1,7 @@
+---
+layout: default
+---
+
 # Migration audit: two Bash-driven Linux build repositories to one native Jess tool
 
 The supplied inputs were `dream-deps-build.bundle` HEAD `5981e98` and `openmw-linux-build.bundle` HEAD `88d88df`. We preserve the **AlmaLinux 9** ABI floor, original dependency manifests/ports and packaging templates. The migration targets Linux; legacy macOS/Windows CI is not being replaced.
