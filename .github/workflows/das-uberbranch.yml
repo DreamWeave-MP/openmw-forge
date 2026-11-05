@@ -47,6 +47,11 @@ jobs:
         with:
           path: artifacts/deps
           key: forge-sdk-v3-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ hashFiles('vendor/deps/**', 'src/native_deps.jsl', 'src/native_sdk_cache.jsl', 'src/native_archive.jsl', 'src/config.jsl', 'src/assets.jsl') }}
+          # Validator-only source changes must not discard the previously
+          # exported 150-port SDK. Forge independently checks full SHA-256,
+          # the pinned input fingerprint, and archive structure before reuse.
+          restore-keys: |
+            forge-sdk-v3-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-
       - name: Restore bounded ccache
         uses: actions/cache@v6
         with:

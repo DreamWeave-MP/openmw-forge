@@ -8,6 +8,7 @@ local argsModule = require '@forge/args'
 local nativeOpenmw = require '@forge/native-openmw'
 local nativeQt = require '@forge/native-qt'
 local nativeAbi = require '@forge/native-abi'
+local nativeArchive = require '@forge/native-archive'
 local releaseArtifacts = require '@forge/native-release-artifacts'
 local sdkCache = require '@forge/native-sdk-cache'
 local config = require '@forge/config'
@@ -27,6 +28,34 @@ local function check(condition: boolean, message: string)
   if not condition then error('integration assertion: ' .. message) end
   cases += 1
 end
+
+-- Archive preflight is intentionally metadata-only; the post-extraction phase
+-- must verify the actual filesystem symlinks, without invoking 7z per link.
+local linkRoot = scratch .. '/validated-archive-links'
+local linkParent = linkRoot .. '/package/installed/x64-linux-dynamic/lib'
+util.mkdir(linkParent)
+util.write(linkParent .. '/libfixture.so.1', 'payload')
+local madeLink, linkFailure = fs.symlink('libfixture.so.1', linkParent .. '/libfixture.so')
+if not madeLink then error('cannot create archive link fixture: ' .. (linkFailure or 'unknown')) end
+local Member = 'package/installed/x64-linux-dynamic/lib/libfixture.so'
+local listing = '7-Zip listing\n----------\nPath = ' .. Member
+  .. '\nAttributes =  lrwxrwxrwx\nSize = 15\n'
+nativeArchive.validate7zListing(listing, nil, true)
+nativeArchive.validate7zListing(listing, function(path: string): string
+  local link, why = fs.readLink(linkRoot .. '/' .. path)
+  if not link then error('cannot read integration link: ' .. (why or path)) end
+  return link
+end)
+nativeArchive.validateExtractedLinks(linkRoot)
+check(true, 'archived symlink targets are verified from isolated extracted files')
+
+local escaped = linkParent .. '/escape.so'
+local escapedLink, escapedFailure = fs.symlink('../../../../../etc/passwd', escaped)
+if not escapedLink then error('cannot create escape fixture: ' .. (escapedFailure or 'unknown')) end
+-- An escaping extracted symlink is deliberately rejected by the validator.
+local rejectedEscape = pcall(nativeArchive.validateExtractedLinks, linkRoot)
+check(not rejectedEscape, 'post-extraction validation rejects links outside staging root')
+util.remove(linkRoot)
 
 -- vcpkg installs many non-ELF files (including zero/short byte files).
 -- A short successful read is NOT a four-byte ELF header. The old scanner

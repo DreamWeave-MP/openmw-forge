@@ -91,6 +91,21 @@ local function extractDeps(options: Options)
     util.stream('tar', { '-xJf', archive, '-C', temp })
   else
     util.stream(util.tool { '7zz', '7z', '7za' }, { 'x', '-y', '-o' .. temp, archive })
+    -- Preflight already proved no member can be written through an archived
+    -- symlink. The first full extraction is also our single decompression.
+    -- Match the actual link bytes to the listing before using or publishing
+    -- anything from this isolated staging directory.
+    archiveSafety.validateArchiveEntries(util.tool { '7zz', '7z', '7za' }, archive,
+      function(member: string): string
+        local path = temp .. '/' .. member
+        local stat = fs.lstat(path)
+        if not stat or stat.kind ~= 'symlink' then
+          error('extracted dependency link does not match archive: ' .. member)
+        end
+        local target, failure = fs.readLink(path)
+        if not target then error('cannot inspect dependency link: ' .. (failure or member)) end
+        return target
+      end)
   end
   archiveSafety.validateExtractedLinks(temp)
   local discovered, failure = fs.walk(temp, { include = 'files', sort = true })

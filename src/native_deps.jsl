@@ -219,8 +219,8 @@ verify = function(options: Options, scanOverride: string?)
     -- archive for EVERY symlink can take over half an hour. Inspect the 7z
     -- membership once, resolve links from the original installed tree, and
     -- cross-check each entry's archived size. The local export is trusted only
-    -- on this path; cache restores and external archives still read each link
-    -- directly from the archive BEFORE extraction.
+    -- on this path; cache restores and external archives are validated again
+    -- against the extracted link bytes BEFORE the tree can be consumed.
     print('Validating fresh SDK archive against audited source symlinks (single 7z listing)')
     local prefix = 'vcpkg-' .. options.triplet .. '/installed/' .. options.triplet .. '/'
     archiveSafety.validateArchiveEntries(sevenZip, archive, function(member: string): string
@@ -239,12 +239,26 @@ verify = function(options: Options, scanOverride: string?)
       return util.checked(sevenZip, { 'e', '-so', '-spd', archive, member })
     end)
   else
-    archiveSafety.validateArchiveEntries(sevenZip, archive)
+    archiveSafety.preflightArchiveEntries(sevenZip, archive)
   end
   local root = scanOverride or (options.root .. '/work/deps-verify')
   if not scanOverride then
     util.resetManaged(root)
     util.stream(sevenZip, { 'x', '-y', '-o' .. root, archive })
+    -- The preflight rejects any member beneath an archived symlink, and the
+    -- output directory is freshly managed/empty. Therefore extraction cannot
+    -- write through archived links. Inspect actual extracted targets now,
+    -- without starting one decompressor per symlink.
+    archiveSafety.validateArchiveEntries(sevenZip, archive, function(member: string): string
+      local path = root .. '/' .. member
+      local stat = fs.lstat(path)
+      if not stat or stat.kind ~= 'symlink' then
+        error('extracted SDK link does not match archive: ' .. member)
+      end
+      local target, failure = fs.readLink(path)
+      if not target then error('cannot read extracted SDK link: ' .. (failure or member)) end
+      return target
+    end)
     archiveSafety.validateExtractedLinks(root)
   end
   local scan = root

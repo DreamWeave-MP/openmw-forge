@@ -85,7 +85,10 @@ local function cacheHit(output: string, triplet: string, inputs: string): boolea
   -- malformed member listings must all trigger the verified build path.
   local ok, valid = pcall(function(): boolean
     if digest(prefix .. '.7z') ~= expectedDigest then return false end
-    archive.validateArchiveEntries(util.tool { '7zz', '7z', '7za' }, prefix .. '.7z')
+    -- Reject unsafe archive structure immediately, but do not decompress a
+    -- solid 7z archive separately for every symlink. The complete link bytes
+    -- are verified from the isolated extracted tree before build use.
+    archive.preflightArchiveEntries(util.tool { '7zz', '7z', '7za' }, prefix .. '.7z')
     return true
   end)
 

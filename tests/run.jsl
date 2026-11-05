@@ -463,6 +463,66 @@ suite.describe('adversarial 7z metadata validation', function()
     test.expect(inspected).toBe(1)
   end)
 
+  suite.it('preflights compressed links without decompressing their payloads', function()
+    local path = 'package/installed/x64-linux-dynamic/lib/libfoo.so'
+    local listing = entry(path, 'Attributes =  lrwxrwxrwx\nSize = 13\n')
+    nativeArchive.validate7zListing(listing, nil, true)
+
+    -- The old API must still fail closed without an explicit preflight flag.
+    rejects(listing)
+
+    local inspected = 0
+    nativeArchive.validate7zListing(listing, function(member: string): string
+      inspected += 1
+      test.expect(member).toBe(path)
+      return 'libfoo.so.123'
+    end)
+    test.expect(inspected).toBe(1)
+  end)
+
+  suite.it('still rejects unsafe link bytes after a metadata-only preflight', function()
+    local path = 'package/installed/x64-linux-dynamic/lib/libfoo.so'
+    local target = '../../../../../etc/passwd'
+    local listing = entry(path, 'Attributes =  lrwxrwxrwx\nSize = ' .. tostring(#target) .. '\n')
+    nativeArchive.validate7zListing(listing, nil, true)
+    -- The post-extraction unsafe-link rejection is expected to throw.
+    local ok = pcall(function()
+      nativeArchive.validate7zListing(listing, function(_member: string): string
+        return target
+      end)
+    end)
+    test.expect(ok).toBeFalsy()
+  end)
+
+  suite.it('requires link metadata and extracted targets to agree', function()
+    local path = 'package/installed/x64-linux-dynamic/lib/libfoo.so'
+    local listing = entry(path, 'Attributes = A_ lrwxrwxrwx\nSymbolic Link = libfoo.so.1\n')
+    nativeArchive.validate7zListing(listing, nil, true)
+    -- The metadata-vs-actual-target mismatch must throw on validation.
+    local ok = pcall(function()
+      nativeArchive.validate7zListing(listing, function(_member: string): string
+        return 'libbar.so.1'
+      end)
+    end)
+    test.expect(ok).toBeFalsy()
+  end)
+
+  suite.it('rejects ambiguous archive names and special links before extracting', function()
+    local prefix = 'package/installed/x64-linux-dynamic/lib/'
+    rejects(entry(prefix .. 'foo//bar'))
+    rejects(entry(prefix .. 'foo\nbar'))
+    rejects(entry(prefix .. 'foo', 'Hard Link = /etc/passwd\n'))
+    rejects('7-Zip listing\n----------\nPath = ' .. prefix .. 'foo/\nAttributes = D\n'
+      .. 'Path = ' .. prefix .. 'foo\nAttributes = A\n')
+
+    local link = '7-Zip listing\n----------\nPath = ' .. prefix .. 'alias\n'
+      .. 'Attributes =  lrwxrwxrwx\nSize = 7\n'
+      .. 'Path = ' .. prefix .. 'alias/subdir/file\nAttributes = A\n'
+    -- A child entry beneath an archived link must fail pre-extraction.
+    local ok = pcall(function() nativeArchive.validate7zListing(link, nil, true) end)
+    test.expect(ok).toBeFalsy()
+  end)
+
   suite.it('rejects unsafe or inconsistent symlink data before extraction', function()
     local member = 'package/installed/x64-linux-dynamic/lib/libfoo.so'
     local function withTarget(target: string, size: number?): string

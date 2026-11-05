@@ -5,7 +5,8 @@ local fs = require '@dream/fs'
 
 local function isSafeName(name: string): boolean
   if name == '' or name:sub(1, 1) == '/' or name:find('\\', 1, true)
-    or name:match('^[%a]:') or name:find('\0', 1, true) then return false end
+    or name:match('^[%a]:') or name:find('%c')
+    or name:find('//', 1, true) then return false end
 
   for component in name:gmatch('[^/]+') do
     if component == '..' or component == '.' then return false end
@@ -65,7 +66,7 @@ local function safeLinkTarget(path: string, target: string): boolean
   return #components > 0
 end
 
-local function validate7zListing(listing: string, readTarget: ((string) -> string)?)
+local function validate7zListing(listing: string, readTarget: ((string) -> string)?, deferTargets: boolean?)
   local separator = listing:find('%-%-%-%-%-%-%-%-%-')
   if not separator then error('7zip listing missing archive entries') end
   local payload = listing:sub(separator)
@@ -82,31 +83,44 @@ local function validate7zListing(listing: string, readTarget: ((string) -> strin
       error('unsafe dependency archive entry: ' .. path)
     end
 
-    if seen[path] then error('duplicate dependency archive entry: ' .. path) end
-    seen[path] = true
+    -- 7z may render directories with trailing slash. Normalize them here so
+    -- a differently spelled member cannot overwrite an already created link.
+    local canonicalPath = path:gsub('/+$', '')
+    if seen[canonicalPath] then error('duplicate dependency archive entry: ' .. path) end
+    seen[canonicalPath] = true
 
     if path:find('installed/', 1, true) then found = true end
     local attributesEntry: { [string]: string } = entry
+    if attributesEntry['Hard Link'] or attributesEntry['Alternate Stream'] then
+      error('unsupported dependency archive link or stream: ' .. path)
+    end
     local link = attributesEntry['Symbolic Link'] or attributesEntry['Link'] or attributesEntry['Target']
     local attributes = attributesEntry['Attributes'] or ''
     local isSymlink = link ~= nil or attributes:match('^l') ~= nil or attributes:match('%sl') ~= nil
     if isSymlink then
-      symlinks[path] = true
-      if not link then
-        -- Link targets are data streams in native 7z. Reject files larger
-        -- than Linux's maximum link-target size before decompressing them.
-        local rawSize = attributesEntry['Size'] or ''
-        local size = tonumber(rawSize)
-        if not size or size < 1 or size > 4095 or size % 1 ~= 0 then
-          error('uninspectable dependency symlink size: ' .. path)
-        end
-
-        if not readTarget then error('uninspectable dependency symlink: ' .. path) end
-        link = readTarget(path)
-        if #link ~= size then error('invalid dependency symlink data: ' .. path) end
+      symlinks[canonicalPath] = true
+      -- Native 7z stores POSIX symlink targets as compressed file data. Only
+      -- a metadata preflight is safe to defer: the extracted link is checked
+      -- against this exact entry before its tree is ever published or used.
+      local rawSize = attributesEntry['Size']
+      local size = if rawSize then tonumber(rawSize) else nil
+      if (not link and not size) or (size and (size < 1 or size > 4095 or size % 1 ~= 0)) then
+        error('uninspectable dependency symlink size: ' .. path)
       end
 
-      if not safeLinkTarget(path, link) then
+      if readTarget then
+        local actual = readTarget(path)
+        if size and #actual ~= size then error('invalid dependency symlink data: ' .. path) end
+
+        if link and actual ~= link then
+          error('dependency symlink target does not match archive listing: ' .. path)
+        end
+        link = actual
+      elseif not link and not deferTargets then
+        error('uninspectable dependency symlink: ' .. path)
+      end
+
+      if link and not safeLinkTarget(path, link) then
         error('unsafe dependency archive link: ' .. path)
       end
     end
@@ -119,6 +133,10 @@ local function validate7zListing(listing: string, readTarget: ((string) -> strin
       entry = { Path = value }
     elseif name then
       entry[name] = value
+    elseif line ~= '----------' then
+      -- A path containing a newline must not silently truncate the listing;
+      -- such a file can otherwise impersonate a second metadata field.
+      error('malformed dependency archive listing line')
     end
   end
   validate()
@@ -140,20 +158,19 @@ local function validate7zListing(listing: string, readTarget: ((string) -> strin
 end
 
 local function validateArchiveEntries(program: string, path: string, localLinkTarget: ((string) -> string)?)
-  local inspected = 0
-  validate7zListing(util.checked(program, { 'l', '-slt', path }), function(member: string): string
-    if localLinkTarget then return localLinkTarget(member) end
-    -- On restored or external archives, the original link bytes are untrusted.
-    -- Never replace this with values from a separately supplied sidecar.
-    inspected += 1
-    if inspected == 1 or inspected % 25 == 0 then
-      print(`Validating cached 7z symlink targets: {inspected} inspected`)
-    end
-    -- -spd disables 7z wildcard parsing: the listed member must be selected
-    -- literally, not matched against other entries by an archive-supplied glob.
-    -- -so reads the symlink target bytes without creating any filesystem link.
-    return util.checked(program, { 'e', '-so', '-spd', path, member })
-  end)
+  if not localLinkTarget then
+    error('7z link validation requires a locally inspected tree; use preflightArchiveEntries before extraction')
+  end
+  validate7zListing(util.checked(program, { 'l', '-slt', path }), localLinkTarget)
+end
+
+-- One metadata-only scan before extracting into a NEW, isolated, managed
+-- directory. This rejects path traversal, duplicates, symlink descendants,
+-- special links, and structurally impossible symlinks. No symlink target is
+-- trusted until validateArchiveEntries reads it from the extracted tree.
+-- Crucially, this NEVER launches 7z once per compressed symlink.
+local function preflightArchiveEntries(program: string, path: string)
+  validate7zListing(util.checked(program, { 'l', '-slt', path }), nil, true)
 end
 
 local function validateExtractedLinks(root: string)
@@ -176,7 +193,7 @@ local function requireSafeArchive(archive: string)
   if string.match(archive, '%.tar%.xz$') then
     listTar(archive)
   else
-    validateArchiveEntries(util.tool { '7zz', '7z', '7za' }, archive)
+    preflightArchiveEntries(util.tool { '7zz', '7z', '7za' }, archive)
   end
 end
 
@@ -184,5 +201,6 @@ end
 return table.freeze {
   isSafeName = isSafeName, listTar = listTar, requireSafeArchive = requireSafeArchive,
   validate7zListing = validate7zListing, validateArchiveEntries = validateArchiveEntries,
+  preflightArchiveEntries = preflightArchiveEntries,
   validateExtractedLinks = validateExtractedLinks,
 }
