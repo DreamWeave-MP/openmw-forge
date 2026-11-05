@@ -192,6 +192,13 @@ Its `PIP_FIND_LINKS` and `PIP_CONSTRAINT` environment settings expose that
 verified wheelhouse to vcpkg's subsequent virtualenvs without forcing other
 ports to build offline.
 
+The Docker/Podman worker must **not** set `PIP_USER=1` globally. That setting
+forces a user-site installation even inside vcpkg's isolated virtualenvs and
+causes `Can not perform a '--user' install` errors. Forge supplies `PIP_USER=0`
+for vcpkg's Python environment, including the early preflight, so an inherited
+user-install default cannot override the virtualenv's site-packages. The Qt
+installer explicitly passes `--user` for its separate installer step.
+
 If this preflight fails, inspect the pip stdout/stderr printed directly by
 Forge; do not bypass TLS checks or install Python packages globally. If a
 later vcpkg port fails, download the `forge-vcpkg-failure-*` workflow artifact
