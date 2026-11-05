@@ -1,0 +1,11 @@
+--!strict
+local style = require '@jess/style'
+local findings = style.checkPackage '.'
+for _, finding in findings do
+  print(finding)
+end
+
+if #findings > 0 then
+  error(`style violations: {#findings}`)
+end
+print('Style: clean')
