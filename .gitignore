@@ -11,3 +11,7 @@ _site/
 # DreamWeave Jess site generated outputs
 public/
 dist/
+# DreamWeave Mod Template generated site protocol records
+/static/dreamweave/
+/static/dreamweave.json
+/content/**/_changelog.md
