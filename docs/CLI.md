@@ -42,8 +42,11 @@ Run `./forge COMMAND --help` for command-specific examples. The default
 container engine is Podman; set `--engine docker` on Docker hosts.
 
 `--clean` only removes Forge-marked build roots. `--dry-run` is read-only.
-HTTPS dependency archives require `--deps-sha256`. The main `.tar.gz` and
-`-debug.tar.gz` publish separately, so release automation must check both.
+HTTPS dependency archives require `--deps-sha256`. Forge compresses the main
+`.tar.gz` and `-debug.tar.gz` into a managed staging directory before changing
+either published file; an interrupted local publication restores the previous
+set on the next run. These remain two filesystem entries rather than one
+atomically visible object. Release automation verifies both digests.
 
 Full cold builds require substantial disk, network and CPU resources. For
 repeated builds, the image holds the SHA-512-verified Autoconf 2.72 toolchain

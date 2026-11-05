@@ -121,8 +121,10 @@ A dependency archive fetched from HTTPS **must** provide a SHA-256 digest:
 Downloads are cached by verified content hash and extension, and partial
 transfers are not promoted. Local `.7z` and `.tar.xz` dependency exports remain
 supported. Exported dependency archives and OpenMW tarballs are built in staging
-paths and verified before their final filenames are published; debug and main
-artifacts are still separate files rather than a single atomic release unit.
+paths and verified before their final filenames are published. Main and debug
+archives are staged together with a recoverable local publication journal;
+they remain separate files, and GitHub Releases cannot atomically replace a
+multi-file release. A failed release must not be interpreted as qualified.
 
 ## Commands and switches
 

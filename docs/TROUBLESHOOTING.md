@@ -54,6 +54,43 @@ Confirm `work/cache/ccache` is present in the container mount plan (try
 checkout. `--no-ccache` intentionally disables it. A changed compiler or
 build flags can invalidate cached objects.
 
+## A cached Qt installation is rejected
+
+Forge requires an actual Qt 6 Core shared library and the XCB platform plugin,
+not just an existing `QT/<version>/gcc_64` directory. A Forge-managed Qt cache
+also carries a versioned installer identity, so changing the Qt or pinned AQT
+version invalidates it. An incomplete **unowned** Qt directory is never
+overwritten: inspect it and move it aside yourself. A managed Qt installation
+is prepared in a separate staging tree and can be recovered from the previous
+qualified version after an interrupted replacement.
+
+The current package profile always requires Qt. The old `--no-qt` option was
+removed because it could not produce the distribution promised by that flag.
+
+## Another build or SDK verification is already in use
+
+Forge takes kernel-owned advisory locks around managed source checkouts, build
+and dependency directories, final output directories, SDK export/verification,
+and shared smoke-test scratch paths. It fails rather than running two writers
+through the same mutable checkout or packaging workspace. Wait until the other
+invocation exits or use independent work roots; **do not delete lock files to
+force concurrent execution**. A crashed process releases its kernel locks.
+
+## Packaging or publication was interrupted
+
+Main and debug archives are **compressed before either previous archive is
+replaced**. A main-only (Debug) build is rejected if it would leave an old
+matching `-debug.tar.gz` beside the new archive. A local managed recovery journal records the files that must be
+restored if the process dies during publication. A subsequent Forge package
+invocation recovers the previous complete archive set before publishing a new
+one. Do not manually remove `artifacts/openmw/.forge-archive-publication` while
+recovering a failed release; preserve the journal and any backup files.
+
+GitHub Releases are different: the remote API uploads independent assets and
+cannot promise an atomic view of the main/debug pair. The release publisher
+validates hashes and provenance. Downstream consumers should verify both
+artifacts and the manifest before adopting a rolling `das-uberbranch` release.
+
 ## Forge refuses `--clean`
 
 Forge will not erase an unowned build or scratch directory. Keep your source

@@ -8,7 +8,7 @@ layout: default
 
 - `jess package check .`: strict type checking of package sources.
 - `jess check --package . tools/*.jsl src/*.jsl tests/run.jsl`: typed checker including scripts.
-- `jess workspace test`: **54 tests in source + 54 tests in packed JPK = 108 passing executions**.
+- `jess workspace test`: **55 tests in source + 55 tests in packed JPK = 110 passing executions**.
 - `jess run --trusted tools/style.jsl`: Jess style checker clean.
 - `jess workspace pack --runtime /path/to/jess --output /path/to/openmw-forge`: produced a real Linux x86-64 ELF executable with an embedded Jess runtime.
 - `JESS_BIN=/path/to/jess jess run --trusted --package . tools/integration.jsl /path/to/openmw-forge`: compiled ELF tests from a checkout-free working directory. These cover generated assets, mock Podman build/run using an **independently packed Jess mock executable**, error propagation, staging of OpenMW+Qt+vcpkg symlinks and packaging templates, and synthetic `.tar.gz` safety scenarios. The expanded suite also covers real
@@ -17,7 +17,7 @@ layout: default
   release, refused destructive `--clean` on unowned roots, refused unowned staging
   and smoke scratch paths, missing-main-binary smoke failures, and atomic
   archive replacement under a deliberately failing mocked `tar` executable.
-  **101 integration assertions pass** through the compiled ELF. The new
+  **119 integration assertions pass** through the compiled ELF. The new
   checks explicitly reject broken packaged launchers, test source/ref selection,
   verify content-derived builder image caching, and simulate publisher first
   creation, rolling asset pruning and checksum/provenance failures.
@@ -48,3 +48,19 @@ asset map exactly matches `vendor/deps`, `vendor/openmw`, and `vendor/builder`.
 The check is read-only and is mandatory in normal and scheduled CI. After
 changing a vendor file, regenerate with `jess run --trusted tools/embed_assets.jsl`
 and commit the resulting `src/assets.jsl` diff.
+
+## Additional hardening regressions
+
+The compiled integration suite also covers rejected `--no-qt` builds,
+invalid-but-hash-matching SDK archive candidates falling back to a rebuild,
+shared build/managed-source/SDK verification/smoke locks, a Qt cache missing
+required libraries or carrying the wrong installer identity, and main/debug
+archive publication plus interrupted-journal recovery. Safety fixtures also
+verify that source-path overlaps are rejected **before creating lock files**
+and that a main-only build cannot leave a stale matching debug sidecar.
+
+CI executes `tools/embed_assets.jsl --check`: the embedded Jess asset map must
+match the original vendor files byte-for-byte. A developer must regenerate the
+asset map when editing an overlay or source template. Strict/style and fixture
+tests still **do not** qualify a production OpenMW release; the real AlmaLinux
+9 Docker/vcpkg/Qt/CMake/distro run is the final gate.

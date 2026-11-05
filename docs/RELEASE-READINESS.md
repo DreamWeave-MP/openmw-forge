@@ -24,9 +24,10 @@ claims as unverified until the following checks run on an AlmaLinux 9 builder.
 5. Repeat the *same* build: measure cold/warm elapsed time, CPU time, peak RSS,
    data downloaded, and vcpkg cache hits. Repeat after changing only the OpenMW
    source revision, then after changing the dependency manifest.
-6. Simulate interrupts during dependency export and main/debug tar compression.
-   Ensure previously released files remain consumable, and verify a clean
-   recovery path for incomplete generated staging directories.
+6. Simulate interrupts during dependency export, Qt installation and
+   main/debug archive publication. Ensure prior releases remain consumable,
+   verify recovery journals and managed-directory rollback, and exercise
+   contested build/source/SDK/smoke locks across separate processes.
 7. Exercise valid real-world vcpkg exports containing symlinks and hardlinks;
    the 7z metadata checks are tested against synthetic listings but not a real
    vcpkg export in this environment.
