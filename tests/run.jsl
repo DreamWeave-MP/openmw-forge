@@ -4,8 +4,10 @@ local args = require '@forge/args'
 local planning = require '@forge/plan'
 local profile = require '@forge/config'
 local nativeOpenmw = require '@forge/native-openmw'
+local nativeArchive = require '@forge/native-archive'
 local nativeDeps = require '@forge/native-deps'
 local assets = require '@forge/assets'
+local source = require '@forge/source'
 local suite = test.new()
 
 local Root = '/tmp/forge-root'
@@ -234,6 +236,57 @@ suite.describe('shell-free execution planning', function()
   end)
 end)
 
+suite.describe('forks, sources, identity and resilient build plans', function()
+  suite.it('supports independent managed checkouts for arbitrary HTTPS and SSH forks', function()
+    local first = plan({ 'build', '--repo', 'https://github.com/example/OpenMW.git', '--ref', 'feat/custom-renderer' })
+    local second = plan({ 'build', '--repo', 'https://github.com/another/OpenMW.git', '--ref', 'main' })
+    test.expect(first.steps[1].program).toBe('@forge')
+    test.expect(first.steps[1].args[1]).toBe('source')
+    test.expect(second.steps[1].args[1]).toBe('source')
+    test.expect(first.steps[1].cwd).toBe(Root)
+    test.expect(source.path(Root, 'https://github.com/example/OpenMW.git') == source.path(Root, 'https://github.com/another/OpenMW.git')).toBeFalsy()
+    test.expect(source.validRepo('git@github.com:example/OpenMW.git')).toBeTruthy()
+    test.expect(source.validRepo('ssh://git@git.example/OpenMW.git')).toBeTruthy()
+    test.expect(source.validRef('refs/heads/feat/large-world')).toBeTruthy()
+    shellFree(first)
+  end)
+
+  suite.it('does not rewrite a user checkout or accept Git argument injection', function()
+    fails({ 'build', '--source', Source, '--ref', 'other-branch' }, '--ref requires --repo')
+    fails({ 'build', '--source', Source, '--repo', 'https://example.org/openmw.git' }, 'cannot be combined')
+    fails({ 'build', '--repo', 'file:///tmp/local.git' }, 'invalid --repo')
+    fails({ 'build', '--repo', 'https://example.org/openmw.git', '--ref=--upload-pack=evil' }, 'missing value')
+    fails({ 'build', '--repo', 'https://example.org/openmw.git', '--ref', 'foo..bar' }, 'invalid --ref')
+    fails({ 'build', '--repo', 'https://example.org/openmw.git', '--ref', 'foo@{1}' }, 'invalid --ref')
+    fails({ 'deps', '--repo', 'https://example.org/openmw.git' }, '--repo requires')
+  end)
+
+  suite.it('rejects unsigned download plans and propagates verified hash to workers', function()
+    fails({ 'build', '--source', Source, '--deps-archive', 'https://example.org/deps.7z' }, 'require --deps-sha256')
+    fails({ 'build', '--source', Source, '--deps-archive', 'https://example.org/deps.7z', '--deps-sha256', 'abc' }, '64 hexadecimal')
+    fails({ 'build', '--source', Source, '--deps-archive', 'https://example.org/deps.7z', '--deps-sha256', string.rep('x', 64) }, '64 hexadecimal')
+    local digest = string.rep('a', 64)
+    local item = plan({ 'build', '--source', Source, '--deps-archive', 'https://example.org/deps.7z', '--deps-sha256', digest })
+    test.expect(has(item.steps[2].args, '--deps-sha256')).toBeTruthy()
+    test.expect(has(item.steps[2].args, digest)).toBeTruthy()
+  end)
+
+  suite.it('does not mislabel tar.xz archives as .7z inside containers', function()
+    local item = plan({ 'build', '--source', Source, '--deps-archive', '/tmp/deps.tar.xz' })
+    test.expect(has(item.steps[2].args, '/input/deps.tar.xz')).toBeTruthy()
+    local volumes = table.concat(item.steps[2].args, ' ')
+    test.expect(volumes).toContain('/tmp/deps.tar.xz:/input/deps.tar.xz:ro')
+  end)
+
+  suite.it('persists vcpkg downloads and compiled binary caches across containers', function()
+    local item = plan({ 'deps' })
+    local volumes = table.concat(item.steps[2].args, ' ')
+    test.expect(volumes).toContain('/work/cache/vcpkg:/forge/work/vcpkg:Z')
+    test.expect(volumes).toContain('/work/cache/vcpkg-binaries:/forge/work/vcpkg-binaries:Z')
+    test.expect(has(item.steps[2].args, '--no-system-packages')).toBeTruthy()
+  end)
+end)
+
 suite.describe('path and configuration safety', function()
   suite.it('normalizes path traversals', function()
     test.expect(planning.normalize('/tmp/a/../b//./')).toBe('/tmp/b')
@@ -280,6 +333,40 @@ suite.describe('path and configuration safety', function()
   end)
 end)
 
+suite.describe('adversarial 7z metadata validation', function()
+  local function rejects(listing: string)
+    -- Invalid 7z metadata intentionally throws; the test asserts fail-closed behavior.
+    local accepted = pcall(function() nativeArchive.validate7zListing(listing) end)
+    test.expect(accepted).toBeFalsy()
+  end
+
+  local function entry(path: string, extra: string?): string
+    return '7-Zip listing\n----------\nPath = package/installed/x64-linux-dynamic/lib/\nAttributes = D\n'
+      .. 'Path = ' .. path .. '\n' .. (extra or '')
+  end
+
+  suite.it('accepts normal dependency archive members and internal relative symlinks', function()
+    nativeArchive.validate7zListing(entry('package/installed/x64-linux-dynamic/lib/libfoo.so.1',
+      'Attributes = A_ lrwxrwxrwx\nSymbolic Link = libfoo.so.1.2\n'))
+  end)
+
+  suite.it('rejects traversal, absolute Windows paths, and escaping symlink targets', function()
+    for _, path in { '../escape', '/etc/passwd', 'C:/Windows/System32', 'package/../escape' } do
+      rejects(entry(path))
+    end
+    local escaping = entry('package/installed/x64-linux-dynamic/lib/libbad.so',
+      'Attributes = A_ lrwxrwxrwx\nSymbolic Link = ../../../../../etc/passwd\n')
+    rejects(escaping)
+  end)
+
+  suite.it('fails closed when 7z metadata hides a symbolic-link target', function()
+    local uninspectable = entry('package/installed/x64-linux-dynamic/lib/libfoo.so',
+      'Attributes = A_ lrwxrwxrwx\n')
+    rejects(uninspectable)
+    rejects('invalid listing')
+  end)
+end)
+
 suite.describe('embedded assets, versions, and archive names', function()
   suite.it('embeds vcpkg manifest and overlays in the Jess executable', function()
     test.expect(assets['deps/vcpkg.json']).toContain('boost-geometry')
@@ -296,13 +383,13 @@ suite.describe('embedded assets, versions, and archive names', function()
 
   suite.it('rejects unsafe tar member names', function()
     for _, value in { '/etc/passwd', '../escape', 'nested/../escape', 'a/./b', 'C:\\etc', '' } do
-      test.expect(nativeOpenmw.isSafeName(value)).toBeFalsy()
+      test.expect(nativeArchive.isSafeName(value)).toBeFalsy()
     end
   end)
 
   suite.it('accepts nested portable tar member names', function()
     for _, value in { 'openmw-0.49/', 'openmw-0.49/lib/libfoo.so.1', 'data/icons/foo.png' } do
-      test.expect(nativeOpenmw.isSafeName(value)).toBeTruthy()
+      test.expect(nativeArchive.isSafeName(value)).toBeTruthy()
     end
   end)
 end)

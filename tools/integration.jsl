@@ -3,6 +3,7 @@
 local fs = require '@dream/fs'
 local process = require '@dream/process'
 local util = require '@forge/native-util'
+local sourceModule = require '@forge/source'
 
 local binary = ...
 if type(binary) ~= 'string' or not fs.isFile(binary) then error('usage: tools/integration.jsl /absolute/path/to/compiled-forge') end
@@ -156,5 +157,118 @@ util.mkdir(unsafeRoot)
 local rejected = invoke({ 'smoke', '--archive', tarball }, unsafeRoot)
 check(not rejected.success, 'compiled executable must reject escaping symlinks before tar extraction')
 check(not fs.isDir(unsafeRoot .. '/work/forge-smoke'), 'rejected archive must not be unpacked')
+
+-- Historical P0 regression: --clean must not erase an unowned build directory.
+local victim = scratch .. '/victim'
+util.mkdir(victim)
+util.write(victim .. '/KEEP.txt', 'do not delete me')
+local destructive = invoke({
+  'build', '--mode', 'local', '--source', source, '--build-dir', victim,
+  '--no-prepare', '--clean',
+}, empty)
+check(not destructive.success, 'cleaning an unowned directory must fail')
+check(fs.isFile(victim .. '/KEEP.txt'), 'failed clean must retain unrelated user files')
+check((destructive.stderr or ''):find('refusing --clean', 1, true) ~= nil, 'clean must explain ownership failure')
+
+-- Historical false-green regression: a launcher is not the OpenMW binary.
+local missingMain = scratch .. '/missing-main.tar.gz'
+local originalMain = stage .. '/openmw.x86_64'
+local swapped = stage .. '/openmw-launcher.x86_64'
+util.copy(originalMain, swapped)
+util.remove(originalMain)
+util.stream('tar', { 'czf', missingMain, '-C', build .. '/package-staging', 'openmw-0.49.0-Linux-64Bit' })
+local noMain = invoke({ 'smoke', '--archive', missingMain }, empty)
+check(not noMain.success, 'an archive without openmw must never pass smoke')
+check((noMain.stderr or ''):find('required OpenMW executable', 1, true) ~= nil,
+  'smoke must identify missing mandatory executable')
+util.copy(swapped, originalMain)
+
+-- Publication must not replace a known-good tarball on tar failure.
+local existingArtifact = output .. '/openmw-0.49.0-Linux-64Bit.tar.gz'
+util.write(existingArtifact, 'previous-good-archive')
+util.copy(mockedBin .. '/podman', mockedBin .. '/tar')
+local tarFailEnv = table.clone(mockEnv)
+tarFailEnv.FORGE_MOCK_FAIL = 'czf'
+local publication = invoke({
+  'package', '--mode', 'local', '--source', source, '--build-dir', build,
+  '--deps-prefix', deps, '--output-dir', output, '--deps-output', depsOutput,
+  '--build-type', 'Debug', '--no-compat', '--no-smoke',
+}, empty, tarFailEnv)
+check(not publication.success, 'tar compression error must fail the package')
+check(util.file(existingArtifact) == 'previous-good-archive', 'failed tar must retain previous artifact')
+
+-- Actual Git, not a mocked Git command: rewrite an HTTPS fixture URL to a
+-- temporary local repository for a fully offline fork/ref checkout test.
+local upstream = scratch .. '/upstream'
+local checkoutCwd = scratch .. '/checkout-cwd'
+util.mkdir(upstream)
+util.mkdir(checkoutCwd)
+util.stream('git', { 'init', '-b', 'main', upstream })
+util.write(upstream .. '/CMakeLists.txt', 'set(OPENMW_VERSION_MAJOR 0)\nset(OPENMW_VERSION_MINOR 49)\nset(OPENMW_VERSION_RELEASE 0)\n')
+util.stream('git', { '-C', upstream, 'add', '.' })
+util.stream('git', { '-C', upstream, '-c', 'user.name=Forge Fixture', '-c', 'user.email=fixture@example.invalid',
+  'commit', '-m', 'main branch' })
+local mainRev = util.checked('git', { '-C', upstream, 'rev-parse', 'HEAD' }):gsub('%s+$', '')
+util.stream('git', { '-C', upstream, 'checkout', '-b', 'feature/fork' })
+util.write(upstream .. '/CMakeLists.txt', 'set(OPENMW_VERSION_MAJOR 0)\nset(OPENMW_VERSION_MINOR 50)\nset(OPENMW_VERSION_RELEASE 0)\n')
+util.stream('git', { '-C', upstream, 'add', '.' })
+util.stream('git', { '-C', upstream, '-c', 'user.name=Forge Fixture', '-c', 'user.email=fixture@example.invalid',
+  'commit', '-m', 'fork feature' })
+local featureRev = util.checked('git', { '-C', upstream, 'rev-parse', 'HEAD' }):gsub('%s+$', '')
+local Url = 'https://forge-fixture.invalid/OpenMW.git'
+local gitconfig = scratch .. '/fixture-gitconfig'
+util.write(gitconfig, '[url "file://' .. upstream .. '"]\n    insteadOf = ' .. Url .. '\n')
+local gitEnv = { GIT_CONFIG_GLOBAL = gitconfig, GIT_TERMINAL_PROMPT = '0' }
+local checkoutPath = sourceModule.path(checkoutCwd, Url)
+local featureRun = invoke({ 'build', '--mode', 'local', '--repo', Url, '--ref', 'feature/fork', '--no-prepare' }, checkoutCwd, gitEnv)
+check(not featureRun.success, 'without vcpkg, a real remote checkout should not claim build success')
+check(fs.isFile(checkoutPath .. '/CMakeLists.txt'), 'managed checkout must fetch OpenMW CMake source')
+check(util.file(checkoutPath .. '/.git/forge-revision') == featureRev .. '\n', 'feature branch must resolve exact SHA')
+check(util.file(checkoutPath .. '/CMakeLists.txt'):find('MINOR 50', 1, true) ~= nil, 'feature branch contents missing')
+local mainRun = invoke({ 'build', '--mode', 'local', '--repo', Url, '--ref', 'main', '--no-prepare' }, checkoutCwd, gitEnv)
+check(not mainRun.success, 'missing vcpkg must still fail after switching branches')
+check(util.file(checkoutPath .. '/.git/forge-revision') == mainRev .. '\n', 'branch switch must resolve main commit')
+check(util.file(checkoutPath .. '/CMakeLists.txt'):find('MINOR 49', 1, true) ~= nil, 'main branch contents missing')
+
+-- Different forks and branches cannot accidentally reuse one CMake build root.
+local featurePlan = invoke({ 'build', '--repo', Url, '--ref', 'feature/fork', '--dry-run' }, checkoutCwd)
+local mainPlan = invoke({ 'build', '--repo', Url, '--ref', 'main', '--dry-run' }, checkoutCwd)
+check(featurePlan.success and mainPlan.success, 'both refs must plan without side effects')
+check(featurePlan.stdout ~= mainPlan.stdout, 'separate remote refs must produce distinct plans')
+
+local remoteStage = invoke({ 'package', '--mode', 'local', '--repo', Url, '--ref', 'main',
+  '--build-dir', build, '--deps-prefix', deps, '--deps-output', depsOutput, '--output-dir', output,
+  '--stage-only' }, checkoutCwd, gitEnv)
+check(remoteStage.success, 'remote OpenMW commit must package with provenance: ' .. (remoteStage.stderr or ''))
+local remotePackage = build .. '/package-staging/openmw-0.49.0-g' .. mainRev:sub(1, 12) .. '-Linux-64Bit'
+check(fs.isFile(remotePackage .. '/FORGE_BUILD_SOURCE.txt'), 'managed source must embed revision provenance')
+check(util.file(remotePackage .. '/FORGE_BUILD_SOURCE.txt'):find(mainRev, 1, true) ~= nil,
+  'package provenance must contain the resolved full SHA')
+
+util.write(checkoutPath .. '/CMakeLists.txt', 'local uncommitted edits')
+local dirty = invoke({ 'build', '--mode', 'local', '--repo', Url, '--ref', 'feature/fork', '--no-prepare' }, checkoutCwd, gitEnv)
+check(not dirty.success, 'managed checkout must refuse to discard local changes')
+check(util.file(checkoutPath .. '/CMakeLists.txt') == 'local uncommitted edits',
+  'source checkout must retain locally modified files after failed switch')
+
+-- Unowned staging and smoke scratch trees are never implicitly replaced.
+local foreignBuild = scratch .. '/foreign-build'
+util.mkdir(foreignBuild .. '/resources')
+util.mkdir(foreignBuild .. '/package-staging')
+util.write(foreignBuild .. '/openmw', 'test')
+util.write(foreignBuild .. '/resources/one.txt', 'test')
+util.write(foreignBuild .. '/package-staging/KEEP.txt', 'sacred')
+local foreignPackage = invoke({ 'package', '--mode', 'local', '--source', source,
+  '--build-dir', foreignBuild, '--deps-prefix', deps, '--deps-output', depsOutput,
+  '--output-dir', output, '--stage-only' }, empty)
+check(not foreignPackage.success, 'packaging must refuse unowned staging trees')
+check(fs.isFile(foreignBuild .. '/package-staging/KEEP.txt'), 'staging refusal must preserve the unowned directory')
+
+local foreignCwd = scratch .. '/foreign-cwd'
+util.mkdir(foreignCwd .. '/work/forge-smoke')
+util.write(foreignCwd .. '/work/forge-smoke/KEEP.txt', 'sacred')
+local foreignSmoke = invoke({ 'smoke', '--archive', valid }, foreignCwd)
+check(not foreignSmoke.success, 'smoke must not overwrite an unowned scratch directory')
+check(fs.isFile(foreignCwd .. '/work/forge-smoke/KEEP.txt'), 'smoke refusal must preserve unrelated files')
 
 print(`PASS Jess-native compiled integration: {cases} assertions`)
