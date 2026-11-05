@@ -15,6 +15,7 @@ local Pages = {
   { file = 'AUDIT.md', title = 'Original repositories audit', weight = 60 },
   { file = 'PERFORMANCE.md', title = 'Performance and cache design', weight = 70 },
   { file = 'TROUBLESHOOTING.md', title = 'Troubleshooting', weight = 80 },
+  { file = 'HARDENING-2026-11-05.md', title = 'Adversarial hardening', weight = 90 },
 }
 
 local function stem(name: string): string

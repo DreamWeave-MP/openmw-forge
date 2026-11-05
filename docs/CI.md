@@ -61,8 +61,9 @@ render this documentation site locally.
 ## Jess installation
 
 `.github/actions/setup-jess` downloads the public Jess Linux x64 release.
-Set the repository variable `JESS_RELEASE_TAG` to the tested release tag to
-avoid automatically picking up a newer Jess version. The executable built by
+Set the repository variable `JESS_RELEASE_TAG` to an explicitly tested release
+tag **before running CI**. An empty tag now fails instead of downloading a mutable
+`latest` release. Do not assume an unverified newer Jess tag is compatible. The executable built by
 CI embeds Jess and can be downloaded from the workflow artifacts.
 
 ## Hosted image and SDK cache lifecycle
@@ -89,7 +90,10 @@ qualified SDK export, `ccache`, and vcpkg binary packages (only if the SDK
 misses). It separately restores Qt 6.6.3. The Jess worker verifies a restored
 SDK's input fingerprint, archive SHA-256 and archive members before skipping
 vcpkg. The original source/ref, OpenMW GoogleTests, final tarball, ABI, and
-launcher/distro smoke gates **always** execute.
+launcher/distro smoke gates **always** execute. The extracted SDK also gets a
+full file/symlink fingerprint before reuse. Docker workers map the calling
+runner UID/GID into the container; cache cleanup must be tested against real
+container-created files before declaring this production-qualified.
 
 To preserve disk on the standard hosted runner, the dependency stage saves
 its qualified SDK (and any rebuilt binary packages) **before** the OpenMW
@@ -109,3 +113,6 @@ succeed correctly on a miss. See [performance](PERFORMANCE.md),
 GitHub schedules run from the default branch, may be delayed or dropped, and
 cannot guarantee an exact four-hour publication interval. The concurrency
 group prevents overlapping release publishers.
+
+For the latest adversarial fixes and remaining qualification gaps see
+[hardening notes](HARDENING-2026-11-05.md).

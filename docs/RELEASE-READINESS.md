@@ -55,3 +55,13 @@ lack immutable content pins, and a release is not fully hermetic. Source
 checkout collisions are checked against the stored remote identity. Do not
 claim production ABI or distro compatibility based solely on the supplied
 synthetic fixtures.
+
+## Adversarial review follow-up
+
+See [2026-11-05 hardening](HARDENING-2026-11-05.md) for the internal worker
+checks, cross-root locks, extracted SDK fingerprint, Qt validation and Docker
+UID/GID behavior. This does not replace a real hosted cold/warm build, an
+independent transitive runtime/Qt plugin closure scan, or a native SHA-256
+manifest-driven Qt acquisition implementation. Rolling releases remain
+non-atomic at the GitHub API level: consume only checksum-verified artifact
+sets.

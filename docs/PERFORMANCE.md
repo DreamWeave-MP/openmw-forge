@@ -19,7 +19,7 @@ OpenMW compilation, and release verification. The fundamental optimization is
 | Qt 6.6.3 | Installation is reused if present | Version-keyed Actions cache, restored into the mounted Qt prefix |
 | C/C++ object compilation | Ninja and mounted ccache | 1 GiB compressed ccache restored across hosted runs, per-day snapshots |
 | CMake buildtree | Reused for an unchanged local build root | Fresh per hosted run (too large to cache blindly without benchmarking) |
-| Dependency extraction | Content hash avoids re-extraction | Archive is extracted once into the fresh runner, then its root is **renamed**, not copied, into position |
+| Dependency extraction | Full extracted-tree file/symlink hash avoids untrusted reuse; verified unchanged inputs skip decompression | Archive is extracted once into the fresh runner, then its root is **renamed**, not copied, into position |
 | Packaging + distro smoke | Always verified for releases | Always rerun, even if the source SHA is unchanged |
 
 ## Two distinct CI artifacts
@@ -107,3 +107,12 @@ store if the qualified SDK outgrows repository cache limits.
 
 See [CI](CI.md), [release configuration](RELEASE.md), and
 [release readiness](RELEASE-READINESS.md).
+
+## Extracted SDK integrity versus speed
+
+On repeated runs, Forge hashes the extracted SDK in bounded SHA-256 batches
+(including symlink targets and directory structure). This is an intentional
+correctness cost to prevent a source archive hash from hiding a corrupt
+installed file. Measure this cost on hosted runners: if hashing approaches
+extraction time, use an immutable verified unpacked artifact rather than
+weakening the release gate.

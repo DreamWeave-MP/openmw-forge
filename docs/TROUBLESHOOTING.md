@@ -56,7 +56,8 @@ build flags can invalidate cached objects.
 
 ## A cached Qt installation is rejected
 
-Forge requires an actual Qt 6 Core shared library and the XCB platform plugin,
+Forge checks OpenMW-required Qt 6 ELF libraries, CMake targets (including
+LinguistTools), and the XCB platform plugin,
 not just an existing `QT/<version>/gcc_64` directory. A Forge-managed Qt cache
 also carries a versioned installer identity, so changing the Qt or pinned AQT
 version invalidates it. An incomplete **unowned** Qt directory is never
@@ -69,7 +70,8 @@ removed because it could not produce the distribution promised by that flag.
 
 ## Another build or SDK verification is already in use
 
-Forge takes kernel-owned advisory locks around managed source checkouts, build
+Forge takes kernel-owned advisory locks from canonical resource paths under
+`$HOME/.cache/openmw-forge/locks` around managed source checkouts, build
 and dependency directories, final output directories, SDK export/verification,
 and shared smoke-test scratch paths. It fails rather than running two writers
 through the same mutable checkout or packaging workspace. Wait until the other
@@ -110,3 +112,12 @@ From the Forge source root run `jess run --trusted --package . tools/docs.jsl`
 then `zola --root site build --output-dir ../public`. Edit source Markdown in
 `docs/`, not `site/content/manual`. Check Zola version `0.23.6`; the site
 uses Zola (as StroggForge does), **not** the old Jekyll Pages builder.
+
+## Docker created root-owned build/cache paths
+
+New Docker worker invocations supply `--user <host UID>:<host GID>` and
+`HOME=/tmp`; Podman uses `--userns=keep-id`. These are recorded in the dry-run
+plan (the host identity placeholder is resolved at execution). If an existing
+workspace has **legacy** root-owned files, move/repair it explicitly rather
+than using an uncontained recursive `sudo rm -rf`. A proper hosted runner
+should test the actual permissions before its vcpkg cleanup stage.

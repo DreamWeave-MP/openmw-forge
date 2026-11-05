@@ -76,10 +76,13 @@ if not sdkOptions then error(sdkError or 'SDK extraction fixture parse failed') 
 nativeOpenmw.extractDeps(sdkOptions)
 check(util.file(sdkExtract .. '/openmw-deps/installed/x64-linux-dynamic/lib/libfixture.so') == 'v1',
   'tar.xz dependency extraction must stage a full vcpkg tree')
-util.write(sdkExtract .. '/openmw-deps/REUSE-SENTINEL', 'preserved')
 nativeOpenmw.extractDeps(sdkOptions)
-check(fs.isFile(sdkExtract .. '/openmw-deps/REUSE-SENTINEL'),
-  'same archive hash must reuse the prepared SDK without another extraction')
+check(util.file(sdkExtract .. '/openmw-deps/installed/x64-linux-dynamic/lib/libfixture.so') == 'v1',
+  'unchanged extracted SDK must remain valid')
+util.write(sdkExtract .. '/openmw-deps/installed/x64-linux-dynamic/lib/libfixture.so', 'CORRUPTED')
+nativeOpenmw.extractDeps(sdkOptions)
+check(util.file(sdkExtract .. '/openmw-deps/installed/x64-linux-dynamic/lib/libfixture.so') == 'v1',
+  'corrupted extracted SDK library must be restored from the verified archive')
 check(not fs.exists(sdkExtract .. '/extracting'), 'SDK extraction must discard the temporary tree')
 check(not fs.exists(sdkExtract .. '/openmw-deps-next'), 'SDK publication must not leave a staging copy')
 
@@ -169,6 +172,10 @@ if not destination then error('missing mock command log') end
 local recorded, failure = fs.writeFile(destination, table.concat(arguments, '\t') .. '\n', { append = true })
 if not recorded then error(failure or 'mock log write failed') end
 if process.env('FORGE_MOCK_FAIL') == arguments[1] then error('intentional mock container failure') end
+if process.env('FORGE_MOCK_FAIL_MANIFEST') == '1' and arguments[2] == 'upload'
+  and arguments[4] and arguments[4]:find('SHA256SUMS', 1, true) then
+  error('intentional checksum manifest upload failure')
+end
 
 if arguments[1] == 'release' and arguments[2] == 'view' then
   if process.env('FORGE_MOCK_GH_MISSING') == '1' and not arguments[4] then
@@ -218,6 +225,21 @@ local mockEnv = {
   PATH = mockedBin .. ':' .. (fs.parent(jessBin) or '') .. ':' .. (process.env('PATH') or ''),
   FORGE_MOCK_LOG = mockLog,
 }
+-- A fake Docker backend verifies that host identity is substituted by the
+-- actual executable at runtime, while the pure planner retains a placeholder.
+util.copy(mockedBin .. '/podman', mockedBin .. '/docker')
+util.write(mockLog, '')
+local dockerRun = invoke({ 'deps', '--engine', 'docker' }, empty, mockEnv)
+check(dockerRun.success, 'Docker build worker plan must execute: ' .. (dockerRun.stderr or ''))
+local hostUid = util.checked('id', { '-u' }):match('^(%d+)')
+local hostGid = util.checked('id', { '-g' }):match('^(%d+)')
+local dockerLog = util.file(mockLog)
+check(hostUid ~= nil and hostGid ~= nil
+  and dockerLog:find('\t--user\t' .. hostUid .. ':' .. hostGid .. '\t', 1, true) ~= nil,
+  'Docker worker must use the invoking host account for writable volumes')
+check(dockerLog:find('HOME=/tmp', 1, true) ~= nil and dockerLog:find('PIP_USER=1', 1, true) ~= nil,
+  'unprivileged container workers must have writable HOME and user-local installers')
+
 local launched = invoke({ 'deps' }, empty, mockEnv)
 check(launched.success, 'compiled executable must run two mock container commands: ' .. (launched.stderr or ''))
 check(fs.isFile(empty .. '/work/forge-assets/Dockerfile'), 'compiled executable must materialize the image Dockerfile')
@@ -315,9 +337,11 @@ check(not fs.lstat(unsafeCheckout .. '/work'),
   'source overlap must be rejected without creating even a lock directory inside the checkout')
 
 -- Two invocations targeting one CMake tree must not race a cleanup/package.
-local lockDirectory = empty .. '/work/locks'
+local earlyHome = process.env('HOME')
+if not earlyHome then error('HOME required for lock test') end
+local lockDirectory = earlyHome .. '/.cache/openmw-forge/locks'
 util.mkdir(lockDirectory)
-local sharedBuildLock, lockProblem = fs.lock(lockDirectory .. '/build-'
+local sharedBuildLock, lockProblem = fs.lock(lockDirectory .. '/resource-'
   .. sourceModule.key(empty .. '/work/build') .. '.lock')
 if not sharedBuildLock then error(lockProblem or 'cannot lock build fixture') end
 
@@ -331,20 +355,36 @@ sharedBuildLock:unlock()
 util.write(build .. '/openmw', 'mock compiled OpenMW executable\n')
 util.write(build .. '/resources/one.txt', 'resource\n')
 util.write(deps .. '/openmw-deps/installed/x64-linux-dynamic/lib/libTest.so.1', 'test library')
-util.write(deps .. '/QT/6.6.3/gcc_64/lib/libQt6Core.so.6.6.3', 'Qt fixture')
-util.write(deps .. '/QT/6.6.3/gcc_64/plugins/platforms/libqxcb.so', 'plugin')
+local qtBase = deps .. '/QT/6.6.3/gcc_64'
+local Modules = { 'Core', 'Gui', 'Widgets', 'Network', 'OpenGL', 'OpenGLWidgets', 'Svg', 'Qml', 'Quick' }
+for _, module in Modules do
+  util.mkdir(qtBase .. '/lib/cmake/Qt6' .. module)
+  util.copy('/bin/true', qtBase .. '/lib/libQt6' .. module .. '.so.6.6.3')
+  util.write(qtBase .. '/lib/cmake/Qt6' .. module .. '/Qt6' .. module .. 'Config.cmake', '# Qt fixture')
+end
+util.mkdir(qtBase .. '/lib/cmake/Qt6LinguistTools')
+util.write(qtBase .. '/lib/cmake/Qt6LinguistTools/Qt6LinguistToolsConfig.cmake', '# Qt fixture')
+util.mkdir(qtBase .. '/lib/cmake/Qt6')
+util.write(qtBase .. '/lib/cmake/Qt6/Qt6Config.cmake', '# Qt fixture')
+util.copy('/bin/true', qtBase .. '/plugins/platforms/libqxcb.so')
 local qtOptions, qtReason = argsModule.parse({ 'package', '--deps-prefix', deps }, empty)
 if not qtOptions then error(qtReason or 'could not create Qt fixture options') end
 check(nativeQt.qualified(qtOptions), 'complete externally supplied Qt installation must be usable')
-local coreLibrary = deps .. '/QT/6.6.3/gcc_64/lib/libQt6Core.so.6.6.3'
+local svgLibrary = qtBase .. '/lib/libQt6Svg.so.6.6.3'
+util.remove(svgLibrary)
+check(not nativeQt.qualified(qtOptions), 'Qt cache must reject missing non-Core modules')
+util.write(svgLibrary, 'CORRUPTED')
+check(not nativeQt.qualified(qtOptions), 'Qt cache must reject a corrupt native ELF library')
+util.copy('/bin/true', svgLibrary)
+local coreLibrary = qtBase .. '/lib/libQt6Core.so.6.6.3'
 util.remove(coreLibrary)
 check(not nativeQt.qualified(qtOptions), 'Qt lib directory without Core library must not qualify')
-util.write(coreLibrary, 'Qt fixture')
-local qtMarker = deps .. '/QT/6.6.3/gcc_64/.openmw-forge-managed'
+util.copy('/bin/true', coreLibrary)
+local qtMarker = qtBase .. '/.openmw-forge-managed'
 util.write(qtMarker, 'openmw-forge-managed-v1\n')
-util.write(deps .. '/QT/6.6.3/gcc_64/.forge-qt-id', 'qt=wrong\n')
+util.write(qtBase .. '/.forge-qt-id', 'qt=wrong\n')
 check(not nativeQt.qualified(qtOptions), 'managed Qt cache must reject stale installer/version identity')
-util.write(deps .. '/QT/6.6.3/gcc_64/.forge-qt-id', nativeQt.identity(qtOptions))
+util.write(qtBase .. '/.forge-qt-id', nativeQt.identity(qtOptions))
 check(nativeQt.qualified(qtOptions), 'managed Qt cache must accept a complete matching installation')
 
 local linked, problem = fs.symlink('libTest.so.1', deps .. '/openmw-deps/installed/x64-linux-dynamic/lib/libTest.so')
@@ -470,6 +510,15 @@ check((noMain.stderr or ''):find('required OpenMW executable', 1, true) ~= nil,
   'smoke must identify missing mandatory executable')
 util.copy(swapped, originalMain)
 
+-- Relative POSIX symlink launchers must resolve relative to the link, not CWD.
+local launcherBin = build .. '/test-bin'
+util.mkdir(launcherBin)
+local linkedLauncher, linkedError = fs.symlink('../package-staging/openmw-0.49.0-Linux-64Bit/openmw', launcherBin .. '/openmw')
+if not linkedLauncher then error(linkedError or 'cannot create launcher symlink fixture') end
+local linkedRun, linkedRunError = process.run(launcherBin .. '/openmw', { '--help' }, { cwd = empty, stdout = 'capture', stderr = 'capture' })
+if not linkedRun then error(linkedRunError or 'failed to invoke linked launcher') end
+check(linkedRun.success, 'packaged OpenMW launcher must work through a relative symlink from another CWD')
+
 -- A valid raw ELF with a broken user-facing POSIX launcher must fail smoke.
 util.write(stage .. '/openmw', '#!/bin/sh\nexit 37\n')
 util.stream('chmod', { '+x', stage .. '/openmw' })
@@ -533,17 +582,35 @@ local mainPlan = invoke({ 'build', '--repo', Url, '--ref', 'main', '--dry-run' }
 check(featurePlan.success and mainPlan.success, 'both refs must plan without side effects')
 check(featurePlan.stdout ~= mainPlan.stdout, 'separate remote refs must produce distinct plans')
 
-local sourceLocks = checkoutCwd .. '/work/locks'
+local currentSource, canonicalError = fs.canonicalize(checkoutPath)
+if not currentSource then error(canonicalError or 'cannot canonicalize fixture source') end
+local home = process.env('HOME')
+if not home then error('HOME required for locks') end
+local sourceLocks = home .. '/.cache/openmw-forge/locks'
 util.mkdir(sourceLocks)
-local guardedSource, sourceLockError = fs.lock(sourceLocks .. '/source-' .. sourceModule.key(Url) .. '.lock')
+local guardedSource, sourceLockError = fs.lock(sourceLocks .. '/resource-' .. sourceModule.key(currentSource) .. '.lock')
 if not guardedSource then error(sourceLockError or 'cannot lock source fixture') end
 local conflicting = invoke({ 'build', '--repo', Url, '--ref', 'feature/fork', '--no-prepare' }, checkoutCwd, gitEnv)
-check(not conflicting.success and (conflicting.stderr or ''):find('source already in use', 1, true) ~= nil,
+check(not conflicting.success and (conflicting.stderr or ''):find('resource already in use', 1, true) ~= nil,
   'source checkout lock must cover the entire managed fork build, not just Git fetch')
 check(util.file(checkoutPath .. '/.git/forge-revision') == mainRev .. '\n',
   'contested fork build must leave the selected source revision unchanged')
 guardedSource:unlock()
 
+
+-- A different caller root cannot bypass a lock for the same absolute build tree.
+local canonicalBuild, buildCanonFailure = fs.canonicalize(build)
+if not canonicalBuild then error(buildCanonFailure or 'cannot canonicalize shared build') end
+local sharedBuildGuard, sharedBuildError = fs.lock(sourceLocks .. '/resource-' .. sourceModule.key(canonicalBuild) .. '.lock')
+if not sharedBuildGuard then error(sharedBuildError or 'cannot guard shared build') end
+local foreignRoot = scratch .. '/different-caller'
+util.mkdir(foreignRoot)
+local crossRootBuild = invoke({ 'package', '--mode', 'local', '--source', source,
+  '--build-dir', build, '--deps-prefix', deps, '--deps-output', depsOutput, '--output-dir', output,
+  '--stage-only' }, foreignRoot)
+check(not crossRootBuild.success and (crossRootBuild.stderr or ''):find('resource already in use', 1, true) ~= nil,
+  'different caller roots must contend on the same canonical build path')
+sharedBuildGuard:unlock()
 
 local remoteStage = invoke({ 'package', '--mode', 'local', '--repo', Url, '--ref', 'main',
   '--build-dir', build, '--deps-prefix', deps, '--deps-output', depsOutput, '--output-dir', output,
@@ -572,6 +639,19 @@ local foreignPackage = invoke({ 'package', '--mode', 'local', '--source', source
   '--output-dir', output, '--stage-only' }, empty)
 check(not foreignPackage.success, 'packaging must refuse unowned staging trees')
 check(fs.isFile(foreignBuild .. '/package-staging/KEEP.txt'), 'staging refusal must preserve the unowned directory')
+
+-- An internal worker is not entitled to write through a symlinked source
+-- alias merely because its lexical paths look disjoint.
+local srcAlias = scratch .. '/alias-to-source'
+local madeAlias, aliasFailure = fs.symlink(source, srcAlias)
+if not madeAlias then error(aliasFailure or 'cannot create source alias') end
+local hiddenBuild = source .. '/hidden-in-source'
+local rejectedInternal = invoke({ '__package', '--source', source,
+  '--build-dir', srcAlias .. '/hidden-in-source', '--deps-prefix', deps,
+  '--deps-output', depsOutput, '--output-dir', output, '--stage-only' }, empty)
+check(not rejectedInternal.success and (rejectedInternal.stderr or ''):find('overlaps OpenMW source', 1, true) ~= nil,
+  'internal package must enforce canonical source protection before staging')
+check(not fs.exists(hiddenBuild), 'internal worker rejection must not create source build files')
 
 local foreignCwd = scratch .. '/foreign-cwd'
 util.mkdir(foreignCwd .. '/work/forge-smoke')
@@ -640,6 +720,14 @@ check(updateLog:find('release\tdelete-asset\tdas-uberbranch\topenmw-0.50.0-Linux
   'rolling release must prune matching old debug archives')
 check(updateLog:find('KEEP.bin', 1, true) == nil,
   'rolling release must preserve unrelated release assets')
+
+local failedManifestEnv = table.clone(publisherEnv)
+failedManifestEnv.FORGE_MOCK_FAIL_MANIFEST = '1'
+util.write(mockLog, '')
+local failedManifest = publishFixture(failedManifestEnv)
+check(not failedManifest.success, 'checksum completion marker upload failure must fail publication')
+check(util.file(mockLog):find('release\tdelete-asset', 1, true) == nil,
+  'publication must never prune old assets before checksum completion marker succeeds')
 
 local initialEnv = table.clone(publisherEnv)
 initialEnv.FORGE_MOCK_GH_MISSING = '1'
