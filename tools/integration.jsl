@@ -10,6 +10,7 @@ local nativeQt = require '@forge/native-qt'
 local releaseArtifacts = require '@forge/native-release-artifacts'
 local sdkCache = require '@forge/native-sdk-cache'
 local config = require '@forge/config'
+local assets = require '@forge/assets'
 local vcpkgPython = require '@forge/native-vcpkg-python'
 
 local binary = ...
@@ -24,6 +25,35 @@ local cases = 0
 local function check(condition: boolean, message: string)
   if not condition then error('integration assertion: ' .. message) end
   cases += 1
+end
+
+-- Reproduce the glibc 9.5 false-positive and prove the frozen 9.7 symbol
+-- gate only matches dangerous *defined* exports, not mere version nodes.
+local dockerfile = assets['builder/Dockerfile']
+local nmPattern = dockerfile:match("grep %-E '([^']+)'" )
+check(nmPattern ~= nil, 'builder must contain dynamic-export ABI guard')
+if not nmPattern then error('missing nm export guard') end
+
+local function unsafeExport(text: string): boolean
+  local result, problem = process.run('grep', { '-E', nmPattern :: string }, {
+    stdin = text, stdout = 'capture', stderr = 'capture',
+  })
+
+  if not result or (result.code ~= 0 and result.code ~= 1) then
+    error('invalid glibc preflight regex: ' .. (problem or (if result then result.stderr or '' else '')))
+  end
+  return result.success
+end
+check(not unsafeExport('  Name: GLIBC_2.35 Flags: none Version: 40\n'),
+  'legacy version nodes must not fail the 9.5 sysroot preflight')
+check(not unsafeExport('00000000 T __memcmpeq@@GLIBC_2.34\n'),
+  'compatible GLIBC_2.34 exports must pass')
+check(not unsafeExport('00000000 T __memcmpeq@@GLIBC_2.36\n'),
+  'non-target symbol versions do not trigger the narrow export preflight')
+for _, symbol in { '__epoll_pwait2_time64', '__memcmpeq', '_dl_find_object', 'epoll_pwait2',
+  'posix_spawn_file_actions_addtcsetpgrp_np', 'posix_spawnattr_tcgetpgrp_np', 'posix_spawnattr_tcsetpgrp_np' } do
+  check(unsafeExport('0000000000001000 T ' .. symbol .. '@@GLIBC_2.35\n'),
+    '9.7 backport must be detected: ' .. symbol)
 end
 
 -- Failed upstream Python-port diagnostics must survive the disposable

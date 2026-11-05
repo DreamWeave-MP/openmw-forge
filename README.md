@@ -103,8 +103,10 @@ Ninja; already configured trees retain their existing generator. **No
 cold-versus-warm production benchmark has yet been performed.**
 
 The builder is currently pinned to AlmaLinux `9.5-20250519` and 9.5 vault
-repositories to avoid GLIBC_2.35 backports; GCC Toolset 13 is retained. The
-image runs a glibc ABI preflight before heavy provisioning and after DNF.
+repositories to avoid the 9.7 GLIBC_2.35 function backports; GCC Toolset 13 is retained. The
+image checks the specific dangerous versioned exports before heavy provisioning
+and after DNF. The complete SDK and release are separately audited for every
+imported ABI requirement above the GLIBC_2.34 ceiling.
 SDK fingerprints and vcpkg binary caches are segregated by this baseline;
 older 9.6 binaries are not reused.
 

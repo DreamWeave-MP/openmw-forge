@@ -244,13 +244,18 @@ first mismatch was `debug/lib/libsystemd.so.0.40.0`.
 
 Forge.s toolchain builder now starts from the dated official 9.5 base image
 (`9.5-20250519`), uses frozen AlmaLinux 9.5 BaseOS/AppStream/CRB/Extras
-repositories, and fails its image build if glibc exposes `GLIBC_2.35`.
-It installs only binutils first so this check runs **before** the expensive
-C++ toolchain packages, then repeats the check after DNF finishes. The failing
-step logs both glibc RPM versions and the exact offending readelf entries.
-The builder rule intentionally prohibits even *exported* GLIBC_2.35 symbols
-to keep the linkable sysroot old; the final SDK/release check only rejects
-*imported* requirements above the EL9 compatibility ceilings. This is a build
+repositories, and fails its image build if glibc exports the specific seven
+RHEL 9.7 function backports at `GLIBC_2.35`. It installs only binutils first
+so this check runs **before** the expensive C++ packages, then repeats after
+DNF finishes. The failed November 5 AlmaLinux 9.5 image build exposed a bug
+in Forge.s first preflight: it scanned `readelf --version-info` for any
+`GLIBC_2.35` *version node*. Earlier EL9 glibc packages already carry such
+nodes, without necessarily exporting the later ABI-breaking functions. The
+corrected preflight uses `nm -D --defined-only` to check versioned **exports**
+by name; failure logs the specific symbols and glibc RPM versions. The final
+SDK/release scans remain the authoritative strict gate and reject **every**
+imported version above the configured ceilings, including unknown functions.
+This is a build
 compatibility baseline; the final release smoke still tests current targets.
 The frozen historical build image is not a substitute for an up-to-date
 runtime image or receiving current security fixes.

@@ -126,10 +126,13 @@ symbols under a glibc 2.34 version number, creating genuine requirements
 that are not available on earlier EL9 releases. Image immutability and the
 SDK's image-digest cache key prevent silent baseline changes; a change to
 this baseline deliberately costs one cold dependency rebuild. The sysroot
-preflight installs only binutils before checking the libc RPM and GLIBC_2.35
-version definitions; the same conservative sysroot check repeats after bulk DNF.
-The packaged-ELF scanner is different: it rejects only **imported** symbol
-requirements above the GLIBC_2.34, GLIBCXX_3.4.29 and CXXABI_1.3.13 ceilings.
+preflight installs only binutils before logging the libc RPM and checking the
+versioned exports of the seven RHEL 9.7 glibc backport functions; it repeats
+after bulk DNF. Legacy EL9 glibc libraries can already have a `GLIBC_2.35`
+version **definition**, so checking for the bare string would fail incorrectly.
+The packaged-ELF scanner is the authoritative portability gate: it rejects
+**all imported** requirements above the GLIBC_2.34, GLIBCXX_3.4.29 and
+CXXABI_1.3.13 ceilings, whether or not the name is on the preflight list.
 
 The `readelf --version-info` audit now checks imported GNU version **needs**,
 not exported version definitions. It runs on the installed vcpkg tree *before*
