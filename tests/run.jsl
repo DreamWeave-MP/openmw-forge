@@ -7,6 +7,7 @@ local nativeOpenmw = require '@forge/native-openmw'
 local nativeArchive = require '@forge/native-archive'
 local nativeAbi = require '@forge/native-abi'
 local sdkCache = require '@forge/native-sdk-cache'
+local nativeDeps = require '@forge/native-deps'
 local assets = require '@forge/assets'
 local source = require '@forge/source'
 local uber = require '@forge/uberbranch'
@@ -59,6 +60,13 @@ local function shellFree(result: planning.Plan)
 end
 
 suite.describe('profile and CLI', function()
+  suite.it('keeps manifest-mode vcpkg installed state in the writable checkout', function()
+    local checkout = '/forge/work/vcpkg'
+    test.expect(nativeDeps.installedRoot(checkout)).toBe(checkout .. '/installed')
+    test.expect(nativeDeps.installedRootFlag(checkout)).toBe('--x-install-root=' .. checkout .. '/installed')
+    test.expect(nativeDeps.installedRoot(checkout) == '/forge/work/forge-assets/deps/vcpkg_installed').toBeFalsy()
+  end)
+
   suite.it('pins the AlmaLinux 9 ABI contract', function()
     test.expect(profile.image).toBe('almalinux:9')
     test.expect(profile.profile).toBe('alma9')

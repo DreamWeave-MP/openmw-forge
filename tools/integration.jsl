@@ -122,6 +122,10 @@ local sdkVerifyOptions, sdkVerifyError = argsModule.parse({ 'verify', '--mode', 
 if not sdkVerifyOptions then error(sdkVerifyError or 'cannot parse SDK verification fixture') end
 
 local depsModule = require '@forge/native-deps'
+check(depsModule.installedRoot('/forge/work/vcpkg') == '/forge/work/vcpkg/installed',
+  'vcpkg installed state must be placed in the writable, host-mounted checkout')
+check(depsModule.installedRootFlag('/forge/work/vcpkg') == '--x-install-root=/forge/work/vcpkg/installed',
+  'manifest-mode vcpkg install and export must use the same explicit writable root')
 -- The deliberately contested SDK verification is expected to throw.
 local okToVerify = pcall(depsModule.verify, sdkVerifyOptions)
 check(not okToVerify, 'dependency verification must respect a concurrent SDK export lock')

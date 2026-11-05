@@ -146,3 +146,21 @@ plan (the host identity placeholder is resolved at execution). If an existing
 workspace has **legacy** root-owned files, move/repair it explicitly rather
 than using an uncontained recursive `sudo rm -rf`. A proper hosted runner
 should test the actual permissions before its vcpkg cleanup stage.
+
+## vcpkg cannot detect the compiler during SDK preparation
+
+Check the **first** `vcpkg install` failure, not the later OpenMW build step.
+Forge's dependency manifest and overlays are copied into the AlmaLinux 9
+image under `/forge/work/forge-assets/deps/`. Container workers run as the
+unprivileged GitHub runner user, so that image-owned directory is **read-only**.
+Without an explicit installation root, vcpkg manifest mode attempts to write
+`vcpkg_installed` next to the embedded manifest and may fail during the CMake
+compiler-identification probe.
+
+Forge sets `--x-install-root=/forge/work/vcpkg/installed` for **both** vcpkg
+install and export, keeping package metadata under the writable, host-mounted
+checkout. A failure also prints the compiler probe's CMake error/output logs
+before Docker removes the worker. Check those logs for a true compiler, linker,
+permission, or toolchain mismatch; an outer `unable to detect compiler` error
+alone is insufficient to identify the cause. This change does not qualify the
+full vcpkg/OpenMW production pipeline without a real hosted build.
