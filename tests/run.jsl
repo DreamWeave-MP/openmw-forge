@@ -8,6 +8,8 @@ local nativeArchive = require '@forge/native-archive'
 local nativeDeps = require '@forge/native-deps'
 local assets = require '@forge/assets'
 local source = require '@forge/source'
+local uber = require '@forge/uberbranch'
+local uberConfig = require '@forge/uberbranch-config'
 local suite = test.new()
 
 local Root = '/tmp/forge-root'
@@ -63,8 +65,12 @@ suite.describe('profile and CLI', function()
   end)
 
   suite.it('has built-in help', function()
+    test.expect(parsed({}).command).toBe('help')
     test.expect(parsed({ 'help' }).command).toBe('help')
     test.expect(parsed({ '--help' }).command).toBe('help')
+    test.expect(parsed({ 'build', '--help' }).helpFor).toBe('build')
+    test.expect(parsed({ 'help', 'smoke' }).helpFor).toBe('smoke')
+    test.expect(parsed({ '--version' }).command).toBe('version')
   end)
 
   suite.it('defaults to the container profile', function()
@@ -393,6 +399,46 @@ suite.describe('embedded assets, versions, and archive names', function()
     for _, value in { 'openmw-0.49/', 'openmw-0.49/lib/libfoo.so.1', 'data/icons/foo.png' } do
       test.expect(nativeArchive.isSafeName(value)).toBeTruthy()
     end
+  end)
+end)
+
+suite.describe('scheduled das-uberbranch release contract', function()
+  suite.it('tracks the official master branch in one Jess configuration', function()
+    local valid, reason = uber.validate(uberConfig)
+    test.expect(valid).toBeTruthy()
+    test.expect(reason).toBeNil()
+    test.expect(uberConfig.repository).toBe('https://gitlab.com/OpenMW/openmw.git')
+    test.expect(uberConfig.ref).toBe('master')
+    test.expect(uberConfig.releaseTag).toBe('das-uberbranch')
+  end)
+
+  suite.it('only accepts safe repository references and the expected release tag', function()
+    for _, record in {
+      { repository = 'http://not-https.invalid/openmw', ref = 'master', releaseTag = 'das-uberbranch', jobs = 8 },
+      { repository = uberConfig.repository, ref = '../escape', releaseTag = 'das-uberbranch', jobs = 8 },
+      { repository = uberConfig.repository, ref = 'master', releaseTag = 'stable', jobs = 8 },
+      { repository = uberConfig.repository, ref = 'master', releaseTag = 'das-uberbranch', jobs = 0 },
+    } do
+      local valid = uber.validate(record)
+      test.expect(valid).toBeFalsy()
+    end
+  end)
+
+  suite.it('uses a separate Docker pipeline with GoogleTests and selected source', function()
+    local command = uber.buildArgs(uberConfig, '/tmp/forge-uber-fixture')
+    test.expect(has(command, 'pipeline')).toBeTruthy()
+    test.expect(has(command, '--repo')).toBeTruthy()
+    test.expect(has(command, uberConfig.repository)).toBeTruthy()
+    test.expect(has(command, '--ref')).toBeTruthy()
+    test.expect(has(command, uberConfig.ref)).toBeTruthy()
+    test.expect(has(command, '--run-tests')).toBeTruthy()
+    test.expect(has(command, '/tmp/forge-uber-fixture')).toBeTruthy()
+  end)
+
+  suite.it('never mistakes a debug tarball for the main release', function()
+    test.expect(uber.isMainTarball('openmw-0.53.0-gabc123def456-Linux-64Bit.tar.gz')).toBeTruthy()
+    test.expect(uber.isMainTarball('openmw-0.53.0-gabc123def456-Linux-64Bit-debug.tar.gz')).toBeFalsy()
+    test.expect(uber.isMainTarball('something-else.tar.gz')).toBeFalsy()
   end)
 end)
 
