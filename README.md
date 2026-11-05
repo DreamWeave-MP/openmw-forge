@@ -1,94 +1,77 @@
 # OpenMW Forge
 
-A consolidated **Jess workspace** for Linux OpenMW dependency builds, binaries, and portable tarball packaging. The canonical compatibility target is **AlmaLinux 9**. It replaces the two repositories' top-level Bash command interface with a typed, tested Jess command planner, while retaining the difficult, compatibility-sensitive CMake/vcpkg/Qt and archive leaf scripts until an actual end-to-end build can validate their replacement.
+**A standalone Linux x86-64 executable built with Jess 0.3 / Luau 0.745.** Forge merges the dependency and OpenMW Linux build repositories into one command-line tool. **AlmaLinux 9** is the sole supported build ABI baseline. The executable embeds its Jess runtime, pinned vcpkg manifest, triplets, port overlays, OpenMW packaging templates, and the actual Jess workers. You do **not** need a Jess installation, workspace checkout, or Bash script to use the compiled executable.
 
-This is intentionally a **Linux build tool**, not a port of the original dependency repository's Windows/macOS GitHub Actions workflows. Those jobs and symbol-server uploads are outside the Linux migration. See [`docs/AUDIT.md`](docs/AUDIT.md) for the per-file responsibility map and remaining limitations.
+The OpenMW source checkout, external build tools, a container engine (Podman or Docker by default), and network/compute for the real builds are still needed. Forge is an orchestrator, not a replacement for CMake, vcpkg, Qt, compiler toolchains, or a container runtime.
 
-## What it does
+## Quick start: compiled binary
 
-- One entry point: `forge` (Jess package target) with `doctor`, `deps`, `build`, `pipeline`, `package`, `verify`, and `smoke` commands.
-- One compatibility baseline: AlmaLinux 9, `x64-linux-dynamic`, with `GLIBC_2.34`, `GLIBCXX_3.4.29`, and `CXXABI_1.3.13` ceilings. A failed explicit archive download **does not** silently fall back to the old AlmaLinux 8 artifact.
-- Direct, argument-vector process spawning; no interpolated shell command lines in the Jess orchestration.
-- Container builds isolated under Podman or Docker, or explicit local/distrobox operation.
-- A side-effect-free plan via `--dry-run`, fail-fast subprocess handling, and source/write-root overlap checks including symlink aliases.
-- Optional both-suite GoogleTest execution, debug-symbol sidecars, compatibility auditing, packaged binary smoke tests, and multi-distribution testing.
+```sh
+chmod +x ./openmw-forge-linux-x64
+./openmw-forge-linux-x64 help
 
-## Quick start
+# Dry-run without writing files or requiring the OpenMW checkout.
+./openmw-forge-linux-x64 pipeline --source /absolute/path/to/openmw --dry-run
 
-Requires Jess 0.3.0 / Luau 0.745 matching this workspace, Bash, Git, and Podman or Docker. The production build also downloads CMake/vcpkg/Qt dependencies and needs a substantial amount of disk space and compute. Commands run from the **repository root**.
+# Production dependency + OpenMW pipeline, inside AlmaLinux 9:
+./openmw-forge-linux-x64 pipeline --source /absolute/path/to/openmw --jobs 6 --run-tests
 
-```bash
-# Confirm the tool interface and prerequisites; no downloads.
-jess workspace run --trusted forge -- help
-jess workspace run --trusted forge -- doctor
+# Independent phases:
+./openmw-forge-linux-x64 deps
+./openmw-forge-linux-x64 build --source /absolute/path/to/openmw
 
-# Inspect exactly what would execute without creating files.
-jess workspace run --trusted forge -- pipeline \
-  --source /absolute/path/to/openmw --dry-run
+# Reassemble an already compiled checkout, without rebuilding:
+./openmw-forge-linux-x64 package --source /absolute/path/to/openmw \
+    --build-dir /absolute/path/to/build --deps-prefix /absolute/path/to/deps
 
-# Build pinned vcpkg dependencies in AlmaLinux 9, then compile/package OpenMW.
-jess workspace run --trusted forge -- pipeline \
-  --source /absolute/path/to/openmw --jobs 6 --run-tests
-
-# Or build in two phases, reusing the generated dependency archive.
-jess workspace run --trusted forge -- deps
-jess workspace run --trusted forge -- build \
-  --source /absolute/path/to/openmw --stage-only --no-qt
+# Smoke-test an existing OpenMW tarball, optionally across Linux distros:
+./openmw-forge-linux-x64 smoke --archive /absolute/path/to/openmw.tar.gz \
+    --distros almalinux-9,debian-12,ubuntu-24.04
 ```
 
-The `--no-qt` example is only usable if the selected `--deps-prefix` already contains the required Qt installation; for a fresh workspace omit `--no-qt`.
+Default mode is `--mode container` with `--engine podman`; `--engine docker` is supported. Native `--mode local` runs tools directly on an AlmaLinux 9 host. `distrobox` is **not** supported: the prior Distrobox Bash workflow has been removed rather than emulated. `--no-system-packages` can avoid the automatic DNF bootstrap when running in a preprovisioned environment.
 
-For an existing AlmaLinux 9-compatible `.7z` dependency export:
+You may execute Forge from **any** directory. Relative options resolve against the current directory; defaults create `work/` and `artifacts/` beneath it, not inside the OpenMW source checkout. `--dry-run` plans without creating directories or starting tools. Writable paths must not overlap the source tree or each other, including through existing symlinks.
 
-```bash
-jess workspace run --trusted forge -- build \
-  --source /absolute/path/to/openmw \
-  --deps-archive /absolute/path/to/vcpkg-x64-linux-dynamic.7z \
-  --build-type RelWithDebInfo --portable
-```
+## Commands and switches
 
-A local mode (`--mode local`) runs the legacy leaf scripts directly and **must be run on a correctly provisioned AlmaLinux 9 machine**; running local mode on Bazzite/Fedora does not guarantee the required GLIBC floor. Distrobox mode (`--mode distrobox`) is available for full dependency and OpenMW builds; use container or local for package-only assembly. Container mode builds two images tagged `openmw-forge-deps:alma9` and `openmw-forge-openmw:alma9`, which it retains for caching. No container runtime is removed unless an explicitly selected legacy distrobox script does so.
-
-## Common operations
-
-| Goal | Command and main options |
+| Command | Responsibility |
 |---|---|
-| Build only dependencies | `deps [--deps-output PATH] [--triplet NAME]` |
-| Build + package | `build --source PATH [--deps-archive FILE|HTTPS_URL]` |
-| Build full pipeline | `pipeline --source PATH` |
-| Build and leave staging tree | `build --source PATH --stage-only` |
-| Repackage compiled tree | `package --source PATH [--portable] [--no-smoke]` |
-| Reuse existing extraction | `build --source PATH --no-prepare` |
-| Run CMake/GoogleTest suites | `build --source PATH --run-tests [--gtest-filter FILTER]` |
-| Verify dependency export | `verify [--deps-output PATH]` (host requires 7zip + readelf) |
-| Test packaged tarball | `smoke --archive PATH [--with-qt]` |
-| Test across distroboxes | `smoke --archive PATH --distros almalinux-9,debian-12` |
-| Inspect plan only | Any command + `--dry-run` |
+| `doctor` | Check container engine, or native local tools, without changing the system |
+| `deps` | Build pinned vcpkg overlay ports, export `.7z` and metadata, verify ELF ABI |
+| `build` | Prepare Qt/vcpkg, configure and compile OpenMW, optionally run GoogleTests, package |
+| `pipeline` | Run `deps` then `build` in one invocation, passing the resulting archive |
+| `package` | Stage binaries, Qt/plugins, vcpkg libraries, resources and debug sidecars |
+| `verify` | Check an existing dependency export, metadata and symbol-version limits |
+| `smoke` | Validate an OpenMW `.tar.gz`, then run ELF smoke checks (optionally on a distro matrix) |
+| `help` | Print complete usage and switches |
 
-Other flags include `--mode container|local|distrobox`, `--engine podman|docker`, `--build-dir`, `--deps-prefix`, `--output-dir`, `--jobs`, `--qt-version`, `--triplet`, `--build-type`, `--clean`, `--no-ccache`, `--no-system-packages`, `--cmake-arg` (repeatable), `--no-compat`, and `--no-smoke` (opt-outs for package validation). Options are parsed as values, not shell code. `--run-tests` builds both `openmw-tests` and `components-tests` and runs them before packaging.
+Important options: `--source`, `--deps-archive` (local absolute `.7z`/`.tar.xz` or HTTPS), `--deps-output`, `--build-dir`, `--deps-prefix`, `--output-dir`, `--jobs`, `--qt-version`, `--build-type`, `--triplet`, `--clean`, `--portable`, `--stage-only`, `--no-prepare`, `--no-qt`, `--no-ccache`, `--run-tests`, `--gtest-filter`, `--no-compat`, `--no-smoke`, repeatable `--cmake-arg`, `--distros`, `--with-qt`, and `--dry-run`. `--no-qt` skips installing Qt but does **not** waive the requirement for an existing Qt installation at configuration time.
 
-**Output roots:** `artifacts/deps/` for dependency exports, `artifacts/openmw/` for tarballs, `work/build/` for CMake and staging, and `work/deps/` for extracted dependencies and Qt. These are ignored by Git. Override them with separate absolute paths; writable roots must not overlap the source checkout or each other.
+The ABI ceilings match AlmaLinux 9: `GLIBC_2.34`, `GLIBCXX_3.4.29`, `CXXABI_1.3.13`. Dependencies and OpenMW are built with the pinned `x64-linux-dynamic` triplet. An explicit dependency download does not silently fall back to an old artifact.
 
-## Validation
+## Jess source and development
 
-```bash
-# Requires JESS_BIN only if Jess is not on PATH.
-JESS_BIN=/path/to/jess ./tools/validate.sh
+The shipped executable requires no Jess runtime. **Developers** who want to edit or rebuild the source can use the executable Jess scripts, which carry their own shebangs:
+
+```sh
+# In this repository, with jess on PATH:
+./tools/forge.jsl help
+./tools/release.jsl /absolute/path/to/openmw-forge-linux-x64
+./tools/validate.jsl /absolute/path/to/openmw-forge-linux-x64
 ```
 
-This runs the Luau strict checker, the source-and-packed Jess suite, Jess's **own style checker**, Bash syntax checks for retained workers, mocked end-to-end CLI execution, and archive traversal/symlink guard tests. A full production dependency/OpenMW build is **not** claimed validated; see [`docs/VALIDATION.md`](docs/VALIDATION.md) for details and steps to finish qualification on an AlmaLinux 9 runner.
+Alternatively, `jess workspace pack --output /path/to/openmw-forge-linux-x64 --runtime /path/to/jess` produces a standalone ELF binary directly. Build orchestration, dependency verification, OpenMW staging, debug splitting and smoke-test coordination live in `src/native*.jsl` and `src/plan.jsl`; process invocation passes argv vectors, never a Bash `-c` command. `src/assets.jsl` is generated from the retained original vcpkg overlays/templates for embedding in the executable. Jess source tests run in source and packed JPK form.
 
-## Layout
+The upstream vcpkg project itself supplies `bootstrap-vcpkg.sh`, and distributed OpenMW tarballs include the upstream POSIX `/bin/sh` launcher to set their runtime library paths. Those are **third-party packaging/runtime interfaces**, not Forge build orchestration. CMake, DNF, Git, tar, Python and compiler binaries remain native external processes.
 
-- `src/` — Jess parsing, configuration, deterministic execution plans, checked subprocess execution.
-- `tools/forge.jsl` — command entry point, with capabilities declared in `jess.toml`.
-- `vendor/deps/` — original pinned vcpkg manifest, overlays, custom Linux triplet, AlmaLinux system bootstrap, exporter, ABI verification.
-- `vendor/openmw/` — original OpenMW CMake, Qt, packaging, debug-symbol, distrobox, and smoke-test workers, with focused migration fixes.
-- `tests/` — Jess pure planner tests, mocked integration checks, tarball safety checks.
-- `docs/` — upstream audit, constraints, and verification evidence.
+## Scope and qualification
 
-Jess does not magically make AlmaLinux and Qt builds hermetic. Network dependencies, base-image tag mutability, external vcpkg/Qt source distribution, host SELinux/Docker differences, and the underlying CMake project remain real operational dependencies. We preserve the existing checks rather than claiming that passing unit tests proves binary portability.
+- The Linux build workflows are migrated; Windows/macOS original CI jobs and symbol-server publishing are intentionally out of scope.
+- `jess package check`, Jess style, source+packed unit tests, and a compiled ELF integration suite are automated. The latter uses an independently compiled Jess fake container engine, builds a synthetic package staging tree, and tests archive rejection.
+- **A full production vcpkg+Qt+OpenMW build and cross-distro smoke sweep have not run in the supplied sandbox.** Podman and Docker are absent here. Do not interpret the green tests as proof of binary portability; qualify this against an AlmaLinux 9 build host before publishing releases.
+- Upstream container image tags, Qt downloads and dependency archives are not yet content-addressed; real builds are not hermetic. See `docs/VALIDATION.md` and `docs/AUDIT.md` for detail.
 
-## License
+## Licensing
 
-The dependency build repository shipped its source under Apache-2.0; its license remains at `vendor/deps/LICENSE`. Original source and upstream notices remain within the imported directories. The combined workspace is offered under Apache-2.0; retain the notices of included third-party port patches and distributions.
+The original dependency builder is Apache-2.0 and its notice remains at `vendor/deps/LICENSE`. Existing upstream port patches, vcpkg manifest and OpenMW template notices are retained. The consolidated Forge source is offered under Apache-2.0, subject to retained third-party notices.
