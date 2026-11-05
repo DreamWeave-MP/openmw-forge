@@ -4,6 +4,7 @@ local args = require '@forge/args'
 local planning = require '@forge/plan'
 local profile = require '@forge/config'
 local nativeOpenmw = require '@forge/native-openmw'
+local nativeQt = require '@forge/native-qt'
 local nativeArchive = require '@forge/native-archive'
 local nativeAbi = require '@forge/native-abi'
 local sdkCache = require '@forge/native-sdk-cache'
@@ -61,6 +62,20 @@ local function shellFree(result: planning.Plan)
 end
 
 suite.describe('profile and CLI', function()
+  suite.it('runs aqt in its writable Qt staging directory, not /forge', function()
+    local options = parsed({ 'build', '--deps-prefix', '/deps' })
+    local staging = '/deps/qt-install-staging'
+    local command = nativeQt.aqtInvocation(options, staging)
+    test.expect(command.program).toBe('python3')
+    test.expect(command.cwd).toBe(staging)
+    test.expect(command.argv[1]).toBe('-m')
+    test.expect(command.argv[2]).toBe('aqt')
+    test.expect(command.argv[3]).toBe('install-qt')
+    test.expect(has(command.argv, options.qtVersion)).toBeTruthy()
+    test.expect(command.argv[#command.argv - 1]).toBe('-O')
+    test.expect(command.argv[#command.argv]).toBe(staging)
+  end)
+
   suite.it('keeps manifest-mode vcpkg installed state in the writable checkout', function()
     local checkout = '/forge/work/vcpkg'
     test.expect(nativeDeps.installedRoot(checkout)).toBe(checkout .. '/installed')

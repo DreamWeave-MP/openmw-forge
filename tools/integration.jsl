@@ -471,6 +471,20 @@ util.write(qtBase .. '/lib/cmake/Qt6/Qt6Config.cmake', '# Qt fixture')
 util.copy('/bin/true', qtBase .. '/plugins/platforms/libqxcb.so')
 local qtOptions, qtReason = argsModule.parse({ 'package', '--deps-prefix', deps }, empty)
 if not qtOptions then error(qtReason or 'could not create Qt fixture options') end
+-- Regression for the CI crash at /forge/aqtinstall.log: aqtinstall's
+-- relative logfile must land in the Forge-owned, writable staging directory.
+local qtStaging = deps .. '/qt-install-staging'
+util.resetManaged(qtStaging)
+local installer = nativeQt.aqtInvocation(qtOptions, qtStaging)
+check(installer.cwd == qtStaging, 'aqt must run inside the writable Qt staging directory')
+check(installer.argv[#installer.argv] == qtStaging, 'aqt archive output must match Qt staging directory')
+local logProbe, logProblem = process.run('touch', { 'aqtinstall.log' }, {
+  cwd = installer.cwd, stdout = 'capture', stderr = 'capture',
+})
+check(logProbe ~= nil and logProbe.success, 'aqt working directory must support relative log creation: '
+  .. (logProblem or (if logProbe then logProbe.stderr or '' else 'unknown')))
+check(fs.isFile(qtStaging .. '/aqtinstall.log'), 'relative aqtinstall.log must be writable inside staging')
+util.remove(qtStaging)
 check(nativeQt.qualified(qtOptions), 'complete externally supplied Qt installation must be usable')
 local svgLibrary = qtBase .. '/lib/libQt6Svg.so.6.6.3'
 util.remove(svgLibrary)
