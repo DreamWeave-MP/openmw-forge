@@ -108,7 +108,15 @@ local function extractDeps(options: Options)
   -- export. Recovery keeps the previous tree if publication is interrupted.
   local nextTree = options.deps .. '/openmw-deps-next'
   util.resetManaged(nextTree)
-  util.tree(root, nextTree)
+  -- The extracted archive is already on the destination filesystem.
+  -- Renaming its verified root avoids a second full SDK copy and the peak
+  -- disk amplification that copy caused on 14 GB GitHub-hosted runners.
+  util.remove(nextTree)
+  local kind = fs.lstat(root)
+  if not kind or kind.kind ~= 'dir' then error('unsafe extracted SDK root: ' .. root) end
+  util.write(root .. '/.openmw-forge-managed', 'openmw-forge-managed-v1\n')
+  local renamed, message = fs.rename(root, nextTree)
+  if not renamed then error('cannot stage verified dependency export: ' .. (message or 'rename failed')) end
   util.write(nextTree .. '/.forge-extract-id', fingerprint)
   util.publishManagedDirectory(nextTree, final)
   util.remove(temp)
@@ -203,4 +211,4 @@ local function build(options: Options)
 end
 
 
-return table.freeze { build = build, prepare = prepare, configure = configure }
+return table.freeze { build = build, prepare = prepare, configure = configure, extractDeps = extractDeps }

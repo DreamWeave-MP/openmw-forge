@@ -1,0 +1,52 @@
+#!/usr/bin/env -S jess run --trusted --package .
+--!strict
+-- CI-only disk reclamation. vcpkg's temporary checkout/buildtrees and
+-- restored binary packages are no longer needed after SDK qualification.
+local fs = require '@dream/fs'
+local process = require '@dream/process'
+local util = require '@forge/native-util'
+
+local root, failure = fs.cwd()
+if not root then error(failure or 'cannot identify working directory') end
+
+if process.env('GITHUB_ACTIONS') ~= 'true' or root ~= process.env('GITHUB_WORKSPACE') then
+  error('CI resource reclamation is restricted to the GitHub Actions workspace')
+end
+
+local function report(label: string)
+  print('=== ' .. label .. ' ===')
+  print(util.checked('df', { '-h', root }))
+end
+
+local command = ...
+if command ~= '--before-build' then error('usage: tools/ci_resources.jsl --before-build') end
+report('Before OpenMW build cleanup')
+
+-- Never follow a rewritten cache path through a symlink. The workspace and
+-- cache ancestors must remain ordinary directories owned by this job.
+for _, segment in { root .. '/work', root .. '/work/cache' } do
+  local item = fs.lstat(segment)
+  if item and item.kind ~= 'dir' then error('unsafe CI cache ancestor: ' .. segment) end
+end
+
+local source = root .. '/work/cache/vcpkg'
+local owner = source .. '/.git/forge-owner'
+local stat = fs.lstat(source)
+if stat then
+  if stat.kind ~= 'dir' or not fs.isFile(owner)
+    or util.file(owner) ~= 'openmw-forge-vcpkg-v1\n' then
+    error('refusing to remove unowned vcpkg checkout')
+  end
+  util.remove(source)
+end
+
+local binaries = root .. '/work/cache/vcpkg-binaries'
+local binStat = fs.lstat(binaries)
+if binStat then
+  if binStat.kind ~= 'dir' then error('refusing non-directory vcpkg binary cache') end
+  -- GitHub's ephemeral checkout owns this exact location. Never touch a
+  -- user-selected path, and never run this cleanup outside GitHub Actions.
+  util.remove(binaries)
+end
+
+report('After reclaiming temporary vcpkg state')
