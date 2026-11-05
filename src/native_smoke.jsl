@@ -9,6 +9,27 @@ local args = require '@forge/args'
 
 type Options = args.Options
 
+-- Exercise the installed POSIX launchers as users actually invoke them.
+-- Testing only .x86_64 binaries misses broken wrappers, paths and library setup.
+local function runPackageCommand(stage: string, name: string, program: string, env: { [string]: string })
+  local result, failure = process.run(program, { '--help' }, {
+    cwd = stage, env = env, stdout = 'capture', stderr = 'capture',
+  })
+
+  if not result then error(`smoke could not run {name}: {failure or ''}`) end
+
+  if not result.success then
+    error(`smoke {name} exited with {tostring(result.code or result.signal)}: {result.stderr or ''}`)
+  end
+  local output = (result.stdout or '') .. (result.stderr or '')
+  for _, problem in {
+    'error while loading shared libraries', 'symbol lookup error',
+    'undefined symbol', 'cannot open shared object',
+  } do
+    if output:find(problem, 1, true) then error(`smoke failure in {name}: {output}`) end
+  end
+end
+
 local function smokeBinaries(stage: string, withQt: boolean?)
   local names = {
     'openmw', 'openmw-iniimporter', 'openmw-essimporter', 'openmw-navmeshtool',
@@ -22,21 +43,23 @@ local function smokeBinaries(stage: string, withQt: boolean?)
   end
 
   if not fs.isFile(stage .. '/openmw.x86_64') then error('required OpenMW executable is missing from package') end
+  if not fs.isFile(stage .. '/openmw') then error('required OpenMW launcher is missing from package') end
+
+  if withQt and not fs.isFile(stage .. '/openmw-launcher.x86_64') then
+    error('required OpenMW Qt launcher is missing from package')
+  end
+
   local ran = 0
   for _, name in names do
     local binary = stage .. '/' .. name .. '.x86_64'
     if not fs.isFile(binary) then continue end
-
+    local wrapper = stage .. '/' .. name
+    if not fs.isFile(wrapper) then error('missing installed launcher: ' .. name) end
     local env = { LD_LIBRARY_PATH = stage .. '/lib', QT_PLUGIN_PATH = stage .. '/plugins' }
-      local result, failure = process.run(binary, { '--help' }, { cwd = stage, env = env, stdout = 'capture', stderr = 'capture' })
-      if not result then error(`smoke could not run {name}: {failure or ''}`) end
-      if not result.success then error(`smoke {name} exited with {tostring(result.code or result.signal)}`) end
-      local output = (result.stdout or '') .. (result.stderr or '')
-      for _, problem in { 'error while loading shared libraries', 'symbol lookup error', 'undefined symbol', 'cannot open shared object' } do
-        if output:find(problem, 1, true) then error(`smoke failure in {name}: {output}`) end
-      end
+    runPackageCommand(stage, name .. '.x86_64', binary, env)
+    runPackageCommand(stage, name .. ' launcher', wrapper, env)
     ran += 1
-    print('PASS smoke ' .. name)
+    print('PASS smoke binary + launcher ' .. name)
   end
 
   if ran == 0 then error('no smoke binaries were executed') end
@@ -64,6 +87,11 @@ local function multiSmoke(options: Options, staging: string)
   if #selected == 0 then error('--distros needs at least one known distribution') end
 
   if not fs.isFile(staging .. '/openmw.x86_64') then error('required OpenMW executable is missing from package') end
+  if not fs.isFile(staging .. '/openmw') then error('required OpenMW launcher is missing from package') end
+
+  if options.withQt and not fs.isFile(staging .. '/openmw-launcher.x86_64') then
+    error('required OpenMW Qt launcher is missing from package')
+  end
 
   for _, tag in selected do
     local image = DistroImages[tag]
@@ -73,27 +101,35 @@ local function multiSmoke(options: Options, staging: string)
     local imageTag = 'openmw-forge-smoke:' .. tag
     util.stream(options.engine, { 'build', '-t', imageTag, '-f', buildDir .. '/Dockerfile', buildDir })
     local count = 0
-    local names = if options.withQt then {
-      'openmw', 'openmw-launcher', 'openmw-cs', 'openmw-wizard', 'bsatool', 'esmtool', 'niftest',
-    } else {
+    local names = {
       'openmw', 'openmw-iniimporter', 'openmw-essimporter', 'openmw-navmeshtool',
       'openmw-bulletobjecttool', 'bsatool', 'esmtool', 'niftest',
     }
 
+    if options.withQt then
+      for _, name in { 'openmw-launcher', 'openmw-cs', 'openmw-wizard' } do
+        table.insert(names, name)
+      end
+    end
+
     for _, name in names do
       if not fs.isFile(staging .. '/' .. name .. '.x86_64') then continue end
+      if not fs.isFile(staging .. '/' .. name) then error('missing installed launcher: ' .. name) end
       count += 1
       local volume = staging .. ':/pkg:ro' .. (if options.engine == 'podman' then ',z' else '')
-      local result, failure = process.run(options.engine, {
-        'run', '--rm', '--network', 'none', '-v', volume, '-w', '/pkg',
-        '-e', 'LD_LIBRARY_PATH=/pkg/lib', '-e', 'QT_PLUGIN_PATH=/pkg/plugins',
-        '-e', 'QT_QPA_PLATFORM=offscreen', imageTag, '/pkg/' .. name .. '.x86_64', '--help',
-      }, { stdout = 'capture', stderr = 'capture' })
+      -- Run both entry points; a distro-specific wrapper failure is a release failure.
+      for _, entry in { name .. '.x86_64', name } do
+        local result, failure = process.run(options.engine, {
+          'run', '--rm', '--network', 'none', '-v', volume, '-w', '/pkg',
+          '-e', 'LD_LIBRARY_PATH=/pkg/lib', '-e', 'QT_PLUGIN_PATH=/pkg/plugins',
+          '-e', 'QT_QPA_PLATFORM=offscreen', imageTag, '/pkg/' .. entry, '--help',
+        }, { stdout = 'capture', stderr = 'capture' })
 
-      if not result or not result.success then
-        error(`{tag}/{name} failed to execute: {failure or (if result then result.stderr or '' else '')}`)
+        if not result or not result.success then
+          error(`{tag}/{entry} failed to execute: {failure or (if result then result.stderr or '' else '')}`)
+        end
       end
-      print(`PASS {tag}: {name}`)
+      print(`PASS {tag}: binary + launcher {name}`)
     end
 
     if count == 0 then error('no binaries available for distro smoke tests') end
