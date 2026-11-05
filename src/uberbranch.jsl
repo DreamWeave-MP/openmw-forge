@@ -76,10 +76,19 @@ local function publish(tag: string, root: string, files: { string }, notes: stri
     util.stream('gh', { 'release', 'create', tag, '--target', target, '--title', 'OpenMW das-uberbranch',
       '--prerelease', '--notes-file', notes }, root, env)
   end
-  local argv = { 'release', 'upload', tag }
-  for _, path in files do table.insert(argv, path) end
-  table.insert(argv, '--clobber')
-  util.stream('gh', argv, root, env)
+  -- A rolling GitHub release cannot update several assets atomically. Upload
+  -- content first, then publish the checksum manifest LAST as the completion
+  -- marker. A reader must verify SHA256SUMS before accepting any artifact.
+  local payload = { 'release', 'upload', tag }
+  for _, path in files do
+    if fs.fileName(path) ~= 'SHA256SUMS' then table.insert(payload, path) end
+  end
+  table.insert(payload, '--clobber')
+  util.stream('gh', payload, root, env)
+
+  local marker = files[#files]
+  if fs.fileName(marker) ~= 'SHA256SUMS' then error('last release artifact must be SHA256SUMS') end
+  util.stream('gh', { 'release', 'upload', tag, marker, '--clobber' }, root, env)
   util.stream('gh', { 'release', 'edit', tag, '--notes-file', notes, '--prerelease' }, root, env)
 
   -- Each upstream revision has a distinct filename. Keep this rolling release
