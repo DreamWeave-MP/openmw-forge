@@ -28,7 +28,6 @@ export type Options = {
   stageOnly: boolean,
   portable: boolean,
   runTests: boolean,
-  noQt: boolean,
   noSystemPackages: boolean,
   noCcache: boolean,
   noPrepare: boolean,
@@ -78,7 +77,6 @@ local Booleans: { [string]: string } = {
   ['--stage-only'] = 'stageOnly',
   ['--portable'] = 'portable',
   ['--run-tests'] = 'runTests',
-  ['--no-qt'] = 'noQt',
   ['--no-system-packages'] = 'noSystemPackages',
   ['--no-ccache'] = 'noCcache',
   ['--no-prepare'] = 'noPrepare',
@@ -115,7 +113,6 @@ local function defaults(root: string): Options
     stageOnly = false,
     portable = false,
     runTests = false,
-    noQt = false,
     noSystemPackages = false,
     noCcache = false,
     noPrepare = false,
@@ -168,7 +165,6 @@ local function parse(argv: { string }, root: string): (Options?, string?)
       elseif booleanKey == 'stageOnly' then options.stageOnly = true
       elseif booleanKey == 'portable' then options.portable = true
       elseif booleanKey == 'runTests' then options.runTests = true
-      elseif booleanKey == 'noQt' then options.noQt = true
       elseif booleanKey == 'noSystemPackages' then options.noSystemPackages = true
       elseif booleanKey == 'noCcache' then options.noCcache = true
       elseif booleanKey == 'noPrepare' then options.noPrepare = true

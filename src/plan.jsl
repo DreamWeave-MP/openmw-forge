@@ -53,7 +53,7 @@ local function flags(options: Options, inner: boolean): { string }
   for _, toggle in {
     { options.clean, '--clean' }, { options.portable, '--portable' },
     { options.stageOnly, '--stage-only' }, { options.runTests, '--run-tests' },
-    { options.noQt, '--no-qt' }, { options.noSystemPackages or inner, '--no-system-packages' },
+    { options.noSystemPackages or inner, '--no-system-packages' },
     { options.noCcache, '--no-ccache' }, { options.noPrepare, '--no-prepare' },
     { options.noCompat, '--no-compat' }, { options.noSmoke, '--no-smoke' },
   } do

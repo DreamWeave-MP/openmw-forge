@@ -126,7 +126,7 @@ local function prepare(options: Options)
   if not options.noSystemPackages then installHostDeps() end
   util.mkdir(options.deps)
   local qtLib = options.deps .. '/QT/' .. options.qtVersion .. '/gcc_64/lib'
-  if not options.noQt and not fs.isDir(qtLib) then
+  if not fs.isDir(qtLib) then
     print(`Installing Qt {options.qtVersion}`)
     util.stream('python3', { '-m', 'pip', 'install', 'aqtinstall' })
     util.stream('python3', {

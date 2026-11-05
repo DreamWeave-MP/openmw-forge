@@ -38,7 +38,7 @@ Common switches:
   --build-type TYPE         Default: RelWithDebInfo
   --qt-version X.Y.Z        Default: 6.6.3
   --clean --portable --stage-only --run-tests --gtest-filter FILTER
-  --no-qt --no-system-packages --no-prepare --no-ccache
+  --no-system-packages --no-prepare --no-ccache
   --no-compat --no-smoke     Opt out of package validation steps
   --cmake-arg ARG           Repeatable
   --distros CSV --with-qt    Smoke test in isolated distro containers
