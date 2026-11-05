@@ -4,6 +4,9 @@ local fs = require '@dream/fs'
 local process = require '@dream/process'
 local util = require '@forge/native-util'
 local sourceModule = require '@forge/source'
+local argsModule = require '@forge/args'
+local nativeOpenmw = require '@forge/native-openmw'
+local sdkCache = require '@forge/native-sdk-cache'
 
 local binary = ...
 if type(binary) ~= 'string' or not fs.isFile(binary) then error('usage: tools/integration.jsl /absolute/path/to/compiled-forge') end
@@ -47,6 +50,50 @@ util.resetManaged(foreignCandidate)
 local replacedForeign = pcall(util.publishManagedDirectory, foreignCandidate, foreignTree)
 check(not replacedForeign, 'managed publication must not overwrite user-owned directories')
 check(util.file(foreignTree .. '/KEEP') == 'user-owned', 'foreign publication rejection must preserve contents')
+
+check(#sdkCache.hashText('OpenMW Forge') == 64, 'SDK cache keys must be full SHA-256 values')
+check(sdkCache.hashText('OpenMW Forge') ~= sdkCache.hashText('OpenMW Forge!'),
+  'SDK cache input changes must invalidate their fingerprints')
+
+-- Exercise real archive extraction and unchanged-input reuse. The candidate
+-- should be RENAMED, not copied, after archive safety validation.
+local sdkSource = scratch .. '/SDK-source'
+local sdkPackage = sdkSource .. '/mock-vcpkg'
+local sdkArchive = scratch .. '/SDK-fixture.tar.xz'
+local sdkExtract = scratch .. '/SDK-extracted'
+util.mkdir(sdkPackage .. '/scripts/buildsystems')
+util.mkdir(sdkPackage .. '/installed/x64-linux-dynamic/lib')
+util.write(sdkPackage .. '/scripts/buildsystems/vcpkg.cmake', '# fixture toolchain\n')
+util.write(sdkPackage .. '/installed/x64-linux-dynamic/lib/libfixture.so', 'v1')
+util.stream('tar', { '-cJf', sdkArchive, '-C', sdkSource, 'mock-vcpkg' })
+local sdkOptions, sdkError = argsModule.parse({ 'build', '--mode', 'local',
+  '--deps-archive', sdkArchive, '--deps-prefix', sdkExtract }, root)
+
+if not sdkOptions then error(sdkError or 'SDK extraction fixture parse failed') end
+nativeOpenmw.extractDeps(sdkOptions)
+check(util.file(sdkExtract .. '/openmw-deps/installed/x64-linux-dynamic/lib/libfixture.so') == 'v1',
+  'tar.xz dependency extraction must stage a full vcpkg tree')
+util.write(sdkExtract .. '/openmw-deps/REUSE-SENTINEL', 'preserved')
+nativeOpenmw.extractDeps(sdkOptions)
+check(fs.isFile(sdkExtract .. '/openmw-deps/REUSE-SENTINEL'),
+  'same archive hash must reuse the prepared SDK without another extraction')
+check(not fs.exists(sdkExtract .. '/extracting'), 'SDK extraction must discard the temporary tree')
+check(not fs.exists(sdkExtract .. '/openmw-deps-next'), 'SDK publication must not leave a staging copy')
+
+-- Cached exports must never pass a reused input key if bytes changed or
+-- the exact archive fingerprint changed. Corrupt files fail before 7z runs.
+local cacheDir = scratch .. '/sdk-cache'
+util.mkdir(cacheDir)
+local prefix = cacheDir .. '/vcpkg-x64-linux-dynamic'
+util.write(prefix .. '.7z', 'invalid cache bytes')
+util.write(prefix .. '.build-meta', 'profile=alma9\ntriplet=x64-linux-dynamic\n'
+  .. 'vcpkg_revision=6d332a018c433fad20822ff4b536e4ccdc3413bd\n'
+  .. 'cache_schema=2\ninputs_sha256=' .. string.rep('a', 64)
+  .. '\narchive_sha256=' .. string.rep('0', 64) .. '\n')
+check(not sdkCache.cacheHit(cacheDir, 'x64-linux-dynamic', string.rep('b', 64)),
+  'SDK input mismatch must invalidate the restored export')
+check(not sdkCache.cacheHit(cacheDir, 'x64-linux-dynamic', string.rep('a', 64)),
+  'SDK byte mismatch must invalidate the restored export')
 
 local function invoke(argv: { string }, cwd: string, env: { [string]: string }?): dream_process_Result
   local result, problem = process.run(binary, argv, { cwd = cwd, env = env, stdout = 'capture', stderr = 'capture' })
@@ -109,6 +156,33 @@ local jessBin = process.env('JESS_BIN') or util.checked('which', { 'jess' }):gsu
 
 util.stream(jessBin, { 'workspace', 'pack', '--workspace', mockSource,
   '--output', mockedBin .. '/podman', '--runtime', jessBin })
+-- The disk reclamation helper must refuse local invocation and unowned
+-- checkout content, then reclaim only its specifically approved CI caches.
+local ciRoot = scratch .. '/ci-workspace'
+local ciVcpkg = ciRoot .. '/work/cache/vcpkg'
+local ciBinaries = ciRoot .. '/work/cache/vcpkg-binaries'
+util.mkdir(ciVcpkg)
+util.mkdir(ciBinaries)
+util.write(ciVcpkg .. '/KEEP', 'personal data')
+local cleanupArgs = { 'run', '--trusted', '--package', root,
+  root .. '/tools/ci_resources.jsl', '--before-build' }
+local cleanupEnv = { GITHUB_ACTIONS = 'true', GITHUB_WORKSPACE = ciRoot }
+local localCleanup = process.run(jessBin, cleanupArgs, { cwd = ciRoot, stdout = 'capture', stderr = 'capture' })
+check(localCleanup ~= nil and not localCleanup.success, 'CI cache cleanup must refuse non-GitHub invocation')
+local foreignCleanup = process.run(jessBin, cleanupArgs, { cwd = ciRoot, env = cleanupEnv,
+  stdout = 'capture', stderr = 'capture' })
+check(foreignCleanup ~= nil and not foreignCleanup.success,
+  'CI cache cleanup must not delete unowned vcpkg checkout')
+check(util.file(ciVcpkg .. '/KEEP') == 'personal data', 'rejected cleanup must preserve unowned files')
+util.mkdir(ciVcpkg .. '/.git')
+util.write(ciVcpkg .. '/.git/forge-owner', 'openmw-forge-vcpkg-v1\n')
+local permittedCleanup = process.run(jessBin, cleanupArgs, { cwd = ciRoot, env = cleanupEnv,
+  stdout = 'capture', stderr = 'capture' })
+check(permittedCleanup ~= nil and permittedCleanup.success,
+  'CI-only cleanup must remove correctly owned transient dependencies')
+check(not fs.exists(ciVcpkg) and not fs.exists(ciBinaries),
+  'CI-only cleanup should release vcpkg disk space after successful SDK publication')
+
 local mockLog = scratch .. '/mock.log'
 local mockEnv = {
   PATH = mockedBin .. ':' .. (fs.parent(jessBin) or '') .. ':' .. (process.env('PATH') or ''),
@@ -141,6 +215,27 @@ check(cachedLog:find('image\tinspect', 1, true) ~= nil, 'must query for matching
 check(cachedLog:find('build\t', 1, true) == nil, 'matching image must skip redundant build')
 check(cachedLog:find('run\t', 1, true) ~= nil, 'cached image must still execute the worker')
 
+
+-- A published toolchain digest eliminates per-run DNF/Autoconf image layers.
+-- The fallback still embeds its full reproducible build recipe.
+local pinnedEnv = table.clone(mockEnv)
+local pinnedImage = 'ghcr.io/example/openmw-forge-builder@sha256:' .. string.rep('a', 64)
+pinnedEnv.FORGE_TOOLCHAIN_IMAGE = pinnedImage
+pinnedEnv.FORGE_TOOLCHAIN_ID = pinnedImage
+util.write(mockLog, '')
+local pinnedRun = invoke({ 'deps' }, empty, pinnedEnv)
+check(pinnedRun.success, 'compiled Forge must accept a digest-pinned toolchain image')
+local fastRecipe = util.file(empty .. '/work/forge-assets/Dockerfile')
+check(fastRecipe:find('FROM ' .. pinnedImage, 1, true) ~= nil,
+  'pinned toolchain must become the container FROM line')
+check(fastRecipe:find('dnf install', 1, true) == nil,
+  'pinned toolchain must skip costly DNF/Autoconf image provisioning')
+check(util.file(mockLog):find('FORGE_TOOLCHAIN_ID=' .. pinnedImage, 1, true) ~= nil,
+  'dependency worker must receive the exact toolchain digest for cache identity')
+local invalidEnv = table.clone(mockEnv)
+invalidEnv.FORGE_TOOLCHAIN_IMAGE = 'almalinux:9\nRUN unexpected'
+local invalidImage = invoke({ 'deps' }, empty, invalidEnv)
+check(not invalidImage.success, 'invalid OCI image references must not permit Dockerfile injection')
 
 local failingEnv = table.clone(mockEnv)
 failingEnv.FORGE_MOCK_FAIL = 'run'

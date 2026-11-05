@@ -1,6 +1,7 @@
 --!strict
 local argsModule = require '@forge/args'
 local sourceModule = require '@forge/source'
+local process = require '@dream/process'
 
 type Options = argsModule.Options
 export type Step = { name: string, program: string, args: { string }, cwd: string, env: { [string]: string } }
@@ -86,6 +87,13 @@ local function depsSteps(plan: Plan, options: Options)
       'openmw-forge:alma9', '/usr/local/bin/openmw-forge', '__deps',
       '--deps-output', '/depout', '--triplet', options.triplet, '--jobs', tostring(options.jobs),
     }
+
+    -- Pin dependency provenance to the exact CI OCI toolchain digest.
+    local toolchainId = process.env('FORGE_TOOLCHAIN_ID')
+    if toolchainId and toolchainId ~= '' then
+      table.insert(command, 3, '-e')
+      table.insert(command, 4, 'FORGE_TOOLCHAIN_ID=' .. toolchainId)
+    end
 
     -- Provision toolchains in the image, not per ephemeral container.
     table.insert(command, '--no-system-packages')

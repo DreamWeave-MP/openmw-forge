@@ -20,6 +20,7 @@ jobs:
     timeout-minutes: 330
     permissions:
       contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v7
         with:
@@ -27,23 +28,46 @@ jobs:
       - uses: ./.github/actions/setup-jess
         with:
           version: ${{ vars.JESS_RELEASE_TAG }}
-      # Cache runs after checkout, so checkout's git clean cannot erase it.
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Resolve immutable, published AlmaLinux 9 builder (local fallback on first run)
+        id: toolchain
+        run: jess run --trusted --package . tools/toolchain_image.jsl
       - name: Compute daily cache generation
         id: cache-key
         run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
-      - name: Restore bounded compiler cache
-        uses: actions/cache@v4
+      # The complete verified SDK is the highest-payoff cache: on an exact
+      # input hit vcpkg install/export is skipped, not merely recompilation.
+      - name: Restore qualified vcpkg SDK export
+        id: sdk
+        uses: actions/cache/restore@v6
+        with:
+          path: artifacts/deps
+          key: forge-sdk-v2-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ hashFiles('vendor/deps/**', 'src/native_deps.jsl', 'src/native_sdk_cache.jsl', 'src/native_archive.jsl', 'src/config.jsl', 'src/assets.jsl') }}
+      - name: Restore bounded ccache
+        uses: actions/cache@v6
         with:
           path: work/cache/ccache
-          key: forge-ccache-alma9-${{ runner.arch }}-${{ steps.cache-key.outputs.day }}
-          restore-keys: forge-ccache-alma9-${{ runner.arch }}-
-      - name: Restore binary dependency cache
-        uses: actions/cache@v4
+          key: forge-ccache-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ steps.cache-key.outputs.day }}
+          restore-keys: forge-ccache-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-
+      # Only pay for the larger per-port binary cache when the complete SDK
+      # is not available. A corrupted SDK is caught by the worker and rebuilt.
+      - name: Restore vcpkg binary packages when SDK is missing
+        if: steps.sdk.outputs.cache-hit != 'true'
+        id: vcpkg
+        uses: actions/cache/restore@v6
         with:
           path: work/cache/vcpkg-binaries
-          key: forge-vcpkg-alma9-${{ runner.arch }}-${{ hashFiles('src/config.jsl', 'src/native.jsl', 'src/native_deps.jsl', 'src/assets.jsl') }}-${{ steps.cache-key.outputs.day }}
-          restore-keys: |
-            forge-vcpkg-alma9-${{ runner.arch }}-${{ hashFiles('src/config.jsl', 'src/native.jsl', 'src/native_deps.jsl', 'src/assets.jsl') }}-
+          key: forge-vcpkg-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ hashFiles('vendor/deps/**', 'src/config.jsl') }}-${{ steps.cache-key.outputs.day }}
+          restore-keys: forge-vcpkg-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-
+      - name: Restore versioned Qt installation
+        uses: actions/cache@v6
+        with:
+          path: work/deps/QT
+          key: forge-qt-linux-gcc64-6.6.3-v1
       - name: Validate Jess source before expensive compilation
         run: |
           jess package check .
@@ -55,10 +79,32 @@ jobs:
         run: |
           mkdir -p build
           jess run --trusted tools/release.jsl "$PWD/build/openmw-forge-linux-x64"
+      - name: Build or verify pinned AlmaLinux 9 dependency SDK
+        env:
+          FORGE_BIN: ${{ github.workspace }}/build/openmw-forge-linux-x64
+        run: jess run --trusted --package . tools/uberbranch.jsl --prepare-deps
+      - name: Save qualified SDK even if subsequent OpenMW compilation fails
+        if: steps.sdk.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: artifacts/deps
+          key: forge-sdk-v2-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ hashFiles('vendor/deps/**', 'src/native_deps.jsl', 'src/native_sdk_cache.jsl', 'src/native_archive.jsl', 'src/config.jsl', 'src/assets.jsl') }}
+      - name: Save rebuilt vcpkg binary packages before reclaiming disk
+        if: steps.sdk.outputs.cache-hit != 'true' && steps.vcpkg.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: work/cache/vcpkg-binaries
+          key: forge-vcpkg-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ hashFiles('vendor/deps/**', 'src/config.jsl') }}-${{ steps.cache-key.outputs.day }}
+      # Standard hosted runners have limited disk. The SDK is already sealed;
+      # retaining vcpkg buildtrees here would crowd out CMake and packaging.
+      - name: Reclaim dependency buildtrees and report remaining disk
+        run: jess run --trusted --package . tools/ci_resources.jsl --before-build
       - name: Build configured OpenMW, run GoogleTests, verify archive and distro launchers
         env:
           FORGE_BIN: ${{ github.workspace }}/build/openmw-forge-linux-x64
-        run: jess run --trusted --package . tools/uberbranch.jsl
+        run: jess run --trusted --package . tools/uberbranch.jsl --build-only
       - uses: actions/upload-artifact@v4
         with:
           name: openmw-das-uberbranch-candidate

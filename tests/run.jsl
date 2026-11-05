@@ -6,6 +6,7 @@ local profile = require '@forge/config'
 local nativeOpenmw = require '@forge/native-openmw'
 local nativeArchive = require '@forge/native-archive'
 local nativeDeps = require '@forge/native-deps'
+local sdkCache = require '@forge/native-sdk-cache'
 local assets = require '@forge/assets'
 local source = require '@forge/source'
 local uber = require '@forge/uberbranch'
@@ -405,6 +406,13 @@ suite.describe('embedded assets, versions, and archive names', function()
     test.expect(assets['openmw/templates/runtime_wrapper.sh.in']).toContain('LD_LIBRARY_PATH')
   end)
 
+  suite.it('pins a content-addressed dependency SDK protocol', function()
+    local fields = sdkCache.metadata('profile=alma9\ninputs_sha256=abc\narchive_sha256=def\n')
+    test.expect(fields.profile).toBe('alma9')
+    test.expect(fields.inputs_sha256).toBe('abc')
+    test.expect(fields.archive_sha256).toBe('def')
+  end)
+
   suite.it('compares ABI versions numerically', function()
     test.expect(nativeDeps.newer('2.35', '2.34')).toBeTruthy()
     test.expect(nativeDeps.newer('3.4.9', '3.4.29')).toBeFalsy()
@@ -456,6 +464,17 @@ suite.describe('scheduled das-uberbranch release contract', function()
     test.expect(has(command, uberConfig.ref)).toBeTruthy()
     test.expect(has(command, '--run-tests')).toBeTruthy()
     test.expect(has(command, '/tmp/forge-uber-fixture')).toBeTruthy()
+  end)
+
+  suite.it('separates verified SDK preparation from release compilation', function()
+    local dependencies = uber.depsArgs(uberConfig)
+    test.expect(dependencies[1]).toBe('deps')
+    test.expect(has(dependencies, '--engine')).toBeTruthy()
+    local build = uber.buildOnlyArgs(uberConfig, '/tmp/forge-output')
+    test.expect(build[1]).toBe('build')
+    test.expect(has(build, '--run-tests')).toBeTruthy()
+    test.expect(has(build, uberConfig.repository)).toBeTruthy()
+    test.expect(has(build, '/tmp/forge-output')).toBeTruthy()
   end)
 
   suite.it('never mistakes a debug tarball for the main release', function()

@@ -27,6 +27,18 @@ local function buildArgs(settings: Config, output: string): { string }
   }
 end
 
+local function depsArgs(settings: Config): { string }
+  return { 'deps', '--engine', 'docker', '--jobs', tostring(settings.jobs) }
+end
+
+local function buildOnlyArgs(settings: Config, output: string): { string }
+  return {
+    'build', '--repo', settings.repository, '--ref', settings.ref,
+    '--engine', 'docker', '--jobs', tostring(settings.jobs),
+    '--run-tests', '--output-dir', output,
+  }
+end
+
 local function isMainTarball(name: string): boolean
   return name:match('^openmw%-.*%-Linux%-64Bit%.tar%.gz$') ~= nil
 end
@@ -145,11 +157,15 @@ local function run(argv: { string })
   end
 
   local dry = false
+  local depsOnly = false
+  local buildOnly = false
   local binary = process.env('FORGE_BIN') or (root .. '/build/openmw-forge-linux-x64')
   local index = 1
   while index <= #argv do
     local flag = argv[index]
     if flag == '--dry-run' then dry = true
+    elseif flag == '--prepare-deps' then depsOnly = true
+    elseif flag == '--build-only' then buildOnly = true
     elseif flag == '--forge' then
       index += 1
       binary = argv[index] or ''
@@ -158,12 +174,13 @@ local function run(argv: { string })
   end
 
   if binary == '' then error('--forge requires an executable path') end
+  if depsOnly and buildOnly then error('--prepare-deps and --build-only are mutually exclusive') end
 
   local runId = process.env('GITHUB_RUN_ID') or 'local'
   local attempt = process.env('GITHUB_RUN_ATTEMPT') or '1'
   if not runId:match('^[%w%-]+$') or not attempt:match('^%d+$') then error('invalid CI run identity') end
   local output = root .. '/artifacts/uberbranch/' .. runId .. '-' .. attempt
-  local command = buildArgs(config, output)
+  local command = if depsOnly then depsArgs(config) elseif buildOnly then buildOnlyArgs(config, output) else buildArgs(config, output)
 
   print(`Scheduled OpenMW source: {config.repository} @ {config.ref}`)
   print(`GitHub release: {config.releaseTag}`)
@@ -171,8 +188,13 @@ local function run(argv: { string })
 
   if dry then return end
   if not fs.isFile(binary) then error('compiled Forge executable missing: ' .. binary) end
-  if fs.exists(output) then error('refusing to reuse previously populated scheduled output: ' .. output) end
+  if not depsOnly and fs.exists(output) then error('refusing to reuse previously populated scheduled output: ' .. output) end
   util.stream(binary, command, root)
+  if depsOnly then
+    print('PASS qualified dependency export is ready for caching')
+    return
+  end
+
   local main, debug = findOutputs(output)
   local checkout = source.path(root, config.repository)
   local revision = util.file(checkout .. '/.git/forge-revision'):gsub('%s+$', '')
@@ -201,6 +223,7 @@ local function run(argv: { string })
 end
 
 return table.freeze {
-  validate = validate, buildArgs = buildArgs, isMainTarball = isMainTarball,
+  validate = validate, buildArgs = buildArgs, depsArgs = depsArgs, buildOnlyArgs = buildOnlyArgs,
+  isMainTarball = isMainTarball,
   findOutputs = findOutputs, publishArtifacts = publishArtifacts, run = run,
 }
