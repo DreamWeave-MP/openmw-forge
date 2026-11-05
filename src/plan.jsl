@@ -72,6 +72,19 @@ local function containerVolume(options: Options, host: string, guest: string, re
   return host .. ':' .. guest .. suffix
 end
 
+-- Writable bind mounts must be created as the host user on Docker.
+-- The build image already contains DNF/compiler prerequisites; there is no
+-- justification for running third-party build steps as root in CI.
+local function containerUserArgs(options: Options): { string }
+  if options.engine == 'podman' then
+    return { '--userns=keep-id', '-e', 'HOME=/tmp', '-e', 'PIP_USER=1' }
+  end
+
+  -- Resolved once by the executor, so planning stays pure and testable even
+  -- when the package lacks process.spawn permissions.
+  return { '--user', '@forge-host-uidgid', '-e', 'HOME=/tmp', '-e', 'PIP_USER=1' }
+end
+
 local function depsSteps(plan: Plan, options: Options)
   table.insert(plan.directories, options.depsOutput)
   if options.mode == 'container' then
@@ -87,6 +100,9 @@ local function depsSteps(plan: Plan, options: Options)
       'openmw-forge:alma9', '/usr/local/bin/openmw-forge', '__deps',
       '--deps-output', '/depout', '--triplet', options.triplet, '--jobs', tostring(options.jobs),
     }
+
+    local identity = containerUserArgs(options)
+    for index = #identity, 1, -1 do table.insert(command, 3, identity[index]) end
 
     -- Pin dependency provenance to the exact CI OCI toolchain digest.
     local toolchainId = process.env('FORGE_TOOLCHAIN_ID')
@@ -117,6 +133,9 @@ local function buildSteps(plan: Plan, options: Options, packageOnly: boolean)
       '-v', containerVolume(options, options.deps, '/deps', false),
       '-v', containerVolume(options, options.output, '/out', false),
     }
+
+    local identity = containerUserArgs(options)
+    for _, arg in identity do table.insert(exec, arg) end
 
     -- ccache must outlive disposable build containers. GitHub-hosted CI
     -- restores this directory with Actions cache *after* checkout cleanup.

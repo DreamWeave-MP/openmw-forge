@@ -16,18 +16,42 @@ local function identity(options: Options): string
   return 'qt=' .. options.qtVersion .. '\naqtinstall=' .. config.aqtVersion .. '\nplatform=linux-gcc_64\n'
 end
 
+-- This is OpenMW's actual Qt release contract, not simply a directory
+-- presence check. The official Qt 6.6.3 desktop archive installs these
+-- libraries and CMake targets through qtbase/declarative/svg/tools.
+local Libraries = { 'Core', 'Gui', 'Widgets', 'Network', 'OpenGL', 'OpenGLWidgets', 'Svg', 'Qml', 'Quick' }
+local CmakeTargets = { 'Core', 'Gui', 'Widgets', 'Network', 'OpenGL', 'OpenGLWidgets', 'Svg', 'Qml', 'Quick', 'LinguistTools' }
+
+local function elf(path: string): boolean
+  if not fs.isFile(path) then return false end
+  local prefix = fs.readAt(path, 0, 4)
+  return prefix ~= nil and buffer.readstring(prefix, 0, 4) == '\127ELF'
+end
+
 local function usable(path: string): boolean
-  if not fs.isDir(path .. '/lib') or not fs.isDir(path .. '/plugins/platforms') then return false end
-  if not fs.isFile(path .. '/plugins/platforms/libqxcb.so') then return false end
+  if not fs.isDir(path .. '/lib') or not fs.isDir(path .. '/lib/cmake') then return false end
+  local plugin = path .. '/plugins/platforms/libqxcb.so'
+  if not elf(plugin) then return false end
   local libs = fs.list(path .. '/lib')
   if not libs then return false end
 
-  for _, name in libs do
-    if name:match('^libQt6Core%.so') and (fs.isFile(path .. '/lib/' .. name) or fs.lstat(path .. '/lib/' .. name)) then
-      return true
+  for _, name in Libraries do
+    local found = false
+    for _, file in libs do
+      if file:match('^libQt6' .. name .. '%.so%.%d') and elf(path .. '/lib/' .. file) then
+        found = true
+        break
+      end
     end
+
+    if not found then return false end
   end
-  return false
+
+  for _, name in CmakeTargets do
+    local cmake = path .. '/lib/cmake/Qt6' .. name .. '/Qt6' .. name .. 'Config.cmake'
+    if not fs.isFile(cmake) then return false end
+  end
+  return fs.isFile(path .. '/lib/cmake/Qt6/Qt6Config.cmake')
 end
 
 local function qualified(options: Options): boolean
@@ -45,7 +69,7 @@ end
 
 local function requireInstallation(options: Options): string
   if not qualified(options) then
-    error('missing or incomplete Qt installation (libQt6Core and XCB platform plugin required): ' .. location(options))
+    error('missing or incomplete Qt SDK (ELF libraries, CMake modules and XCB plugin required): ' .. location(options))
   end
   return location(options)
 end
@@ -64,7 +88,7 @@ local function prepare(options: Options)
 
   local pending = options.deps .. '/qt-install-staging'
   util.resetManaged(pending)
-  util.stream('python3', { '-m', 'pip', 'install', 'aqtinstall==' .. config.aqtVersion })
+  util.stream('python3', { '-m', 'pip', 'install', '--user', 'aqtinstall==' .. config.aqtVersion })
   util.stream('python3', {
     '-m', 'aqt', 'install-qt', 'linux', 'desktop', options.qtVersion, 'gcc_64',
     '--archives', 'qtbase', 'qtdeclarative', 'qtsvg', 'qttools', 'qtwayland', 'icu',
