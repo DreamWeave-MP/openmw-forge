@@ -7,6 +7,7 @@ local sourceModule = require '@forge/source'
 local argsModule = require '@forge/args'
 local nativeOpenmw = require '@forge/native-openmw'
 local sdkCache = require '@forge/native-sdk-cache'
+local config = require '@forge/config'
 
 local binary = ...
 if type(binary) ~= 'string' or not fs.isFile(binary) then error('usage: tools/integration.jsl /absolute/path/to/compiled-forge') end
@@ -88,12 +89,22 @@ local prefix = cacheDir .. '/vcpkg-x64-linux-dynamic'
 util.write(prefix .. '.7z', 'invalid cache bytes')
 util.write(prefix .. '.build-meta', 'profile=alma9\ntriplet=x64-linux-dynamic\n'
   .. 'vcpkg_revision=6d332a018c433fad20822ff4b536e4ccdc3413bd\n'
-  .. 'cache_schema=2\ninputs_sha256=' .. string.rep('a', 64)
+  .. 'cache_schema=3\nsdk_recipe=' .. config.sdkRecipe .. '\ninputs_sha256=' .. string.rep('a', 64)
   .. '\narchive_sha256=' .. string.rep('0', 64) .. '\n')
 check(not sdkCache.cacheHit(cacheDir, 'x64-linux-dynamic', string.rep('b', 64)),
   'SDK input mismatch must invalidate the restored export')
 check(not sdkCache.cacheHit(cacheDir, 'x64-linux-dynamic', string.rep('a', 64)),
   'SDK byte mismatch must invalidate the restored export')
+-- Even a matching checksum doesn't make a bogus archive acceptable. The
+-- absence of 7z or an invalid listing is an ordinary cache miss, not a fatal
+-- error that permanently bricks an immutable CI cache key.
+local bogusHash = sdkCache.digest(prefix .. '.7z')
+util.write(prefix .. '.build-meta', 'profile=alma9\ntriplet=x64-linux-dynamic\n'
+  .. 'vcpkg_revision=' .. config.vcpkgRevision .. '\n'
+  .. 'cache_schema=3\nsdk_recipe=' .. config.sdkRecipe .. '\n'
+  .. 'inputs_sha256=' .. string.rep('a', 64) .. '\narchive_sha256=' .. bogusHash .. '\n')
+check(not sdkCache.cacheHit(cacheDir, 'x64-linux-dynamic', string.rep('a', 64)),
+  'matching SHA-256 with an invalid archive must fall back to rebuilding')
 
 local function invoke(argv: { string }, cwd: string, env: { [string]: string }?): dream_process_Result
   local result, problem = process.run(binary, argv, { cwd = cwd, env = env, stdout = 'capture', stderr = 'capture' })

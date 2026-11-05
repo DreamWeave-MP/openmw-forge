@@ -161,8 +161,12 @@ verify = function(options: Options, scanOverride: string?)
     error('dependency metadata profile/triplet/vcpkg pin mismatch')
   end
 
-  if meta.cache_schema == '2' then
-    if meta.archive_sha256 ~= sdkCache.digest(archive) then error('dependency export checksum mismatch') end
+  if meta.cache_schema ~= '3' or meta.sdk_recipe ~= config.sdkRecipe then
+    error('dependency export uses an unsupported or outdated SDK recipe')
+  end
+
+  if meta.archive_sha256 ~= sdkCache.digest(archive) then
+    error('dependency export checksum mismatch')
   end
   local sevenZip = util.tool { '7zz', '7z', '7za' }
   archiveSafety.validateArchiveEntries(sevenZip, archive)

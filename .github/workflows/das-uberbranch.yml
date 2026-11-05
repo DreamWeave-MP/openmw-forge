@@ -46,7 +46,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: artifacts/deps
-          key: forge-sdk-v2-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ hashFiles('vendor/deps/**', 'src/native_deps.jsl', 'src/native_sdk_cache.jsl', 'src/native_archive.jsl', 'src/config.jsl', 'src/assets.jsl') }}
+          key: forge-sdk-v3-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ hashFiles('vendor/deps/**', 'src/native_deps.jsl', 'src/native_sdk_cache.jsl', 'src/native_archive.jsl', 'src/config.jsl', 'src/assets.jsl') }}
       - name: Restore bounded ccache
         uses: actions/cache@v6
         with:
@@ -70,6 +70,7 @@ jobs:
           key: forge-qt-linux-gcc64-6.6.3-v1
       - name: Validate Jess source before expensive compilation
         run: |
+          jess run --trusted tools/embed_assets.jsl --check
           jess package check .
           jess run --trusted tools/style.jsl
           jess workspace test
@@ -89,7 +90,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: artifacts/deps
-          key: forge-sdk-v2-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ hashFiles('vendor/deps/**', 'src/native_deps.jsl', 'src/native_sdk_cache.jsl', 'src/native_archive.jsl', 'src/config.jsl', 'src/assets.jsl') }}
+          key: forge-sdk-v3-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ hashFiles('vendor/deps/**', 'src/native_deps.jsl', 'src/native_sdk_cache.jsl', 'src/native_archive.jsl', 'src/config.jsl', 'src/assets.jsl') }}
       - name: Save rebuilt vcpkg binary packages before reclaiming disk
         if: steps.sdk.outputs.cache-hit != 'true' && steps.vcpkg.outputs.cache-hit != 'true'
         continue-on-error: true

@@ -34,7 +34,7 @@ local function fingerprint(assets: string, triplet: string): string
   if not result then error('cannot fingerprint embedded vcpkg inputs: ' .. (failure or 'unknown')) end
 
   local parts = {
-    'forge-sdk-cache-v2', config.profile, triplet, config.vcpkgRevision,
+    'forge-sdk-cache-v3', config.sdkRecipe, config.profile, triplet, config.vcpkgRevision,
     process.env('FORGE_TOOLCHAIN_ID') or 'local-toolchain',
     config.autoconfSha512, toolVersion('/opt/rh/gcc-toolset-13/root/usr/bin/gcc'),
     toolVersion('/opt/rh/gcc-toolset-13/root/usr/bin/g++'), toolVersion('cmake'),
@@ -62,24 +62,33 @@ local function cacheHit(output: string, triplet: string, inputs: string): boolea
   local fields = metadata(util.file(prefix .. '.build-meta'))
   local expectedDigest = fields.archive_sha256 or ''
   if fields.profile ~= config.profile or fields.triplet ~= triplet
-    or fields.vcpkg_revision ~= config.vcpkgRevision or fields.cache_schema ~= '2'
+    or fields.vcpkg_revision ~= config.vcpkgRevision or fields.cache_schema ~= '3'
+    or fields.sdk_recipe ~= config.sdkRecipe
     or fields.inputs_sha256 ~= inputs
     or #expectedDigest ~= 64 or not expectedDigest:match('^[0-9a-f]+$') then
     return false
   end
 
-  if digest(prefix .. '.7z') ~= expectedDigest then
-    -- A stale/corrupted restored cache is not silently accepted.
-    print('Forge SDK cache SHA-256 mismatch: rebuilding')
+  -- Restored caches are untrusted accelerators, never mandatory inputs.
+  -- Bad bytes, inaccessible archives, an unavailable 7-Zip binary, and
+  -- malformed member listings must all trigger the verified build path.
+  local ok, valid = pcall(function(): boolean
+    if digest(prefix .. '.7z') ~= expectedDigest then return false end
+    archive.validateArchiveEntries(util.tool { '7zz', '7z', '7za' }, prefix .. '.7z')
+    return true
+  end)
+
+  if not ok or not valid then
+    print('Forge SDK cache failed integrity or archive validation; rebuilding')
     return false
   end
-  archive.validateArchiveEntries(util.tool { '7zz', '7z', '7za' }, prefix .. '.7z')
   return true
 end
 
 local function record(triplet: string, inputs: string, archivePath: string): string
   return 'profile=' .. config.profile .. '\ntriplet=' .. triplet
-    .. '\nvcpkg_revision=' .. config.vcpkgRevision .. '\ncache_schema=2'
+    .. '\nvcpkg_revision=' .. config.vcpkgRevision .. '\ncache_schema=3'
+    .. '\nsdk_recipe=' .. config.sdkRecipe
     .. '\ninputs_sha256=' .. inputs .. '\narchive_sha256=' .. digest(archivePath) .. '\n'
 end
 
