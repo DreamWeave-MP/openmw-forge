@@ -1,6 +1,6 @@
 name: OpenMW das-uberbranch (four-hour build)
 
-# Scheduled workflows execute only on the default branch and may be delayed.
+# Scheduled runs come from the default branch; execution may be delayed by GitHub.
 on:
   schedule:
     - cron: '23 */4 * * *'
@@ -15,27 +15,47 @@ concurrency:
 
 jobs:
   build:
-    name: Build and qualify on isolated heavy runner
-    runs-on: [self-hosted, Linux, X64, openmw-build]
+    name: Build OpenMW on GitHub-hosted Ubuntu (AlmaLinux 9 containers)
+    runs-on: ubuntu-24.04
     timeout-minutes: 330
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-jess
         with:
           version: ${{ vars.JESS_RELEASE_TAG }}
+      # Cache runs after checkout, so checkout's git clean cannot erase it.
+      - name: Compute daily cache generation
+        id: cache-key
+        run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+      - name: Restore bounded compiler cache
+        uses: actions/cache@v4
+        with:
+          path: work/cache/ccache
+          key: forge-ccache-alma9-${{ runner.arch }}-${{ steps.cache-key.outputs.day }}
+          restore-keys: forge-ccache-alma9-${{ runner.arch }}-
+      - name: Restore binary dependency cache
+        uses: actions/cache@v4
+        with:
+          path: work/cache/vcpkg-binaries
+          key: forge-vcpkg-alma9-${{ runner.arch }}-${{ hashFiles('src/config.jsl', 'src/native.jsl', 'src/native_deps.jsl', 'src/assets.jsl') }}-${{ steps.cache-key.outputs.day }}
+          restore-keys: |
+            forge-vcpkg-alma9-${{ runner.arch }}-${{ hashFiles('src/config.jsl', 'src/native.jsl', 'src/native_deps.jsl', 'src/assets.jsl') }}-
       - name: Validate Jess source before expensive compilation
         run: |
           jess package check .
           jess run --trusted tools/style.jsl
           jess workspace test
           docker info
+          df -h .
       - name: Compile Forge ELF
         run: |
           mkdir -p build
           jess run --trusted tools/release.jsl "$PWD/build/openmw-forge-linux-x64"
-      - name: Build configured OpenMW, verify tarballs and distro launchers
+      - name: Build configured OpenMW, run GoogleTests, verify archive and distro launchers
         env:
           FORGE_BIN: ${{ github.workspace }}/build/openmw-forge-linux-x64
         run: jess run --trusted --package . tools/uberbranch.jsl
@@ -47,14 +67,16 @@ jobs:
           retention-days: 3
 
   publish:
-    name: Verify transferred files, publish das-uberbranch
+    name: Verify transferred files and publish das-uberbranch
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-jess
         with:
           version: ${{ vars.JESS_RELEASE_TAG }}

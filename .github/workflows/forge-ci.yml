@@ -14,7 +14,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-jess
         with:
           version: ${{ vars.JESS_RELEASE_TAG }}
@@ -39,8 +41,37 @@ jobs:
           retention-days: 7
 
   docs:
-    name: Documentation site (StroggForge-style GitHub Pages)
+    name: Generate Zola site (StroggForge site generator)
     needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-jess
+        with:
+          version: ${{ vars.JESS_RELEASE_TAG }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: zola@0.23.6
+          fallback: none
+      - name: Generate documentation pages from the canonical Markdown
+        run: jess run --trusted --package . tools/docs.jsl
+      - name: Build the same Zola site as StroggForge
+        run: zola --root site build --base-url "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/" --output-dir ../public
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openmw-forge-site
+          path: public/
+          if-no-files-found: error
+          retention-days: 1
+
+  docs-deploy:
+    name: Deploy documentation to GitHub Pages
+    needs: docs
     if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-24.04
     permissions:
@@ -51,14 +82,13 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
-      - uses: actions/jekyll-build-pages@v1
+      - uses: actions/download-artifact@v4
         with:
-          source: ./docs
-          destination: ./_site
+          name: openmw-forge-site
+          path: public/
+      - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: ./_site
+          path: public/
       - id: deploy
         uses: actions/deploy-pages@v4
