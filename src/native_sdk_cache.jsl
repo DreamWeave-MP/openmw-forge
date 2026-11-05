@@ -1,0 +1,89 @@
+--!strict
+-- OpenMW-specific, content-addressed vcpkg export cache. The ABI scan runs
+-- when a new export is produced; cache hits are permitted only after matching
+-- inputs, metadata, archive bytes and the safe member listing are verified.
+local fs = require '@dream/fs'
+local process = require '@dream/process'
+local util = require '@forge/native-util'
+local archive = require '@forge/native-archive'
+local config = require '@forge/config'
+
+local function digest(path: string): string
+  local output = util.checked('sha256sum', { path })
+  local value = output:match('^([0-9a-f]+)')
+  if not value or #value ~= 64 then error('invalid SHA-256 for ' .. path) end
+  return value
+end
+
+local function hashText(value: string): string
+  local result, failure = process.run('sha256sum', {}, { stdin = value, stdout = 'capture', stderr = 'capture' })
+  if not result or not result.success then error('cannot hash SDK inputs: ' .. (failure or 'sha256sum failure')) end
+  local hash = (result.stdout or ''):match('^([0-9a-f]+)')
+  if not hash or #hash ~= 64 then error('invalid SDK input SHA-256') end
+  return hash
+end
+
+local function toolVersion(program: string): string
+  local result = process.run(program, { '--version' }, { stdout = 'capture', stderr = 'capture' })
+  if not result or not result.success then return 'unavailable:' .. program end
+  return (result.stdout or ''):match('^[^\r\n]+') or 'unknown:' .. program
+end
+
+local function fingerprint(assets: string, triplet: string): string
+  local result, failure = fs.walk(assets, { include = 'files', sort = true })
+  if not result then error('cannot fingerprint embedded vcpkg inputs: ' .. (failure or 'unknown')) end
+
+  local parts = {
+    'forge-sdk-cache-v2', config.profile, triplet, config.vcpkgRevision,
+    process.env('FORGE_TOOLCHAIN_ID') or 'local-toolchain',
+    config.autoconfSha512, toolVersion('/opt/rh/gcc-toolset-13/root/usr/bin/gcc'),
+    toolVersion('/opt/rh/gcc-toolset-13/root/usr/bin/g++'), toolVersion('cmake'),
+    toolVersion('/usr/local/bin/autoconf'),
+  }
+
+  for _, relative in result.paths do
+    table.insert(parts, relative .. '=' .. digest(assets .. '/' .. relative))
+  end
+  return hashText(table.concat(parts, '\n') .. '\n')
+end
+
+local function metadata(content: string): { [string]: string }
+  local parsed: { [string]: string } = {}
+  for line in content:gmatch('[^\r\n]+') do
+    local key, value = line:match('^([%w_]+)=([^\r\n]*)$')
+    if key and value then parsed[key] = value end
+  end
+  return parsed
+end
+
+local function cacheHit(output: string, triplet: string, inputs: string): boolean
+  local prefix = output .. '/vcpkg-' .. triplet
+  if not fs.isFile(prefix .. '.7z') or not fs.isFile(prefix .. '.build-meta') then return false end
+  local fields = metadata(util.file(prefix .. '.build-meta'))
+  local expectedDigest = fields.archive_sha256 or ''
+  if fields.profile ~= config.profile or fields.triplet ~= triplet
+    or fields.vcpkg_revision ~= config.vcpkgRevision or fields.cache_schema ~= '2'
+    or fields.inputs_sha256 ~= inputs
+    or #expectedDigest ~= 64 or not expectedDigest:match('^[0-9a-f]+$') then
+    return false
+  end
+
+  if digest(prefix .. '.7z') ~= expectedDigest then
+    -- A stale/corrupted restored cache is not silently accepted.
+    print('Forge SDK cache SHA-256 mismatch: rebuilding')
+    return false
+  end
+  archive.validateArchiveEntries(util.tool { '7zz', '7z', '7za' }, prefix .. '.7z')
+  return true
+end
+
+local function record(triplet: string, inputs: string, archivePath: string): string
+  return 'profile=' .. config.profile .. '\ntriplet=' .. triplet
+    .. '\nvcpkg_revision=' .. config.vcpkgRevision .. '\ncache_schema=2'
+    .. '\ninputs_sha256=' .. inputs .. '\narchive_sha256=' .. digest(archivePath) .. '\n'
+end
+
+return table.freeze {
+  digest = digest, hashText = hashText, fingerprint = fingerprint,
+  metadata = metadata, cacheHit = cacheHit, record = record,
+}

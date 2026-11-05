@@ -7,7 +7,8 @@ local args = require '@forge/args'
 local archiveSafety = require '@forge/native-archive'
 
 type Options = args.Options
-local Revision = '6d332a018c433fad20822ff4b536e4ccdc3413bd'
+local sdkCache = require '@forge/native-sdk-cache'
+local Revision = config.vcpkgRevision
 
 local function newer(left: string, right: string): boolean
   local leftParts: { number }, rightParts: { number } = {}, {}
@@ -68,13 +69,18 @@ end
 
 local verify: (Options, string?) -> ()
 
-local function run(options: Options)
+local function runUnlocked(options: Options)
   if options.triplet ~= config.triplet then error('only pinned x64-linux-dynamic triplet is qualified') end
   local root = options.root .. '/work/forge-assets/deps'
   if not fs.isFile(root .. '/vcpkg.json') then error('embedded dependency assets not staged') end
   util.mkdir(options.depsOutput)
   if not options.noSystemPackages then installDependencies() end
   setupAutoconf(options.root)
+  local inputs = sdkCache.fingerprint(root, options.triplet)
+  if not options.clean and sdkCache.cacheHit(options.depsOutput, options.triplet, inputs) then
+    print('PASS reuse SHA-256-verified AlmaLinux 9 SDK export ' .. inputs:sub(1, 12))
+    return
+  end
   local vcpkg = options.root .. '/work/vcpkg'
   local marker = vcpkg .. '/.git/forge-owner'
   if options.clean and fs.isDir(vcpkg .. '/.git') then
@@ -115,13 +121,13 @@ local function run(options: Options)
     'export', '--x-all-installed', '--7zip', '--output-dir', pending,
     '--output', 'vcpkg-' .. options.triplet,
   }, root, env)
-  util.write(pending .. '/vcpkg-' .. options.triplet .. '.build-meta',
-    `profile=alma9\ntriplet={options.triplet}\nimage=almalinux:9\nvcpkg_revision={Revision}\nvcpkg_dir={vcpkg}\n`)
   local candidate = table.clone(options)
   candidate.depsOutput = pending
   -- Verify against the installed tree, with no redundant archive extraction.
   local installed = root .. '/vcpkg_installed/' .. options.triplet
   if not fs.isDir(installed) then installed = vcpkg .. '/installed/' .. options.triplet end
+  util.write(pending .. '/vcpkg-' .. options.triplet .. '.build-meta',
+    sdkCache.record(options.triplet, inputs, pending .. '/vcpkg-' .. options.triplet .. '.7z'))
   verify(candidate, installed)
   for _, suffix in { '.7z', '.build-meta' } do
     local name = 'vcpkg-' .. options.triplet .. suffix
@@ -132,20 +138,31 @@ local function run(options: Options)
   print('Exported verified dependency archive: ' .. exportPath(options))
 end
 
-local function parseMetadata(contents: string): { [string]: string }
-  local result: { [string]: string } = {}
-  for key, value in string.gmatch(contents, '([%w_]+)=([^\r\n]*)') do result[key] = value end
-  return result
+-- A kernel-owned advisory lock prevents two Forge instances from replacing the
+-- same SDK export or using the same vcpkg installed tree simultaneously.
+-- Unlike a sentinel directory, a crashed process cannot strand the lock.
+local function run(options: Options)
+  util.mkdir(options.depsOutput)
+  local lock, failure = fs.lock(options.depsOutput .. '/.forge-sdk.lock')
+  if not lock then error('SDK export already in use: ' .. (failure or 'cannot lock directory')) end
+  -- Run the entire vcpkg transaction under a lock; release it even when a
+  -- tool fails so another invocation can retry safely.
+  local ok, problem = pcall(runUnlocked, options)
+  lock:unlock()
+  if not ok then error(tostring(problem)) end
 end
-
 
 verify = function(options: Options, scanOverride: string?)
   local archive = exportPath(options)
   local info = fs.stat(archive)
   if not info or info.size == 0 then error('missing or empty dependency export ' .. archive) end
-  local meta = parseMetadata(util.file(options.depsOutput .. '/vcpkg-' .. options.triplet .. '.build-meta'))
+  local meta = sdkCache.metadata(util.file(options.depsOutput .. '/vcpkg-' .. options.triplet .. '.build-meta'))
   if meta.profile ~= 'alma9' or meta.triplet ~= options.triplet or meta.vcpkg_revision ~= Revision then
     error('dependency metadata profile/triplet/vcpkg pin mismatch')
+  end
+
+  if meta.cache_schema == '2' then
+    if meta.archive_sha256 ~= sdkCache.digest(archive) then error('dependency export checksum mismatch') end
   end
   local sevenZip = util.tool { '7zz', '7z', '7za' }
   archiveSafety.validateArchiveEntries(sevenZip, archive)

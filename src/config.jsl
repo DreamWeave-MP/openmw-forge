@@ -2,6 +2,7 @@
 -- Canonical Linux baseline. No implicit fallback to a legacy AlmaLinux 8 archive.
 local Config = table.freeze {
   image = 'almalinux:9',
+  vcpkgRevision = '6d332a018c433fad20822ff4b536e4ccdc3413bd',
   profile = 'alma9',
   triplet = 'x64-linux-dynamic',
   buildType = 'RelWithDebInfo',
