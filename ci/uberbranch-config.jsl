@@ -1,0 +1,9 @@
+--!strict
+-- This is the only repository-level selection for the four-hour OpenMW build.
+-- Change repository and ref here when moving to a different fork/branch.
+return table.freeze {
+  repository = 'https://gitlab.com/OpenMW/openmw.git',
+  ref = 'master',
+  releaseTag = 'das-uberbranch',
+  jobs = 8,
+}

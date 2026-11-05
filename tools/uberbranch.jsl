@@ -1,0 +1,4 @@
+#!/usr/bin/env -S jess run --trusted --package .
+--!strict
+local job = require '@forge/uberbranch'
+job.run({ ... })

@@ -1,0 +1,206 @@
+--!strict
+-- CI release orchestrator. Source/ref live in ci/uberbranch-config.jsl.
+local fs = require '@dream/fs'
+local process = require '@dream/process'
+local util = require '@forge/native-util'
+local source = require '@forge/source'
+local config = require '@forge/uberbranch-config'
+
+type Config = { read repository: string, read ref: string, read releaseTag: string, read jobs: number }
+
+local function validate(settings: Config): (boolean, string?)
+  if not source.validRepo(settings.repository) then return false, 'invalid scheduled OpenMW repository' end
+  if not source.validRef(settings.ref) then return false, 'invalid scheduled OpenMW ref' end
+  if settings.releaseTag ~= 'das-uberbranch' then return false, 'scheduled release must be das-uberbranch' end
+
+  if settings.jobs < 1 or settings.jobs > 1024 or settings.jobs % 1 ~= 0 then
+    return false, 'scheduled jobs must be an integer between 1 and 1024'
+  end
+  return true, nil
+end
+
+local function buildArgs(settings: Config, output: string): { string }
+  return {
+    'pipeline', '--repo', settings.repository, '--ref', settings.ref,
+    '--engine', 'docker', '--jobs', tostring(settings.jobs),
+    '--run-tests', '--output-dir', output,
+  }
+end
+
+local function isMainTarball(name: string): boolean
+  return name:match('^openmw%-.*%-Linux%-64Bit%.tar%.gz$') ~= nil
+end
+
+local function findOutputs(directory: string): (string, string)
+  local main: string? = nil
+  local debug: string? = nil
+  for _, name in util.list(directory) do
+    if isMainTarball(name) then
+      if main then error('more than one OpenMW archive in scheduled output') end
+      main = directory .. '/' .. name
+    elseif name:match('^openmw%-.*%-Linux%-64Bit%-debug%.tar%.gz$') then
+      if debug then error('more than one OpenMW debug archive in scheduled output') end
+      debug = directory .. '/' .. name
+    end
+  end
+
+  if not main or not debug then error('scheduled release requires exactly one main and one debug archive') end
+
+  for _, path in { main, debug } do
+    local stat = fs.stat(path)
+    if not stat or stat.size == 0 then error('missing or empty release artifact: ' .. path) end
+  end
+
+  return main :: string, debug :: string
+end
+
+local function publish(tag: string, root: string, files: { string }, notes: string)
+  local env = { GH_PROMPT_DISABLED = '1' }
+  local view = process.run('gh', { 'release', 'view', tag }, { cwd = root, env = env, stdout = 'capture', stderr = 'capture' })
+  if not view or not view.success then
+    -- A network/authentication error must not be mistaken for permission to
+    -- overwrite an existing release; create will fail safely if it exists.
+    local target = process.env('GITHUB_SHA') or 'HEAD'
+    util.stream('gh', { 'release', 'create', tag, '--target', target, '--title', 'OpenMW das-uberbranch',
+      '--prerelease', '--notes-file', notes }, root, env)
+  end
+  local argv = { 'release', 'upload', tag }
+  for _, path in files do table.insert(argv, path) end
+  table.insert(argv, '--clobber')
+  util.stream('gh', argv, root, env)
+  util.stream('gh', { 'release', 'edit', tag, '--notes-file', notes, '--prerelease' }, root, env)
+
+  -- Each upstream revision has a distinct filename. Keep this rolling release
+  -- focused on the most recently qualified build, not a growing list of old
+  -- archives. Prune only Forge-named tarballs, never unrelated release assets.
+  local listed, failure = process.run('gh', {
+    'release', 'view', tag, '--json', 'assets', '--jq', '.assets[].name',
+  }, { cwd = root, env = env, stdout = 'capture', stderr = 'capture' })
+
+  if not listed or not listed.success then error('cannot list rolling release assets: ' .. (failure or 'unknown')) end
+  local current: { [string]: boolean } = {}
+  for _, path in files do
+    current[fs.fileName(path) or path] = true
+  end
+
+  for name in (listed.stdout or ''):gmatch('[^\r\n]+') do
+    if (isMainTarball(name) or name:match('^openmw%-.*%-Linux%-64Bit%-debug%.tar%.gz$'))
+      and not current[name] then
+      util.stream('gh', { 'release', 'delete-asset', tag, name, '--yes' }, root, env)
+    end
+  end
+end
+
+-- Verify artifacts received from the low-privilege build runner before
+-- allowing the high-privilege publication job to touch a GitHub release.
+local function publishArtifacts(directory: string, root: string)
+  local token = process.env('GH_TOKEN')
+  if process.env('GITHUB_ACTIONS') ~= 'true' or not token or token == '' then
+    error('publishing requires GitHub Actions and GH_TOKEN')
+  end
+  local main, debug = findOutputs(directory)
+  local notes = directory .. '/SOURCE.txt'
+  local checksums = directory .. '/SHA256SUMS'
+  local content = util.file(notes)
+  if not content:find('OpenMW repository: ' .. config.repository .. '\n', 1, true)
+    or not content:find('OpenMW requested ref: ' .. config.ref .. '\n', 1, true) then
+    error('release provenance does not match the checked-in source selection')
+  end
+  local revision = content:match('OpenMW resolved SHA: ([0-9a-f]+)\n')
+  if not revision or #revision ~= 40 then error('release provenance missing full source SHA') end
+
+  if not main:find('-g' .. revision:sub(1, 12) .. '-', 1, true) then
+    error('release tarball filename does not match source provenance')
+  end
+  local allowed: { [string]: string } = {}
+  for _, path in { main, debug, notes } do allowed[fs.fileName(path) or ''] = path end
+  local expected: { [string]: boolean } = {}
+  for line in util.file(checksums):gmatch('[^\r\n]+') do
+    local hash, filename = line:match('^([0-9a-f]+)  ([^/\\]+)$')
+    if not hash or #hash ~= 64 or not filename or not allowed[filename] or expected[filename] then
+      error('invalid or duplicate release checksum entry: ' .. line)
+    end
+    local actual = util.checked('sha256sum', { allowed[filename] }):match('^([a-f0-9]+)')
+    if actual ~= hash then error('release checksum mismatch: ' .. filename) end
+    expected[filename] = true
+  end
+
+  for filename in allowed do
+    if not expected[filename] then error('missing checksum for ' .. filename) end
+  end
+  publish(config.releaseTag, root, { main, debug, notes, checksums }, notes)
+end
+
+local function run(argv: { string })
+  local root, failure = fs.cwd()
+  if not root then error(failure or 'cannot determine repository root') end
+  if not fs.isFile(root .. '/jess.toml') then error('run from the OpenMW Forge repository root') end
+  local valid, reason = validate(config)
+  if not valid then error(reason or 'invalid scheduled release configuration') end
+
+  if argv[1] == '--publish-artifacts' then
+    if #argv ~= 2 or argv[2] == '' then error('usage: --publish-artifacts /absolute/output/dir') end
+    publishArtifacts(argv[2], root)
+    return
+  end
+
+  local dry = false
+  local binary = process.env('FORGE_BIN') or (root .. '/build/openmw-forge-linux-x64')
+  local index = 1
+  while index <= #argv do
+    local flag = argv[index]
+    if flag == '--dry-run' then dry = true
+    elseif flag == '--forge' then
+      index += 1
+      binary = argv[index] or ''
+    else error('unknown scheduled option: ' .. flag) end
+    index += 1
+  end
+
+  if binary == '' then error('--forge requires an executable path') end
+
+  local runId = process.env('GITHUB_RUN_ID') or 'local'
+  local attempt = process.env('GITHUB_RUN_ATTEMPT') or '1'
+  if not runId:match('^[%w%-]+$') or not attempt:match('^%d+$') then error('invalid CI run identity') end
+  local output = root .. '/artifacts/uberbranch/' .. runId .. '-' .. attempt
+  local command = buildArgs(config, output)
+
+  print(`Scheduled OpenMW source: {config.repository} @ {config.ref}`)
+  print(`GitHub release: {config.releaseTag}`)
+  print('Forge command: ' .. binary .. ' ' .. table.concat(command, ' '))
+
+  if dry then return end
+  if not fs.isFile(binary) then error('compiled Forge executable missing: ' .. binary) end
+  if fs.exists(output) then error('refusing to reuse previously populated scheduled output: ' .. output) end
+  util.stream(binary, command, root)
+  local main, debug = findOutputs(output)
+  local checkout = source.path(root, config.repository)
+  local revision = util.file(checkout .. '/.git/forge-revision'):gsub('%s+$', '')
+  if not revision:match('^[0-9a-f]+$') or #revision ~= 40 then error('invalid resolved source SHA') end
+
+  if not main:find('-g' .. revision:sub(1, 12) .. '-', 1, true) then
+    error('archive name does not match resolved OpenMW revision')
+  end
+  -- Run the packaged launchers inside real distribution containers; publication
+  -- is disabled if this release gate fails.
+
+  util.stream(binary, { 'smoke', '--archive', main, '--engine', 'docker',
+    '--distros', 'almalinux-9,ubuntu-24.04', '--with-qt' }, root)
+
+  local notes = output .. '/SOURCE.txt'
+  util.write(notes, `OpenMW repository: {config.repository}\nOpenMW requested ref: {config.ref}\nOpenMW resolved SHA: {revision}\nForge CI run: {runId}/{attempt}\n`)
+  local checksums = output .. '/SHA256SUMS'
+  local lines: { string } = {}
+  for _, path in { main, debug, notes } do
+    local checksum = util.checked('sha256sum', { path }):match('^([0-9a-f]+)')
+    if not checksum or #checksum ~= 64 then error('failed to compute artifact SHA-256: ' .. path) end
+    table.insert(lines, checksum .. '  ' .. (fs.fileName(path) or path))
+  end
+  util.write(checksums, table.concat(lines, '\n') .. '\n')
+  print('PASS qualified scheduled OpenMW artifacts at ' .. output)
+end
+
+return table.freeze {
+  validate = validate, buildArgs = buildArgs, isMainTarball = isMainTarball,
+  findOutputs = findOutputs, publishArtifacts = publishArtifacts, run = run,
+}
