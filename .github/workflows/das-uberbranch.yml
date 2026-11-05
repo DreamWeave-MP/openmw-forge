@@ -73,7 +73,7 @@ jobs:
           jess run --trusted tools/embed_assets.jsl --check
           jess package check .
           jess run --trusted tools/style.jsl
-          jess workspace test
+          jess package test .
           docker info
           df -h .
       - name: Compile Forge ELF

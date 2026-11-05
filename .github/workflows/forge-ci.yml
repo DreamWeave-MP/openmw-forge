@@ -21,14 +21,12 @@ jobs:
       - uses: ./.github/actions/setup-jess
         with:
           version: ${{ vars.JESS_RELEASE_TAG }}
-      - name: Restore pinned Jess site-tool dependencies
-        run: jess workspace sync --locked
       - name: Verify Jess source, style and source/JPK tests
         run: |
           jess run --trusted tools/embed_assets.jsl --check
           jess package check .
           jess run --trusted tools/style.jsl
-          jess workspace test
+          jess package test .
       - name: Compile a standalone Linux executable
         run: |
           mkdir -p build

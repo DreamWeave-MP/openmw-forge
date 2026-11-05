@@ -4,13 +4,24 @@ local fs = require '@dream/fs'
 local process = require '@dream/process'
 local argv = { ... }
 local binary = argv[1] or process.env('FORGE_BIN')
-local jessBin = process.env('JESS_BIN') or 'jess'
+local jessBin = process.env('JESS_BIN')
+if not jessBin or jessBin == '' then
+  local resolved, failure = process.run('which', { 'jess' }, { stdout = 'capture', stderr = 'capture' })
+  if not resolved or not resolved.success then error('cannot resolve Jess on PATH: ' .. (failure or 'unknown')) end
+  jessBin = (resolved.stdout or ''):match('^([^\r\n]+)')
+end
+
+if not jessBin or jessBin:sub(1, 1) ~= '/' or not fs.isFile(jessBin) then
+  error('JESS_BIN must resolve to an absolute Jess executable path')
+end
+local runtime: string = jessBin :: string
+
 if not binary or binary == '' then error('usage: tools/validate.jsl /absolute/path/to/compiled-forge') end
 if not fs.isFile(binary) then error('compiled Forge binary is missing: ' .. binary) end
 
 local function gate(label: string, command: { string })
   print('=== ' .. label .. ' ===')
-  local result, failure = process.run(jessBin, command, { stdout = 'capture', stderr = 'capture' })
+  local result, failure = process.run(runtime, command, { stdout = 'capture', stderr = 'capture' })
   if not result or not result.success then
     error(`{label} failed: {failure or ''}\n{if result then result.stdout or '' else ''}\n{if result then result.stderr or '' else ''}`)
   end
@@ -19,11 +30,11 @@ end
 
 gate('embedded asset parity', { 'run', '--trusted', 'tools/embed_assets.jsl', '--check' })
 gate('strict package', { 'package', 'check', '.' })
-gate('Jess source/packed tests', { 'workspace', 'test' })
+gate('Jess source/packed tests', { 'package', 'test', '.' })
 gate('Jess style', { 'run', '--trusted', 'tools/style.jsl' })
 print('=== compiled integration ===')
-local result, failure = process.run(jessBin, { 'run', '--trusted', '--package', '.', 'tools/integration.jsl', binary }, {
-  env = { JESS_BIN = jessBin }, stdout = 'capture', stderr = 'capture',
+local result, failure = process.run(runtime, { 'run', '--trusted', '--package', '.', 'tools/integration.jsl', binary }, {
+  env = { JESS_BIN = runtime }, stdout = 'capture', stderr = 'capture',
 })
 
 if not result or not result.success then
