@@ -77,7 +77,13 @@ local function run(options: Options)
   if not options.noSystemPackages then installDependencies() end
   setupAutoconf(options.root)
   local vcpkg = options.root .. '/work/vcpkg'
-  if options.clean then util.remove(vcpkg) end
+  local marker = vcpkg .. '/.git/forge-owner'
+  if options.clean and fs.isDir(vcpkg .. '/.git') then
+    if not fs.isFile(marker) or util.file(marker) ~= 'openmw-forge-vcpkg-v1\n' then
+      error('refusing --clean on unmanaged vcpkg checkout')
+    end
+    util.stream('git', { '-C', vcpkg, 'clean', '-ffdqx' })
+  end
 
   if not fs.isDir(vcpkg .. '/.git') then
     util.stream('git', { 'clone', 'https://github.com/microsoft/vcpkg.git', vcpkg })
@@ -85,11 +91,16 @@ local function run(options: Options)
     util.stream('git', { 'fetch', 'origin', Revision }, vcpkg)
   end
   util.stream('git', { 'checkout', '--detach', Revision }, vcpkg)
+  util.write(marker, 'openmw-forge-vcpkg-v1\n')
   -- vcpkg owns its bootstrap shell script; Forge never runs a Bash orchestration worker.
   util.stream('./bootstrap-vcpkg.sh', { '-disableMetrics' }, vcpkg, toolsetEnv())
   local env = toolsetEnv()
   env.VCPKG_ROOT = vcpkg
   env.VCPKG_MAX_CONCURRENCY = tostring(options.jobs)
+  -- The binary cache is a host volume for containers, and persistent locally.
+  local binaryCache = options.root .. '/work/vcpkg-binaries'
+  util.mkdir(binaryCache)
+  env.VCPKG_DEFAULT_BINARY_CACHE = binaryCache
   util.stream(vcpkg .. '/vcpkg', {
     'install', '--overlay-ports=' .. root .. '/ports', '--overlay-triplets=' .. root .. '/triplets',
     '--triplet', options.triplet, '--host-triplet', options.triplet,

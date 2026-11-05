@@ -52,7 +52,7 @@ local function flags(options: Options, inner: boolean): { string }
   for _, toggle in {
     { options.clean, '--clean' }, { options.portable, '--portable' },
     { options.stageOnly, '--stage-only' }, { options.runTests, '--run-tests' },
-    { options.noQt, '--no-qt' }, { options.noSystemPackages, '--no-system-packages' },
+    { options.noQt, '--no-qt' }, { options.noSystemPackages or inner, '--no-system-packages' },
     { options.noCcache, '--no-ccache' }, { options.noPrepare, '--no-prepare' },
     { options.noCompat, '--no-compat' }, { options.noSmoke, '--no-smoke' },
   } do
@@ -74,13 +74,21 @@ end
 local function depsSteps(plan: Plan, options: Options)
   table.insert(plan.directories, options.depsOutput)
   if options.mode == 'container' then
+    -- Persist both the vcpkg source/download tree and compiled binary cache.
+    local checkout = options.root .. '/work/cache/vcpkg'
+    local binaries = options.root .. '/work/cache/vcpkg-binaries'
+    table.insert(plan.directories, checkout)
+    table.insert(plan.directories, binaries)
     local command = {
       'run', '--rm', '-v', containerVolume(options, options.depsOutput, '/depout', false),
+      '-v', containerVolume(options, checkout, '/forge/work/vcpkg', false),
+      '-v', containerVolume(options, binaries, '/forge/work/vcpkg-binaries', false),
       'openmw-forge:alma9', '/usr/local/bin/openmw-forge', '__deps',
       '--deps-output', '/depout', '--triplet', options.triplet, '--jobs', tostring(options.jobs),
     }
 
-    if options.noSystemPackages then table.insert(command, '--no-system-packages') end
+    -- Provision toolchains in the image, not per ephemeral container.
+    table.insert(command, '--no-system-packages')
     if options.clean then table.insert(command, '--clean') end
     step(plan, 'build dependencies with Jess', options.engine, command, options.root)
   else
