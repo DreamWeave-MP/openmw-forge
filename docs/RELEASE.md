@@ -2,53 +2,76 @@
 layout: default
 ---
 
-# das-uberbranch: scheduled OpenMW Linux release
+# das-uberbranch: four-hour Linux releases
 
-A separate GitHub Actions workflow runs at minute 23 every four hours UTC:
+This is a **separate** GitHub Actions workflow, not part of the Forge source
+validation lane. It runs on standard `ubuntu-24.04` GitHub-hosted runners and
+builds the payload inside AlmaLinux 9 Docker containers.
 
 ```yaml
-schedule:
-  - cron: '23 */4 * * *'
+on:
+  schedule:
+    - cron: '23 */4 * * *'
+  workflow_dispatch:
 ```
 
-Edit **`ci/uberbranch-config.jsl`** to change only the tracked source:
+## Change the OpenMW fork or branch
+
+Edit one source-controlled file: **`ci/uberbranch-config.jsl`**.
 
 ```luau
-repository = 'https://gitlab.com/OpenMW/openmw.git',
-ref = 'master',
-releaseTag = 'das-uberbranch',
-jobs = 8,
+return table.freeze {
+  repository = 'https://gitlab.com/OpenMW/openmw.git',
+  ref = 'master',
+  releaseTag = 'das-uberbranch',
+  jobs = 2,
+}
 ```
 
-Use the SSH/HTTPS clone URL of any OpenMW fork and a branch, tag or SHA. Forge
-will fetch it into an isolated managed checkout, record the resolved full Git
-SHA, and include its prefix in the package filename. Config validation rejects
-invalid remote/ref values. Do not edit the GitHub workflow just to swap forks.
+The initial source is official OpenMW `master`. To build a fork, change only
+`repository` and `ref` to the desired HTTPS/SSH clone URL and branch, tag, or
+commit. No workflow YAML edit and no separate OpenMW checkout are required.
+The managed checkout records the resolved **full Git SHA** and Forge records
+that revision in the tarball name and `SOURCE.txt` provenance.
 
-The job compiles Forge from the current repository, runs the full dependency
-and OpenMW pipeline (including GoogleTests), assembles the Linux + debug
-archives, audits the ABI, executes actual packaged launchers (including the required Qt launcher)
-in AlmaLinux 9 and Ubuntu 24.04, and checks the provenance SHA and artifact hashes before
-uploading to the **`das-uberbranch`** GitHub prerelease. The build job
-never receives a release-capable GitHub token: it uploads a short-lived
-workflow artifact, and a separate write-permitted job verifies the downloaded
-files before release publication.
+## Successful release criteria
 
-Release assets include the main tarball, matching `-debug.tar.gz`, `SOURCE.txt`
-with the exact upstream revision and CI run, and `SHA256SUMS`. Builds with
-failed smoke tests or missing artifacts never reach the upload step. Individual GitHub asset replacement is **not atomic as a group**. A
-successful update removes older Forge tarball assets once the current tarballs
-and metadata have been uploaded. Unrelated release assets are preserved. If
-an upload fails, the previous revision can remain partially visible; inspect
-`SOURCE.txt` and `SHA256SUMS` for a coherent release set.
+1. Check out Forge without leaving GitHub credentials in Git config.
+2. Restore bounded `ccache` and vcpkg binary caches where available.
+3. Run Jess strict/style and source/JPK tests, compile the standalone ELF.
+4. Build vcpkg and OpenMW in AlmaLinux 9, including OpenMW GoogleTests.
+5. Produce the main `.tar.gz` and matching `-debug.tar.gz`.
+6. Inspect ABI ceilings and execute **packaged launchers and raw ELF binaries**
+   in AlmaLinux 9 and Ubuntu 24.04 smoke containers.
+7. Transfer files through a short-lived Actions artifact; a separate job
+   validates SHA-256 and the configured repository/ref/full SHA before using
+   `contents: write` to update the `das-uberbranch` prerelease.
 
-You can inspect config without compiling or publishing:
+The rolling prerelease includes the main package, matching debug package,
+`SOURCE.txt`, and `SHA256SUMS`. Its previous Forge tarballs are pruned after
+success while unrelated assets remain. GitHub Release assets are independent
+objects, not an atomic multi-asset transaction. Consumers should verify the
+checksums and matching source revision before using a rolling release.
+
+## First-time activation
+
+1. Merge the new workflows onto the Forge repository's **default branch**.
+2. Enable GitHub Actions and allow workflows to create releases using the
+   repository's `GITHUB_TOKEN` (`contents: write` is granted only to the
+   publication job). No personal access token is required for public OpenMW.
+3. Optionally pin `JESS_RELEASE_TAG` under repository variables.
+4. Select Settings → Pages → Source **GitHub Actions** for the documentation.
+5. Trigger **OpenMW das-uberbranch (four-hour build)** manually; check output,
+   cache hit rates, peak disk usage, test results and the final release assets.
+6. Only after that successful qualification rely on the periodic schedule.
+
+Dry-run the selection without touching Git or compiling:
 
 ```sh
 jess run --trusted --package . tools/uberbranch.jsl --dry-run
 ```
 
-Trigger a real run from Actions → **OpenMW das-uberbranch (four-hour build)** →
-Run workflow. It needs the labeled self-hosted runner described in [CI](CI.md).
-Nothing starts automatically until the workflow is merged into the repository's
-default branch, Actions is enabled, and the runner is online.
+GitHub schedules can be delayed or dropped under load. Two runs do not overlap;
+when a previous build occupies the runner beyond four hours, scheduled runs
+may coalesce. The hard limit is 330 minutes per build job. See
+[CI](CI.md), [performance](PERFORMANCE.md) and [release readiness](RELEASE-READINESS.md).

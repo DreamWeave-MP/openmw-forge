@@ -27,6 +27,8 @@ required only to build the Forge executable from source.
 - [Release-readiness limits](RELEASE-READINESS.md)
 - [Validation gates](VALIDATION.md)
 - [Migration audit](AUDIT.md)
+- [Performance and cache design](PERFORMANCE.md)
+- [Troubleshooting](TROUBLESHOOTING.md)
 
 The built release is a portable OpenMW tarball, *not* a container image. A
 passing synthetic integration fixture does not prove that a production OpenMW

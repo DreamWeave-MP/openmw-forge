@@ -6,10 +6,11 @@ The OpenMW source checkout, external build tools, a container engine (Podman or 
 
 ## CI, documentation and the four-hour OpenMW release
 
-Forge provides two independent GitHub Actions workflows following StroggForge's
-Pages/release conventions. The standard `.github/workflows/forge-ci.yml` checks
-Jess strict/style, source+JPK tests and the standalone Linux ELF, then publishes
-GitHub Pages documentation from [`docs/`](docs/index.md) on the default branch.
+Forge provides two independent GitHub Actions workflows using standard
+GitHub-hosted Ubuntu runners, plus a Zola documentation site following
+StroggForge's site-generator conventions. The standard `.github/workflows/forge-ci.yml` checks
+Jess strict/style, source+JPK tests and the standalone Linux ELF, then generates and publishes the Zola documentation site from the canonical
+[`docs/`](docs/index.md) Markdown on the default branch.
 The separate `.github/workflows/das-uberbranch.yml` schedules an OpenMW
 **Linux + debug** package every four hours (`23 */4 * * *` UTC), running real
 AlmaLinux 9/Docker builds, GoogleTests, archive and launcher verification, and
@@ -18,10 +19,12 @@ a cross-distro smoke gate before updating the `das-uberbranch` prerelease.
 **To switch the scheduled fork or branch, edit only**
 [`ci/uberbranch-config.jsl`](ci/uberbranch-config.jsl): its `repository` and
 `ref` initially select official `https://gitlab.com/OpenMW/openmw.git` at
-`master`. The workflow needs a Docker-enabled self-hosted x86-64 Linux runner
-labeled `openmw-build`; GitHub releases are published by a separate, narrowly
-write-permitted job. For setup, see [CI](docs/CI.md), [scheduled releases](docs/RELEASE.md),
-[CLI examples](docs/CLI.md) and [release qualification](docs/RELEASE-READINESS.md).
+`master`. The workflow uses ordinary GitHub-hosted `ubuntu-24.04` runners: no custom
+runner registration or hardware. It runs AlmaLinux 9 inside Docker and publishes
+releases through a separate, narrowly write-permitted job. The checked-in
+configuration defaults to **two build jobs** to fit standard hosted runner memory. For setup, see [CI](docs/CI.md), [scheduled releases](docs/RELEASE.md),
+[CLI examples](docs/CLI.md), [performance](docs/PERFORMANCE.md),
+[troubleshooting](docs/TROUBLESHOOTING.md) and [release qualification](docs/RELEASE-READINESS.md).
 The heavy production build **has not been executed in this test sandbox**.
 
 ## Quick start: compiled binary
@@ -85,11 +88,14 @@ when `--repo` is used; the container image includes Git as well.
 
 The AlmaLinux 9 container image contains the system packages used by both build
 phases; this prevents repeated DNF installs on short-lived worker runs. Host
-volumes persist the vcpkg checkout/downloads and its binary cache between
-container invocations. Qt and dependency extraction are skipped when the
-expected outputs and content fingerprints are already present. These optimizations
-reduce redundant work, but **no cold-versus-warm production benchmark has yet
-been performed**.
+volumes persist the vcpkg checkout/downloads, compiled binary cache, and
+OpenMW `ccache` between container invocations. The scheduled workflow restores
+`ccache` and vcpkg binary caches using GitHub Actions cache so they also survive
+ephemeral hosted runner replacement; cached outputs are best-effort, not trusted
+release evidence. Qt and dependency extraction are skipped when the
+expected outputs and content fingerprints are already present. These optimizations reduce redundant work, and new CMake build trees prefer
+Ninja; already configured trees retain their existing generator. **No
+cold-versus-warm production benchmark has yet been performed.**
 
 `--clean` refuses to remove build content unless the target directory carries
 a valid Forge ownership marker (new empty build directories are automatically
