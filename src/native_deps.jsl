@@ -56,6 +56,38 @@ local function exportPath(options: Options): string
   return options.depsOutput .. '/vcpkg-' .. options.triplet .. '.7z'
 end
 
+-- The manifest is embedded in the image at /forge/work/forge-assets/deps.
+-- That directory belongs to the image's root user. Our Docker workers use
+-- the invoking host UID, so vcpkg's default manifest-adjacent
+-- `vcpkg_installed` location is read-only. Keep the installed tree under the
+-- separately mounted, writable vcpkg checkout instead. Both install AND
+-- export must use the same root or export will find no installed ports.
+local function installedRoot(vcpkg: string): string
+  return vcpkg .. '/installed'
+end
+
+local function installedRootFlag(vcpkg: string): string
+  return '--x-install-root=' .. installedRoot(vcpkg)
+end
+
+-- The outer vcpkg process normally prints only the name of a CMake log after
+-- compiler detection fails. Emit the underlying CMake diagnostics while the
+-- disposable CI container still exists, or the useful evidence is lost.
+local function reportCompilerDetection(vcpkg: string, triplet: string)
+  local base = vcpkg .. '/buildtrees/detect_compiler/'
+  for _, filename in {
+    'config-' .. triplet .. '-rel-err.log',
+    'config-' .. triplet .. '-rel-out.log',
+    'stdout-' .. triplet .. '.log',
+  } do
+    local path = base .. filename
+    if not fs.isFile(path) then continue end
+    local contents = util.file(path)
+    print('=== vcpkg compiler diagnostic: ' .. filename .. ' ===')
+    print(contents:sub(-12000))
+  end
+end
+
 local verify: (Options, string?) -> ()
 
 local function runUnlocked(options: Options)
@@ -97,10 +129,20 @@ local function runUnlocked(options: Options)
   local binaryCache = options.root .. '/work/vcpkg-binaries'
   util.mkdir(binaryCache)
   env.VCPKG_DEFAULT_BINARY_CACHE = binaryCache
-  util.stream(vcpkg .. '/vcpkg', {
+  local install = installedRoot(vcpkg)
+  util.mkdir(install)
+  -- A failed vcpkg install leaves valuable compiler-detection logs in its
+  -- buildtrees; continue only to print those logs before propagating failure.
+  local installed, installFailure = pcall(util.stream, vcpkg .. '/vcpkg', {
     'install', '--overlay-ports=' .. root .. '/ports', '--overlay-triplets=' .. root .. '/triplets',
     '--triplet', options.triplet, '--host-triplet', options.triplet,
+    installedRootFlag(vcpkg),
   }, root, env)
+
+  if not installed then
+    reportCompilerDetection(vcpkg, options.triplet)
+    error(tostring(installFailure))
+  end
 
   -- vcpkg exports to a temporary directory. Validation must pass before the
   -- previous production artifact can be replaced.
@@ -108,16 +150,15 @@ local function runUnlocked(options: Options)
   util.resetManaged(pending)
   util.stream(vcpkg .. '/vcpkg', {
     'export', '--x-all-installed', '--7zip', '--output-dir', pending,
-    '--output', 'vcpkg-' .. options.triplet,
+    '--output', 'vcpkg-' .. options.triplet, installedRootFlag(vcpkg),
   }, root, env)
   local candidate = table.clone(options)
   candidate.depsOutput = pending
   -- Verify against the installed tree, with no redundant archive extraction.
-  local installed = root .. '/vcpkg_installed/' .. options.triplet
-  if not fs.isDir(installed) then installed = vcpkg .. '/installed/' .. options.triplet end
+  local installedTree = install .. '/' .. options.triplet
   util.write(pending .. '/vcpkg-' .. options.triplet .. '.build-meta',
     sdkCache.record(options.triplet, inputs, pending .. '/vcpkg-' .. options.triplet .. '.7z'))
-  verify(candidate, installed)
+  verify(candidate, installedTree)
   for _, suffix in { '.7z', '.build-meta' } do
     local name = 'vcpkg-' .. options.triplet .. suffix
     local published, failure = fs.rename(pending .. '/' .. name, options.depsOutput .. '/' .. name)
@@ -195,4 +236,5 @@ local function verifyLocked(options: Options)
   if not ok then error(tostring(problem)) end
 end
 
-return table.freeze { run = run, verify = verifyLocked, validateArchiveEntries = archiveSafety.validateArchiveEntries }
+return table.freeze { run = run, verify = verifyLocked, validateArchiveEntries = archiveSafety.validateArchiveEntries,
+  installedRoot = installedRoot, installedRootFlag = installedRootFlag }
