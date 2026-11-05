@@ -22,6 +22,7 @@ jobs:
           version: ${{ vars.JESS_RELEASE_TAG }}
       - name: Verify Jess source, style and source/JPK tests
         run: |
+          jess run --trusted tools/embed_assets.jsl --check
           jess package check .
           jess run --trusted tools/style.jsl
           jess workspace test

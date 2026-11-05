@@ -17,6 +17,7 @@ local function gate(label: string, command: { string })
   print('PASS ' .. label)
 end
 
+gate('embedded asset parity', { 'run', '--trusted', 'tools/embed_assets.jsl', '--check' })
 gate('strict package', { 'package', 'check', '.' })
 gate('Jess source/packed tests', { 'workspace', 'test' })
 gate('Jess style', { 'run', '--trusted', 'tools/style.jsl' })

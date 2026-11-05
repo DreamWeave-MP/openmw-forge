@@ -5,6 +5,10 @@ local fs = require '@dream/fs'
 
 type Asset = { key: string, text: string }
 local assets: { Asset } = {}
+local arguments: { string } = { ... }
+if #arguments > 1 or (#arguments == 1 and arguments[1] ~= '--check') then
+  error('usage: tools/embed_assets.jsl [--check]')
+end
 local root = fs.cwd()
 if not root or not fs.isFile(root .. '/jess.toml') then
   error('run tools/embed_assets.jsl from the OpenMW Forge repository root')
@@ -55,9 +59,19 @@ end
 
 table.insert(output, '}')
 table.insert(output, 'return table.freeze(files)')
-local successful, failure = fs.writeFile(root .. '/src/assets.jsl', table.concat(output, '\n') .. '\n', {
-  atomic = true,
-})
+local generated = table.concat(output, '\n') .. '\n'
+local destination = root .. '/src/assets.jsl'
+if arguments[1] == '--check' then
+  local checked, problem = fs.readFileString(destination)
+  if not checked then error(problem or 'embedded asset map is missing') end
+ 
+  if checked ~= generated then
+    error('embedded assets are stale: run jess run --trusted tools/embed_assets.jsl and commit src/assets.jsl')
+  end
+  print(`PASS {#assets} embedded assets exactly match the vendor inputs`)
+  return
+end
 
+local successful, failure = fs.writeFile(destination, generated, { atomic = true })
 if not successful then error(failure or 'cannot write src/assets.jsl') end
 print(`Embedded {#assets} vendor assets into src/assets.jsl`)
