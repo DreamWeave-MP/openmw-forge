@@ -6,7 +6,7 @@ local Config = table.freeze {
   profile = 'alma9',
   -- Bump whenever the OpenMW-specific SDK build/export recipe changes.
   -- Embedded vendor inputs and the compiler/toolchain identity are hashed separately.
-  sdkRecipe = 'alma9-vcpkg-export-2026-11-05-r1',
+  sdkRecipe = 'alma9-vcpkg-export-2026-11-05-r2',
   triplet = 'x64-linux-dynamic',
   buildType = 'RelWithDebInfo',
   qtVersion = '6.6.3',

@@ -1,0 +1,122 @@
+--!strict
+-- Supply the Python wheels required by vcpkg's libsystemd port without
+-- leaving a late, unconstrained PyPI resolution in a 150-port build.
+-- Python is an upstream Meson/port build tool; Forge itself is written in Jess.
+local fs = require '@dream/fs'
+local process = require '@dream/process'
+local util = require '@forge/native-util'
+
+type Wheel = { filename: string, url: string, sha256: string }
+
+-- Published file hashes from the corresponding PyPI release records.
+-- This is intentionally scoped to AlmaLinux 9 x86-64 / CPython 3.9.
+local Wheels: { Wheel } = {
+  {
+    filename = 'jinja2-3.1.6-py3-none-any.whl',
+    url = 'https://files.pythonhosted.org/packages/62/a1/3d680cbfd5f4b8f15abc1d571870c5fc3e594bb582bc3b64ea099db13e56/jinja2-3.1.6-py3-none-any.whl',
+    sha256 = '85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67',
+  },
+  {
+    filename = 'MarkupSafe-2.1.5-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl',
+    url = 'https://files.pythonhosted.org/packages/5f/5a/360da85076688755ea0cceb92472923086993e86b5613bbae9fbc14136b0/MarkupSafe-2.1.5-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl',
+    sha256 = '17b950fccb810b3293638215058e432159d2b71005c74371d784862b7e4683f3',
+  },
+}
+
+local function digest(path: string): string
+  return (util.checked('sha256sum', { path }):match('^([0-9a-f]+)') or '')
+end
+
+local function addEnvironment(env: { [string]: string }, wheelhouse: string): { [string]: string }
+  local updated = table.clone(env)
+  updated.PIP_FIND_LINKS = wheelhouse
+  updated.PIP_CONSTRAINT = wheelhouse .. '/constraints.txt'
+  updated.PIP_NO_INPUT = '1'
+  updated.PIP_DISABLE_PIP_VERSION_CHECK = '1'
+  updated.PIP_CACHE_DIR = wheelhouse .. '/pip-cache'
+  return updated
+end
+
+local function prepare(vcpkg: string, env: { [string]: string }): { [string]: string }
+  local wheelhouse = vcpkg .. '/.forge-python-wheels'
+  local existing = fs.lstat(wheelhouse)
+  if existing and existing.kind ~= 'dir' then error('unsafe vcpkg Python wheelhouse: ' .. wheelhouse) end
+  util.mkdir(wheelhouse)
+
+  for _, wheel in Wheels do
+    local path = wheelhouse .. '/' .. wheel.filename
+    if fs.isFile(path) and digest(path) == wheel.sha256 then continue end
+
+    local partial = path .. '.forge-download'
+    -- Never accept partial or unverified download bytes as a cache hit.
+    if fs.lstat(partial) then util.remove(partial) end
+    util.stream('curl', { '--fail', '--location', '--retry', '3', '--output', partial, wheel.url })
+    if digest(partial) ~= wheel.sha256 then
+      util.remove(partial)
+      error('vcpkg Python wheel SHA-256 mismatch: ' .. wheel.filename)
+    end
+
+    local moved, failure = fs.rename(partial, path)
+    if not moved then error('cannot publish verified Python wheel: ' .. (failure or path)) end
+  end
+
+  util.write(wheelhouse .. '/constraints.txt', 'Jinja2==3.1.6\nMarkupSafe==2.1.5\n')
+  local updated = addEnvironment(env, wheelhouse)
+
+  -- This uses precisely the isolated venv/pip shape from libsystemd's vcpkg
+  -- port. If ensurepip, compatible wheels or certificates are broken, fail
+  -- BEFORE the expensive dependency build and include the actual pip stderr.
+  local probe = vcpkg .. '/.forge-python-preflight'
+  util.resetManaged(probe)
+  -- The isolated venv creation and pip install may fail; always clean the probe
+  -- and then propagate the captured error instead of leaving stale state.
+  local passed, reason = pcall(function()
+    util.stream('python3', { '-m', 'venv', probe .. '/venv' }, nil, updated)
+    local result, failure = process.run(probe .. '/venv/bin/python', {
+      '-I', '-m', 'pip', 'install', '--no-index', '--find-links', wheelhouse,
+      'Jinja2==3.1.6',
+    }, { env = updated, stdout = 'capture', stderr = 'capture' })
+
+    if not result or not result.success then
+      error('isolated vcpkg Python/Jinja2 preflight failed: ' .. (failure or '')
+        .. '\n' .. (if result then result.stdout or '' else '')
+        .. '\n' .. (if result then result.stderr or '' else ''))
+    end
+
+    util.checked(probe .. '/venv/bin/python', { '-I', '-m', 'pip', 'show', 'Jinja2' }, nil, updated)
+  end)
+  util.remove(probe)
+  if not passed then error(tostring(reason)) end
+  print('PASS pinned, SHA-256-verified Jinja2/MarkupSafe wheelhouse and isolated venv preflight')
+  return updated
+end
+
+-- A failed vcpkg command usually reports only the filename of the actual
+-- port log. Its directory remains mounted after the container exits.
+local function reportFailure(vcpkg: string, triplet: string)
+  local tree = vcpkg .. '/buildtrees'
+  local candidates = {
+    tree .. '/libsystemd/pip-install-packages-' .. triplet .. '-err.log',
+    tree .. '/libsystemd/pip-install-packages-' .. triplet .. '-out.log',
+    tree .. '/libsystemd/venv-setup-' .. triplet .. '-err.log',
+    tree .. '/libsystemd/venv-setup-' .. triplet .. '-out.log',
+  }
+  local count = 0
+  for _, path in candidates do
+    if not fs.isFile(path) then continue end
+    local contents = util.file(path)
+    if contents == '' then continue end
+    print('=== vcpkg port diagnostic: ' .. path .. ' ===')
+    print(contents:sub(-16000))
+
+    count += 1
+  end
+
+  if count == 0 then
+    print('No libsystemd pip log found; inspect vcpkg port logs under ' .. tree)
+  end
+  return count
+end
+
+return table.freeze { prepare = prepare, addEnvironment = addEnvironment,
+  reportFailure = reportFailure, wheels = table.freeze(Wheels) }

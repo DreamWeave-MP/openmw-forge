@@ -9,6 +9,7 @@ local archiveSafety = require '@forge/native-archive'
 type Options = args.Options
 local sdkCache = require '@forge/native-sdk-cache'
 local abi = require '@forge/native-abi'
+local vcpkgPython = require '@forge/native-vcpkg-python'
 local Revision = config.vcpkgRevision
 
 local function installDependencies()
@@ -122,7 +123,7 @@ local function runUnlocked(options: Options)
   if not fs.isFile(vcpkg .. '/vcpkg') then
     util.stream('./bootstrap-vcpkg.sh', { '-disableMetrics' }, vcpkg, toolsetEnv())
   end
-  local env = toolsetEnv()
+  local env = vcpkgPython.prepare(vcpkg, toolsetEnv())
   env.VCPKG_ROOT = vcpkg
   env.VCPKG_MAX_CONCURRENCY = tostring(options.jobs)
   -- The binary cache is a host volume for containers, and persistent locally.
@@ -140,6 +141,7 @@ local function runUnlocked(options: Options)
   }, root, env)
 
   if not installed then
+    vcpkgPython.reportFailure(vcpkg, options.triplet)
     reportCompilerDetection(vcpkg, options.triplet)
     error(tostring(installFailure))
   end
