@@ -524,12 +524,24 @@ suite.describe('embedded assets, versions, and archive names', function()
     test.expect(libcxxNeed).toBe('GLIBCXX')
   end)
 
-  suite.it('uses the frozen AlmaLinux 9.6 ABI baseline for the builder', function()
+  suite.it('pins a pre-backport AlmaLinux sysroot and audits it before provisioning', function()
     local dockerfile = assets['builder/Dockerfile']
-    test.expect(dockerfile).toContain('FROM almalinux/9-base:9.6-20251117')
-    test.expect(dockerfile).toContain('vault.almalinux.org/9.6/BaseOS/')
-    test.expect(dockerfile).toContain('vault.almalinux.org/9.6/AppStream/')
-    test.expect(dockerfile).toContain('GLIBC_2.35')
+    test.expect(dockerfile).toContain('FROM almalinux/9-base:9.5-20250519')
+    for _, repo in { 'BaseOS', 'AppStream', 'CRB' } do
+      test.expect(dockerfile).toContain('vault.almalinux.org/9.5/' .. repo .. '/')
+    end
+    test.expect(dockerfile).toContain('vault.almalinux.org/9.5/extras/')
+    test.expect(dockerfile).toContain('gcc-toolset-13')
+    test.expect(dockerfile).toContain('rpm -q glibc glibc-common')
+    test.expect(dockerfile).toContain('GLIBC_2\\.35')
+    local early = dockerfile:find('RUN dnf install -y binutils', 1, true)
+    local heavy = dockerfile:find('RUN dnf install -y git tar', 1, true)
+    local late = dockerfile:find('RUN rpm -q glibc glibc-common', 1, true)
+    test.expect(early ~= nil and heavy ~= nil and late ~= nil).toBeTruthy()
+    if early and heavy and late then
+      test.expect(early < heavy and heavy < late).toBeTruthy()
+    end
+    test.expect(profile.sdkRecipe).toContain('alma95')
   end)
 
   suite.it('compares ABI versions numerically', function()

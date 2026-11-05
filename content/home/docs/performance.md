@@ -120,12 +120,16 @@ weakening the release gate.
 
 ## ELF baseline and fresh-export validation
 
-The build container uses the dated official AlmaLinux 9.6 base image **and**
-frozen 9.6 repositories. This matters because 9.7 backported `GLIBC_2.35`
+The build container uses the dated official AlmaLinux 9.5 base image **and**
+frozen 9.5 repositories. This matters because 9.7 backported `GLIBC_2.35`
 symbols under a glibc 2.34 version number, creating genuine requirements
 that are not available on earlier EL9 releases. Image immutability and the
 SDK's image-digest cache key prevent silent baseline changes; a change to
-this baseline deliberately costs one cold dependency rebuild.
+this baseline deliberately costs one cold dependency rebuild. The sysroot
+preflight installs only binutils before checking the libc RPM and GLIBC_2.35
+version definitions; the same conservative sysroot check repeats after bulk DNF.
+The packaged-ELF scanner is different: it rejects only **imported** symbol
+requirements above the GLIBC_2.34, GLIBCXX_3.4.29 and CXXABI_1.3.13 ceilings.
 
 The `readelf --version-info` audit now checks imported GNU version **needs**,
 not exported version definitions. It runs on the installed vcpkg tree *before*

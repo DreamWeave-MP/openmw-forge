@@ -102,6 +102,12 @@ SDK export also skips vcpkg install and export on matching inputs. These optimiz
 Ninja; already configured trees retain their existing generator. **No
 cold-versus-warm production benchmark has yet been performed.**
 
+The builder is currently pinned to AlmaLinux `9.5-20250519` and 9.5 vault
+repositories to avoid GLIBC_2.35 backports; GCC Toolset 13 is retained. The
+image runs a glibc ABI preflight before heavy provisioning and after DNF.
+SDK fingerprints and vcpkg binary caches are segregated by this baseline;
+older 9.6 binaries are not reused.
+
 `--clean` refuses to remove build content unless the target directory carries
 a valid Forge ownership marker (new empty build directories are automatically
 marked). Package staging, temporary extraction, smoke-test directories and

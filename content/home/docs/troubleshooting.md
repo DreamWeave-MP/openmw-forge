@@ -242,9 +242,15 @@ November 5 incident a restored 150-package SDK took almost 32 minutes to fail
 because the ABI audit ran *after* compressed-archive symlink validation; the
 first mismatch was `debug/lib/libsystemd.so.0.40.0`.
 
-Forge's toolchain builder now starts from the dated official 9.6 base image,
-uses frozen AlmaLinux 9.6 BaseOS/AppStream/CRB/Extras repositories, and fails
-its image build if glibc unexpectedly exports `GLIBC_2.35`. This is a build
+Forge.s toolchain builder now starts from the dated official 9.5 base image
+(`9.5-20250519`), uses frozen AlmaLinux 9.5 BaseOS/AppStream/CRB/Extras
+repositories, and fails its image build if glibc exposes `GLIBC_2.35`.
+It installs only binutils first so this check runs **before** the expensive
+C++ toolchain packages, then repeats the check after DNF finishes. The failing
+step logs both glibc RPM versions and the exact offending readelf entries.
+The builder rule intentionally prohibits even *exported* GLIBC_2.35 symbols
+to keep the linkable sysroot old; the final SDK/release check only rejects
+*imported* requirements above the EL9 compatibility ceilings. This is a build
 compatibility baseline; the final release smoke still tests current targets.
 The frozen historical build image is not a substitute for an up-to-date
 runtime image or receiving current security fixes.
