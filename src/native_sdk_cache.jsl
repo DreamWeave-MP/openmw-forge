@@ -59,7 +59,18 @@ end
 local function cacheHit(output: string, triplet: string, inputs: string): boolean
   local prefix = output .. '/vcpkg-' .. triplet
   if not fs.isFile(prefix .. '.7z') or not fs.isFile(prefix .. '.build-meta') then return false end
-  local fields = metadata(util.file(prefix .. '.build-meta'))
+
+  -- A restored metadata sidecar is untrusted too: unreadable or truncated
+  -- files must never turn an optional cache accelerator into a build failure.
+  local readOk, fields = pcall(function(): { [string]: string }
+    return metadata(util.file(prefix .. '.build-meta'))
+  end)
+
+  if not readOk then
+    print('Forge SDK cache metadata is unreadable; rebuilding')
+    return false
+  end
+
   local expectedDigest = fields.archive_sha256 or ''
   if fields.profile ~= config.profile or fields.triplet ~= triplet
     or fields.vcpkg_revision ~= config.vcpkgRevision or fields.cache_schema ~= '3'
