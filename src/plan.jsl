@@ -110,6 +110,15 @@ local function buildSteps(plan: Plan, options: Options, packageOnly: boolean)
       '-v', containerVolume(options, options.output, '/out', false),
     }
 
+    -- ccache must outlive disposable build containers. GitHub-hosted CI
+    -- restores this directory with Actions cache *after* checkout cleanup.
+    if not options.noCcache and not packageOnly then
+      local compilerCache = options.root .. '/work/cache/ccache'
+      table.insert(plan.directories, compilerCache)
+      table.insert(exec, '-v')
+      table.insert(exec, containerVolume(options, compilerCache, '/forge/work/ccache', false))
+    end
+
     if options.archive ~= '' and not packageOnly and not options.noPrepare then
       if string.sub(options.archive, 1, 8) ~= 'https://' then
         if options.command == 'pipeline' then
@@ -117,7 +126,7 @@ local function buildSteps(plan: Plan, options: Options, packageOnly: boolean)
           table.insert(exec, containerVolume(options, options.depsOutput, '/depout', true))
         else
           table.insert(exec, '-v')
-          table.insert(exec, containerVolume(options, options.archive, if options.archive:match('%.tar%.xz$') then '/input/deps.tar.xz' else (if options.archive:match('%.tar%.xz$') then '/input/deps.tar.xz' else '/input/deps.7z'), true))
+          table.insert(exec, containerVolume(options, options.archive, if options.archive:match('%.tar%.xz$') then '/input/deps.tar.xz' else '/input/deps.7z', true))
           table.insert(plan.requiredFiles, options.archive)
         end
       end

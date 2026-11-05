@@ -19,6 +19,35 @@ local function check(condition: boolean, message: string)
   cases += 1
 end
 
+-- Managed dependency publication must preserve the last complete SDK if a
+-- replacement fails or a previous process stops between the two renames.
+local liveTree = scratch .. '/published-deps'
+local firstTree = scratch .. '/prepared-deps-1'
+util.resetManaged(firstTree)
+util.write(firstTree .. '/version', 'v1')
+util.publishManagedDirectory(firstTree, liveTree)
+check(util.file(liveTree .. '/version') == 'v1', 'first managed publication must install the candidate')
+local secondTree = scratch .. '/prepared-deps-2'
+util.resetManaged(secondTree)
+util.write(secondTree .. '/version', 'v2')
+util.publishManagedDirectory(secondTree, liveTree)
+check(util.file(liveTree .. '/version') == 'v2', 'replacement must publish the new complete tree')
+check(not fs.exists(liveTree .. '-previous'), 'successful publication must retire the prior tree')
+local moved, moveFailure = fs.rename(liveTree, liveTree .. '-previous')
+if not moved then error('cannot simulate interrupted publication: ' .. (moveFailure or 'unknown')) end
+util.recoverManagedDirectory(liveTree)
+check(util.file(liveTree .. '/version') == 'v2', 'recovery must restore the previous complete tree')
+check(not fs.exists(liveTree .. '-previous'), 'recovery must clear the backup name')
+local foreignTree = scratch .. '/foreign-deps'
+util.mkdir(foreignTree)
+util.write(foreignTree .. '/KEEP', 'user-owned')
+local foreignCandidate = scratch .. '/foreign-candidate'
+util.resetManaged(foreignCandidate)
+-- publishManagedDirectory must throw for an unowned target; this negative test intentionally continues.
+local replacedForeign = pcall(util.publishManagedDirectory, foreignCandidate, foreignTree)
+check(not replacedForeign, 'managed publication must not overwrite user-owned directories')
+check(util.file(foreignTree .. '/KEEP') == 'user-owned', 'foreign publication rejection must preserve contents')
+
 local function invoke(argv: { string }, cwd: string, env: { [string]: string }?): dream_process_Result
   local result, problem = process.run(binary, argv, { cwd = cwd, env = env, stdout = 'capture', stderr = 'capture' })
   if not result then error('could not start binary: ' .. (problem or 'unknown')) end
@@ -128,6 +157,24 @@ for _, path in {
   deps .. '/QT/6.6.3/gcc_64/lib', deps .. '/QT/6.6.3/gcc_64/plugins/platforms', output, depsOutput,
 } do util.mkdir(path) end
 util.write(source .. '/CMakeLists.txt', 'set(OPENMW_VERSION_MAJOR 0)\nset(OPENMW_VERSION_MINOR 49)\nset(OPENMW_VERSION_RELEASE 0)\n')
+-- Compiler cache is actually mounted into the compiled build worker and
+-- removable with --no-ccache, not merely mentioned in the CMake arguments.
+local mockArchive = scratch .. '/mock-deps.7z'
+util.write(mockArchive, 'mock archive - container worker never extracts this fixture')
+util.write(mockLog, '')
+local caching = invoke({ 'build', '--engine', 'podman', '--source', source,
+  '--deps-archive', mockArchive }, empty, mockEnv)
+check(caching.success, 'mocked compiled build with persistent ccache must succeed')
+check(fs.isDir(empty .. '/work/cache/ccache'), 'compiled planner must create persistent ccache directory')
+check(util.file(mockLog):find('/forge/work/ccache', 1, true) ~= nil,
+  'compiled container invocation must mount ccache inside the worker')
+util.write(mockLog, '')
+local withoutCache = invoke({ 'build', '--engine', 'podman', '--source', source,
+  '--deps-archive', mockArchive, '--no-ccache' }, empty, mockEnv)
+check(withoutCache.success, 'mocked compiled no-ccache build must succeed')
+check(util.file(mockLog):find('/forge/work/ccache', 1, true) == nil,
+  '--no-ccache must actually omit the compiler-cache volume')
+
 util.write(build .. '/openmw', 'mock compiled OpenMW executable\n')
 util.write(build .. '/resources/one.txt', 'resource\n')
 util.write(deps .. '/openmw-deps/installed/x64-linux-dynamic/lib/libTest.so.1', 'test library')

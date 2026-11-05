@@ -135,6 +135,29 @@ suite.describe('shell-free execution planning', function()
     test.expect(has(result.steps[2].args, '--clean')).toBeTruthy()
   end)
 
+  suite.it('persists compiler cache as a writable host volume for container builds', function()
+    local result = plan({ 'build', '--engine', 'docker', '--source', Source, '--deps-archive', '/tmp/deps.7z' })
+    local expected = Root .. '/work/cache/ccache'
+    test.expect(has(result.directories, expected)).toBeTruthy()
+    test.expect(has(result.steps[2].args, expected .. ':/forge/work/ccache')).toBeTruthy()
+  end)
+
+  suite.it('never mounts a compiler cache when ccache is explicitly disabled', function()
+    local result = plan({ 'build', '--source', Source, '--deps-archive', '/tmp/deps.7z', '--no-ccache' })
+    test.expect(has(result.directories, Root .. '/work/cache/ccache')).toBeFalsy()
+    for _, value in result.steps[2].args do
+      test.expect(value:find('/forge/work/ccache', 1, true) == nil).toBeTruthy()
+    end
+  end)
+
+  suite.it('does not mount a compiler cache for packaging-only operations', function()
+    local result = plan({ 'package', '--source', Source })
+    test.expect(has(result.directories, Root .. '/work/cache/ccache')).toBeFalsy()
+    for _, value in result.steps[2].args do
+      test.expect(value:find('/forge/work/ccache', 1, true) == nil).toBeTruthy()
+    end
+  end)
+
   suite.it('supports direct Jess-native local dependency builds', function()
     local result = plan({ 'deps', '--mode', 'local' })
     test.expect(#result.steps).toBe(1)
