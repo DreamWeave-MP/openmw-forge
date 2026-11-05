@@ -11,19 +11,20 @@ RUN rm -f /etc/yum.repos.d/*.repo \
       '[extras]' 'name=AlmaLinux 9.5 Extras' 'baseurl=https://vault.almalinux.org/9.5/extras/$basearch/os/' 'enabled=1' 'gpgcheck=1' 'gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-AlmaLinux-9' \
       > /etc/yum.repos.d/forge-almalinux-9.5.repo
 # Preflight BEFORE provisioning the full C++ toolchain or building Autoconf.
-# Binutils supplies readelf; the RPM NEVRAs and exact symbol lines make the
-# next failure actionable. An exported GLIBC_2.35 version is intentionally
-# forbidden in this *builder sysroot*: it can taint newly linked libraries.
-# The packaged-binary ABI scanner separately checks only imported versions.
+# Some older EL9 glibc RPMs already define a GLIBC_2.35 version node.
+# Version-node greps incorrectly reject those historical builds. Instead,
+# reject *defined* exports of the specific RHEL 9.7 backported functions that
+# introduced the portability regression. The SDK/release ABI scanner still
+# rejects EVERY imported GLIBC version greater than 2.34, not just these names.
+# nm is provided by binutils. The RPM identifiers are logged for diagnosis.
 RUN dnf install -y binutils \
     && rpm -q glibc glibc-common \
-    && readelf --version-info /lib64/libc.so.6 > /tmp/forge-glibc-versions.txt \
-    && if grep -q 'GLIBC_2\.35' /tmp/forge-glibc-versions.txt; then \
-         echo 'ERROR: builder libc exposes GLIBC_2.35 (need pre-backport EL9 glibc)'; \
-         grep -n 'GLIBC_2\.35' /tmp/forge-glibc-versions.txt | head -n 12; \
+    && nm -D --defined-only /lib64/libc.so.6 /lib64/ld-linux-x86-64.so.2 > /tmp/forge-glibc-exports.txt \
+    && if grep -E '(^|[[:space:]])(__epoll_pwait2_time64|__memcmpeq|_dl_find_object|epoll_pwait2|posix_spawn_file_actions_addtcsetpgrp_np|posix_spawnattr_tcgetpgrp_np|posix_spawnattr_tcsetpgrp_np)@{1,2}GLIBC_2[.]35($|[[:space:]])' /tmp/forge-glibc-exports.txt; then \
+         echo 'ERROR: builder libc exposes post-baseline GLIBC_2.35 function exports'; \
          exit 1; \
        fi \
-    && rm /tmp/forge-glibc-versions.txt
+    && rm /tmp/forge-glibc-exports.txt
 # Build tooling belongs to the image layer, not every short-lived worker.
 RUN dnf install -y epel-release dnf-plugins-core
 RUN dnf config-manager --set-enabled crb
@@ -35,15 +36,15 @@ RUN dnf install -y git tar gzip p7zip zip unzip curl-minimal gcc-toolset-13 cmak
     kernel-headers python3 python3-pip make patch libstdc++ \
     libxcb xcb-util xcb-util-image xcb-util-keysyms xcb-util-wm \
     xcb-util-renderutil xcb-util-cursor && dnf clean all
-# Verify again after all DNF transactions: later installs must not replace libc.
+# Verify again after all DNF transactions: later installs must not replace
+# libc with the specific RHEL 9.7 GLIBC_2.35 backport exports.
 RUN rpm -q glibc glibc-common \
-    && readelf --version-info /lib64/libc.so.6 > /tmp/forge-glibc-versions.txt \
-    && if grep -q 'GLIBC_2\.35' /tmp/forge-glibc-versions.txt; then \
-         echo 'ERROR: C++ toolchain provisioning introduced GLIBC_2.35'; \
-         grep -n 'GLIBC_2\.35' /tmp/forge-glibc-versions.txt | head -n 12; \
+    && nm -D --defined-only /lib64/libc.so.6 /lib64/ld-linux-x86-64.so.2 > /tmp/forge-glibc-exports.txt \
+    && if grep -E '(^|[[:space:]])(__epoll_pwait2_time64|__memcmpeq|_dl_find_object|epoll_pwait2|posix_spawn_file_actions_addtcsetpgrp_np|posix_spawnattr_tcgetpgrp_np|posix_spawnattr_tcsetpgrp_np)@{1,2}GLIBC_2[.]35($|[[:space:]])' /tmp/forge-glibc-exports.txt; then \
+         echo 'ERROR: C++ toolchain provisioning introduced post-baseline GLIBC_2.35 exports'; \
          exit 1; \
        fi \
-    && rm /tmp/forge-glibc-versions.txt
+    && rm /tmp/forge-glibc-exports.txt
 # vcpkg requires Autoconf 2.72. Build it ONCE in the cached image rather than
 # recompiling it in each disposable dependency worker. Verify before extraction.
 RUN curl --fail --location --retry 3 -o /tmp/autoconf-2.72.tar.gz \
