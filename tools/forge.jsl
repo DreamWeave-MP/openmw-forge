@@ -33,7 +33,7 @@ Common switches:
   --build-dir PATH          CMake build root
   --deps-prefix PATH        Extracted vcpkg and Qt root
   --output-dir PATH         OpenMW packaging output directory
-  --jobs N                 Default: 3
+  --jobs N                 Default: 3 (specify machine capacity)
   --triplet NAME            Default: x64-linux-dynamic
   --build-type TYPE         Default: RelWithDebInfo
   --qt-version X.Y.Z        Default: 6.6.3
@@ -46,7 +46,56 @@ Common switches:
 
 Only AlmaLinux 9 is a supported build baseline. Run the compiled Forge
 executable from any directory; no workspace is needed.
+
+Try: forge build --help, forge pipeline --help, forge --version.
 ]]
+
+local CommandHelp: { [string]: string } = {
+  pipeline = [[pipeline: build dependencies, compile OpenMW, test, then package
+Usage: forge pipeline (--repo URL --ref REF | --source DIR) [OPTIONS]
+  --repo URL --ref REF  Build any HTTPS/SSH fork and Git ref (default ref: HEAD)
+  --source DIR         Build an existing checkout without changing its branch
+  --engine docker      Use Docker rather than Podman
+  --jobs N             Parallel build jobs; --run-tests enables GoogleTests
+  --output-dir DIR     Destination for main and debug release tarballs
+  --dry-run            Print planned stages without network or filesystem writes
+Examples:
+  forge pipeline --repo https://gitlab.com/OpenMW/openmw.git --ref master --run-tests
+  forge pipeline --source ~/src/openmw --engine docker --jobs 8
+]],
+  build = [[build: compile and package OpenMW using existing dependencies
+Usage: forge build (--source DIR | --repo URL --ref REF) [OPTIONS]
+  --deps-archive FILE  Locally exported vcpkg .7z/.tar.xz or verified HTTPS URL
+  --deps-sha256 HEX    Required SHA-256 for remote archives
+  --no-prepare         Reuse already extracted dependencies and Qt
+  --run-tests          Build and execute OpenMW GoogleTests
+  --build-dir DIR --deps-prefix DIR --output-dir DIR
+  --mode container|local --engine podman|docker --jobs N
+]],
+  deps = [[deps: compile and export the pinned AlmaLinux 9 vcpkg dependencies
+Usage: forge deps [--engine podman|docker] [--jobs N] [--deps-output DIR]
+  Uses persistent vcpkg source/download and binary caches. The output is a
+  verified .7z dependency export and build metadata in artifacts/deps/.
+]],
+  package = [[package: assemble a tarball from an existing OpenMW build tree
+Usage: forge package --source DIR --build-dir DIR --deps-prefix DIR [OPTIONS]
+  Requires built OpenMW binaries, resources, Qt plugins and dependency libs.
+  Checks AlmaLinux 9 ELF ABI and exercises packaged launchers by default.
+  --stage-only stages files without publishing tarballs.
+]],
+  verify = [[verify: validate an existing vcpkg dependency export and ABI
+Usage: forge verify [--deps-output DIR]
+]],
+  smoke = [[smoke: validate archive safety, ELF ABI and packaged entry points
+Usage: forge smoke --archive FILE [--distros almalinux-9,ubuntu-24.04]
+  Both the .x86_64 binary and user-facing POSIX launcher must execute.
+  --with-qt additionally tests available OpenMW GUI programs.
+]],
+  doctor = [[doctor: test the selected build environment, without installing
+Usage: forge doctor [--mode container --engine podman|docker | --mode local]
+  Local builds require AlmaLinux 9. Container builds require a working engine.
+]],
+}
 
 local root, cwdError = fs.cwd()
 if root == nil then
@@ -59,7 +108,12 @@ if options == nil then
 end
 
 if options.command == 'help' then
-  print(Help)
+  print(CommandHelp[options.helpFor] or Help)
+  return
+end
+
+if options.command == 'version' then
+  print('OpenMW Forge 0.1.0 | Jess native | AlmaLinux 9')
   return
 end
 

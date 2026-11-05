@@ -4,6 +4,7 @@ local process = require '@dream/process'
 local planning = require '@forge/plan'
 local argsModule = require '@forge/args'
 local native = require '@forge/native'
+local util = require '@forge/native-util'
 
 type Options = argsModule.Options
 type Plan = planning.Plan
@@ -96,6 +97,42 @@ local function checkDestinations(options: Options): (boolean, string?)
   return true, nil
 end
 
+-- Container tags derive from the actual packed Jess executable and Dockerfile,
+-- so different versions never race to overwrite openmw-forge:alma9.
+local function imageIdentity(options: Options): string
+  local directory = options.root .. '/work/forge-assets'
+  local digests: { string } = {}
+  for _, file in { directory .. '/forge', directory .. '/Dockerfile' } do
+    local stdout = util.checked('sha256sum', { file })
+    local hash = stdout:match('^([a-f0-9]+)')
+    if not hash or #hash ~= 64 then error('invalid builder input checksum: ' .. file) end
+    table.insert(digests, hash:sub(1, 16))
+  end
+  return 'openmw-forge:alma9-' .. table.concat(digests, '-')
+end
+
+local function prepareImage(plan: Plan, options: Options)
+  if options.mode ~= 'container' then return end
+  local tag = imageIdentity(options)
+  for _, item in plan.steps do
+    for index, value in item.args do
+      if value == 'openmw-forge:alma9' then item.args[index] = tag end
+    end
+  end
+end
+
+local function cachedImage(step: planning.Step): boolean
+  if step.args[1] ~= 'build' or step.args[2] ~= '-t' then return false end
+  local tag = step.args[3]
+  if not tag or not tag:find('openmw-forge:alma9-', 1, true) then return false end
+
+  local result = process.run(step.program, { 'image', 'inspect', '--format', '{{.Id}}', tag }, {
+    stdout = 'capture', stderr = 'null',
+  })
+  -- A mock runner with an empty response does not count as a real image hit.
+  return result ~= nil and result.success and (result.stdout or ''):find('sha256:', 1, true) ~= nil
+end
+
 local function execute(plan: Plan, options: Options): (boolean, string?)
   local ok, message = preflight(options)
   if not ok then
@@ -103,6 +140,16 @@ local function execute(plan: Plan, options: Options): (boolean, string?)
   end
 
   if options.command == 'doctor' then
+    if options.mode == 'local' then
+      local osRelease = fs.readFileString('/etc/os-release') or ''
+      if not osRelease:match('\nID=almalinux\n') and not osRelease:match('^ID=almalinux\n') then
+        return false, 'local builds require an AlmaLinux 9 host (use --mode container on other Linux distributions)'
+      end
+
+      if not osRelease:match('VERSION_ID="?9[%."]') and not osRelease:match('VERSION_ID=9\n') then
+        return false, 'local builds require AlmaLinux major version 9'
+      end
+    end
     local programs = if options.mode == 'container' then { options.engine, 'git' } else { 'git', 'cmake', 'tar', 'readelf' }
 
     for _, program in programs do
@@ -111,6 +158,11 @@ local function execute(plan: Plan, options: Options): (boolean, string?)
         return false, `cannot execute {program}: {failure or 'nonzero exit'}`
       end
       print('PASS ' .. program)
+    end
+
+    if options.mode == 'container' then
+      local active = process.run(options.engine, { 'info' }, { stdout = 'capture', stderr = 'capture' })
+      if not active or not active.success then return false, 'container engine daemon/service is unavailable' end
     end
     print('PASS AlmaLinux 9 profile and embedded assets')
     return true, nil
@@ -125,6 +177,12 @@ local function execute(plan: Plan, options: Options): (boolean, string?)
     -- Embedded payload materialization can fail on filesystem access.
     local success, errorMessage = pcall(native.bootstrap, options)
     if not success then return false, `embedded asset staging failed: {tostring(errorMessage)}` end
+  end
+
+  if options.mode == 'container' and #plan.steps > 0 then
+    -- Reading or hashing staged builder inputs may fail due to filesystem/tool errors.
+    local identityOk, errorMessage = pcall(prepareImage, plan, options)
+    if not identityOk then return false, 'builder identity failed: ' .. tostring(errorMessage) end
   end
 
   for _, directory in plan.directories do
@@ -147,6 +205,12 @@ local function execute(plan: Plan, options: Options): (boolean, string?)
       end
       continue
     end
+
+    if cachedImage(item) then
+      print('PASS reuse matching AlmaLinux 9 builder image')
+      continue
+    end
+
     local result, failure = process.run(item.program, item.args, { cwd = item.cwd, env = item.env })
     if result == nil then
       return false, `{item.name}: failed to start {item.program}: {failure or ''}`

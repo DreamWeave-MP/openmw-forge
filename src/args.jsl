@@ -3,6 +3,7 @@ local config = require '@forge/config'
 
 export type Options = {
   command: string,
+  helpFor: string,
   root: string,
   mode: string,
   engine: string,
@@ -45,6 +46,7 @@ local Commands: { [string]: boolean } = {
   smoke = true,
   doctor = true,
   help = true,
+  version = true,
   __deps = true, __build = true, __package = true, __verify = true, __smoke = true,
 }
 
@@ -88,6 +90,7 @@ local Booleans: { [string]: string } = {
 local function defaults(root: string): Options
   return {
     command = 'help',
+    helpFor = '',
     root = root,
     mode = 'container',
     engine = 'podman',
@@ -125,18 +128,28 @@ end
 local function parse(argv: { string }, root: string): (Options?, string?)
   local options = defaults(root)
   local first = argv[1]
-  if first ~= nil and (first == '--help' or first == '-h') then
+  if first == nil or first == '--help' or first == '-h' then
     return options, nil
   end
 
-  if first == nil or not Commands[first] then
-    return nil, `unknown command '{first or ''}'; see help`
+  if first == '--version' then
+    options.command = 'version'
+    return options, nil
+  end
+
+  if not Commands[first] then
+    return nil, `unknown command '{first}'; see help`
   end
   options.command = first
+  if first == 'help' and argv[2] ~= nil and Commands[argv[2]] then
+    options.helpFor = argv[2]
+    return options, nil
+  end
   local position = 2
   while position <= #argv do
     local token = argv[position]
     if token == '-h' or token == '--help' then
+      options.helpFor = options.command
       options.command = 'help'
       return options, nil
     end
