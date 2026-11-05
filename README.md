@@ -33,6 +33,67 @@ Default mode is `--mode container` with `--engine podman`; `--engine docker` is 
 
 You may execute Forge from **any** directory. Relative options resolve against the current directory; defaults create `work/` and `artifacts/` beneath it, not inside the OpenMW source checkout. `--dry-run` plans without creating directories or starting tools. Writable paths must not overlap the source tree or each other, including through existing symlinks.
 
+## Building an arbitrary OpenMW fork or branch
+
+Forge can build an **existing checkout** (`--source`) or resolve a **remote Git
+fork** (`--repo` with optional `--ref`). You do not need to change your local
+checkout, and Forge never resets a user-supplied source tree:
+
+```sh
+./openmw-forge-linux-x64 pipeline \
+    --repo https://github.com/your-name/openmw.git \
+    --ref feature/cool-shaders --jobs 12 --run-tests
+
+# Build a local checkout in whatever branch it currently contains:
+./openmw-forge-linux-x64 pipeline --source /path/to/your/openmw --jobs 12
+```
+
+SSH Git remotes and explicit commit SHAs, tags, `refs/heads/...`, and feature
+branches are supported. Remote source preparation is shallow and uses a private,
+per-repository checkout under `work/sources/`. Changes to that managed checkout
+are **not silently destroyed**: a dirty checkout makes a later revision switch
+fail closed. Repositories with different remotes never share the same checkout;
+per-remote-and-ref CMake build directories avoid stale cross-fork caches.
+
+Remote packages include a `-g<12-digit commit>` component in their archive name
+and a `FORGE_BUILD_SOURCE.txt` file recording the remote, requested ref and
+resolved full Git SHA. Dry runs display the requested ref without connecting to
+Git or writing anything. Git must be installed on the machine running Forge
+when `--repo` is used; the container image includes Git as well.
+
+## Persistent caches and safe cleanup
+
+The AlmaLinux 9 container image contains the system packages used by both build
+phases; this prevents repeated DNF installs on short-lived worker runs. Host
+volumes persist the vcpkg checkout/downloads and its binary cache between
+container invocations. Qt and dependency extraction are skipped when the
+expected outputs and content fingerprints are already present. These optimizations
+reduce redundant work, but **no cold-versus-warm production benchmark has yet
+been performed**.
+
+`--clean` refuses to remove build content unless the target directory carries
+a valid Forge ownership marker (new empty build directories are automatically
+marked). Package staging, temporary extraction, smoke-test directories and
+embedded asset contexts likewise require ownership markers before replacement.
+If you have generated `work/` directories from the older Forge executable,
+manually inspect and move/remove the old unmarked generated directories once;
+Forge will not assume that a matching filename grants it permission to delete
+your files.
+
+A dependency archive fetched from HTTPS **must** provide a SHA-256 digest:
+
+```sh
+./openmw-forge-linux-x64 build --source /path/to/openmw \
+  --deps-archive https://example.org/my-vcpkg-deps.7z \
+  --deps-sha256 YOUR_VERIFIED_64_DIGIT_SHA256
+```
+
+Downloads are cached by verified content hash and extension, and partial
+transfers are not promoted. Local `.7z` and `.tar.xz` dependency exports remain
+supported. Exported dependency archives and OpenMW tarballs are built in staging
+paths and verified before their final filenames are published; debug and main
+artifacts are still separate files rather than a single atomic release unit.
+
 ## Commands and switches
 
 | Command | Responsibility |
@@ -46,7 +107,7 @@ You may execute Forge from **any** directory. Relative options resolve against t
 | `smoke` | Validate an OpenMW `.tar.gz`, then run ELF smoke checks (optionally on a distro matrix) |
 | `help` | Print complete usage and switches |
 
-Important options: `--source`, `--deps-archive` (local absolute `.7z`/`.tar.xz` or HTTPS), `--deps-output`, `--build-dir`, `--deps-prefix`, `--output-dir`, `--jobs`, `--qt-version`, `--build-type`, `--triplet`, `--clean`, `--portable`, `--stage-only`, `--no-prepare`, `--no-qt`, `--no-ccache`, `--run-tests`, `--gtest-filter`, `--no-compat`, `--no-smoke`, repeatable `--cmake-arg`, `--distros`, `--with-qt`, and `--dry-run`. `--no-qt` skips installing Qt but does **not** waive the requirement for an existing Qt installation at configuration time.
+Important options: `--source`, `--repo`, `--ref`, `--deps-sha256`, `--deps-archive` (local absolute `.7z`/`.tar.xz` or HTTPS), `--deps-output`, `--build-dir`, `--deps-prefix`, `--output-dir`, `--jobs`, `--qt-version`, `--build-type`, `--triplet`, `--clean`, `--portable`, `--stage-only`, `--no-prepare`, `--no-qt`, `--no-ccache`, `--run-tests`, `--gtest-filter`, `--no-compat`, `--no-smoke`, repeatable `--cmake-arg`, `--distros`, `--with-qt`, and `--dry-run`. `--no-qt` skips installing Qt but does **not** waive the requirement for an existing Qt installation at configuration time.
 
 The ABI ceilings match AlmaLinux 9: `GLIBC_2.34`, `GLIBCXX_3.4.29`, `CXXABI_1.3.13`. Dependencies and OpenMW are built with the pinned `x64-linux-dynamic` triplet. An explicit dependency download does not silently fall back to an old artifact.
 
@@ -61,7 +122,7 @@ The shipped executable requires no Jess runtime. **Developers** who want to edit
 ./tools/validate.jsl /absolute/path/to/openmw-forge-linux-x64
 ```
 
-Alternatively, `jess workspace pack --output /path/to/openmw-forge-linux-x64 --runtime /path/to/jess` produces a standalone ELF binary directly. Build orchestration, dependency verification, OpenMW staging, debug splitting and smoke-test coordination live in `src/native*.jsl` and `src/plan.jsl`; process invocation passes argv vectors, never a Bash `-c` command. `src/assets.jsl` is regenerated with the shebang-enabled `./tools/embed_assets.jsl` from the retained original vcpkg overlays/templates before rebuilding. Jess source tests run in source and packed JPK form.
+Alternatively, `jess workspace pack --output /path/to/openmw-forge-linux-x64 --runtime /path/to/jess` produces a standalone ELF binary directly. Build orchestration, dependency verification, OpenMW staging, debug splitting and smoke-test coordination live in `src/native*.jsl`, `src/source.jsl`, and `src/plan.jsl`; process invocation passes argv vectors, never a Bash `-c` command. `src/assets.jsl` is regenerated with the shebang-enabled `./tools/embed_assets.jsl` from the retained original vcpkg overlays/templates before rebuilding. Jess source tests run in source and packed JPK form.
 
 The upstream vcpkg project itself supplies `bootstrap-vcpkg.sh`, and distributed OpenMW tarballs include the upstream POSIX `/bin/sh` launcher to set their runtime library paths. Those are **third-party packaging/runtime interfaces**, not Forge build orchestration. CMake, DNF, Git, tar, Python and compiler binaries remain native external processes.
 
@@ -70,7 +131,7 @@ The upstream vcpkg project itself supplies `bootstrap-vcpkg.sh`, and distributed
 - The Linux build workflows are migrated; Windows/macOS original CI jobs and symbol-server publishing are intentionally out of scope.
 - `jess package check`, Jess style, source+packed unit tests, and a compiled ELF integration suite are automated. The latter uses an independently compiled Jess fake container engine, builds a synthetic package staging tree, and tests archive rejection.
 - **A full production vcpkg+Qt+OpenMW build and cross-distro smoke sweep have not run in the supplied sandbox.** Podman and Docker are absent here. Do not interpret the green tests as proof of binary portability; qualify this against an AlmaLinux 9 build host before publishing releases.
-- Upstream container image tags, Qt downloads and dependency archives are not yet content-addressed; real builds are not hermetic. See `docs/VALIDATION.md` and `docs/AUDIT.md` for detail.
+- Base container image tags and the Qt installer source are not yet pinned by digest; HTTPS dependency archives require SHA-256, and vcpkg is revision-pinned. Real builds are not yet hermetic. See `docs/VALIDATION.md`, `docs/AUDIT.md`, and `docs/RELEASE-READINESS.md`.
 
 ## Licensing
 

@@ -29,9 +29,9 @@ The dependency system's strengths were pinned source inputs, custom vcpkg ports,
 | `docker/Dockerfile.tarball` | Compiler/packaging container | Shared Alma 9 image in `src/native.jsl` |
 | `scripts/prepare_deps.sh` | System packages, Qt download, archive extraction | `src/native_openmw.jsl` `prepare` and `extractDeps` |
 | `scripts/configure_openmw.sh`, `build_binaries.sh` | CMake configure and build | `src/native_openmw.jsl` `configure` and `build`, both GoogleTest targets |
-| `scripts/assemble_tarball.sh`, `split_debug.sh` | ELF files, plugins, Qt libs, resources, debug symbols, final tarball | `src/native_openmw.jsl` `package`/`splitDebug` |
-| `scripts/check_compat.sh`, `tests/test_tarball.sh` | ELF ceilings and archive safety | Jess-native ABI checks and pre-extraction archive member/link validation |
-| `tests/multi_distro_test.sh` | Distrobox package testing | `src/native_openmw.jsl` native container image matrix |
+| `scripts/assemble_tarball.sh`, `split_debug.sh` | ELF files, plugins, Qt libs, resources, debug symbols, final tarball | `src/native_package.jsl` `package`/`splitDebug` |
+| `scripts/check_compat.sh`, `tests/test_tarball.sh` | ELF ceilings and archive safety | `src/native_abi.jsl` and `src/native_archive.jsl` |
+| `tests/multi_distro_test.sh` | Distrobox package testing | `src/native_smoke.jsl` native container image matrix |
 | `scripts/run_container.sh`, `run_distrobox.sh` | Interactive command-line wrappers | Removed, superseded by compiled Jess entry point and deterministic `src/plan.jsl` |
 | `scripts/build_local_staging.sh` | Local convenience helper with hardcoded home path | Removed; direct CLI `package`/`--stage-only` replaces it |
 | `templates/runtime_wrapper.sh.in`, `README.packagecontents.txt` | OpenMW distribution launcher and readme | Retained unchanged and embedded as data; POSIX runtime launcher is not an orchestration worker |
@@ -41,10 +41,10 @@ The OpenMW builder already had good source/build separation, portable packaging,
 
 ## Resulting architecture
 
-`tools/forge.jsl` is a shebang-enabled Jess command target; `jess workspace pack --runtime` produces one portable Linux executable. `src/args.jsl` parses typed options. `src/plan.jsl` produces deterministic command+mount vectors, and `src/execute.jsl` enforces path safety, resolves symlink aliases and stops on the first failure. `src/native*.jsl` implements the actual build, packaging and verification workers. `src/assets.jsl` embeds the original vcpkg overlays and templates, so an extracted source/workspace is unnecessary. `tools/{release,validate,integration}.jsl` are additional executable Jess scripts.
+`tools/forge.jsl` is a shebang-enabled Jess command target; `jess workspace pack --runtime` produces one portable Linux executable. `src/args.jsl` parses typed options. `src/plan.jsl` produces deterministic command+mount vectors, and `src/execute.jsl` enforces path safety, resolves symlink aliases and stops on the first failure. `src/native_openmw.jsl` builds, `src/native_package.jsl` stages, `src/native_smoke.jsl` executes package tests, `src/native_abi.jsl` audits ABI ceilings, `src/native_archive.jsl` validates archive members, and `src/source.jsl` selects remote Git revisions. `src/assets.jsl` embeds the original vcpkg overlays and templates, so an extracted source/workspace is unnecessary. `tools/{release,validate,integration}.jsl` are additional executable Jess scripts.
 
 CMake, vcpkg, Git, tar, DNF, Qt installers, compiler utilities and Podman/Docker remain separate processes—not Bash `-c` orchestration. The emitted Dockerfile necessarily uses container RUN directives. The upstream OpenMW POSIX wrapper remains in *published OpenMW tarballs*, where it establishes library paths, but Forge itself neither launches nor requires a Bash worker.
 
 ## Limitations
 
-Production network builds were not executed. External package availability on Alma 9, Qt's installer behavior and the compiled OpenMW ABI must be qualified on actual hosts. We deliberately dropped Distrobox mode rather than keep its Bash worker. Images and most network dependencies are not hash/digest pinned; vcpkg export promotion is not fully atomic. Windows/macOS CI and symbol publishing remain out of scope.
+Production network builds were not executed. External package availability on Alma 9, Qt's installer behavior and the compiled OpenMW ABI must be qualified on actual hosts. We deliberately dropped Distrobox mode rather than keep its Bash worker. Base and smoke images and Qt downloads are not digest-pinned. HTTPS dependency archives are SHA-256-verified, while the vcpkg source is revision-pinned. Publication is atomic per archive, but dependency metadata plus payload do not form one atomic multi-file transaction. Windows/macOS CI and symbol publishing remain out of scope.
