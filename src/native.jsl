@@ -5,6 +5,7 @@ local embedded = require '@forge/native-assets'
 local dependencies = require '@forge/native-deps'
 local openmw = require '@forge/native-openmw'
 local args = require '@forge/args'
+local source = require '@forge/source'
 
 type Options = args.Options
 
@@ -24,7 +25,8 @@ local function bootstrap(options: Options)
 end
 
 local function run(action: string, options: Options)
-  if action == 'deps' then dependencies.run(options)
+  if action == 'source' then source.checkout(options)
+  elseif action == 'deps' then dependencies.run(options)
   elseif action == 'build' then openmw.build(options)
   elseif action == 'package' then openmw.package(options)
   elseif action == 'verify' then dependencies.verify(options)

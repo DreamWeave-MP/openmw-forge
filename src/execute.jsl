@@ -19,7 +19,7 @@ local function preflight(options: Options): (boolean, string?)
   -- Build assets are embedded in the standalone Jess executable.
   -- Source checkouts are no longer needed for the build tool itself.
 
-  if options.command == 'build' or options.command == 'package' or options.command == 'pipeline' then
+  if options.repo == '' and (options.command == 'build' or options.command == 'package' or options.command == 'pipeline') then
     local ok, message = required(options.source .. '/CMakeLists.txt')
     if not ok then
       return false, message
@@ -70,7 +70,7 @@ local function checkDestinations(options: Options): (boolean, string?)
     return true, nil
   end
 
-  local source, message = fs.canonicalize(options.source)
+  local source, message = resolveProjected(options.source)
   if not source then
     return false, `cannot resolve source path: {message or options.source}`
   end
@@ -140,6 +140,11 @@ local function execute(plan: Plan, options: Options): (boolean, string?)
       -- A native build step can fail on toolchain, archive, or filesystem errors.
       local success, errorMessage = pcall(native.run, item.args[1] or '', options)
       if not success then return false, `{item.name}: {tostring(errorMessage)}` end
+
+      if item.args[1] == 'source' then
+        local valid, why = required(options.source .. '/CMakeLists.txt')
+        if not valid then return false, why end
+      end
       continue
     end
     local result, failure = process.run(item.program, item.args, { cwd = item.cwd, env = item.env })

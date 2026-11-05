@@ -7,6 +7,8 @@ export type Options = {
   mode: string,
   engine: string,
   source: string,
+  repo: string,
+  ref: string,
   build: string,
   deps: string,
   output: string,
@@ -50,6 +52,8 @@ local Switches: { [string]: string } = {
   ['--mode'] = 'mode',
   ['--engine'] = 'engine',
   ['--source'] = 'source',
+  ['--repo'] = 'repo',
+  ['--ref'] = 'ref',
   ['--openmw-source-root'] = 'source',
   ['--build-dir'] = 'build',
   ['--deps-prefix'] = 'deps',
@@ -88,6 +92,8 @@ local function defaults(root: string): Options
     mode = 'container',
     engine = 'podman',
     source = '',
+    repo = '',
+    ref = 'HEAD',
     build = root .. '/work/build',
     deps = root .. '/work/deps',
     output = root .. '/artifacts/openmw',
@@ -191,6 +197,8 @@ local function parse(argv: { string }, root: string): (Options?, string?)
       if field == 'mode' then options.mode = value
       elseif field == 'engine' then options.engine = value
       elseif field == 'source' then options.source = value
+      elseif field == 'repo' then options.repo = value
+      elseif field == 'ref' then options.ref = value
       elseif field == 'build' then options.build = value
       elseif field == 'deps' then options.deps = value
       elseif field == 'output' then options.output = value

@@ -1,5 +1,6 @@
 --!strict
 local argsModule = require '@forge/args'
+local sourceModule = require '@forge/source'
 
 type Options = argsModule.Options
 export type Step = { name: string, program: string, args: { string }, cwd: string, env: { [string]: string } }
@@ -180,8 +181,18 @@ local function build(options: Options): (Plan?, string?)
     return nil, '--stage-only requires build, pipeline, or package'
   end
   local needsSource = options.command == 'build' or options.command == 'pipeline' or options.command == 'package'
+  if options.repo ~= '' then
+    if not needsSource then return nil, '--repo requires build, pipeline or package' end
+    if options.source ~= '' then return nil, '--repo and --source cannot be combined' end
+    if not sourceModule.validRepo(options.repo) then return nil, 'invalid --repo; use HTTPS or SSH URL' end
+    if not sourceModule.validRef(options.ref) then return nil, 'invalid --ref' end
+    options.source = sourceModule.path(options.root, options.repo)
+  elseif options.ref ~= 'HEAD' then
+    return nil, '--ref requires --repo; a local --source checkout is never modified'
+  end
+
   if needsSource and options.source == '' then
-    return nil, '--source is required for this command'
+    return nil, '--source or --repo is required for this command'
   end
 
   if options.command == 'smoke' and options.archive == '' then
@@ -272,6 +283,10 @@ local function build(options: Options): (Plan?, string?)
     options.archive = options.depsOutput .. '/vcpkg-' .. options.triplet .. '.7z'
   end
   local plan: Plan = { steps = {}, directories = {}, requiredFiles = {} }
+  if options.repo ~= '' then
+    step(plan, 'resolve remote OpenMW revision', '@forge', { 'source' }, options.root)
+  end
+
   if options.mode == 'container' and (options.command == 'pipeline' or options.command == 'deps'
     or options.command == 'build' or options.command == 'package') then
     step(plan, 'build AlmaLinux 9 Jess image', options.engine, {

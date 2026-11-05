@@ -22,7 +22,9 @@ Commands:
   help       Print this help
 
 Common switches:
-  --source PATH             OpenMW checkout (required for build/pipeline/package)
+  --source PATH             Existing checkout (never changes Git branch)
+  --repo HTTPS|SSH          OpenMW fork URL; use instead of --source
+  --ref BRANCH|TAG|SHA      Remote revision with --repo (default: HEAD)
   --mode container|local    Default: container
   --engine podman|docker    Default: podman
   --deps-archive FILE|HTTPS_URL   Existing dependency export (build)

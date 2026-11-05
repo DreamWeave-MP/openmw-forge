@@ -1,0 +1,70 @@
+--!strict
+-- Managed, shallow remote source checkouts. Never mutate the user's --source tree.
+local fs = require '@dream/fs'
+local util = require '@forge/native-util'
+local args = require '@forge/args'
+
+type Options = args.Options
+
+local function validRepo(repo: string): boolean
+  if #repo > 1024 or #repo < 10 or repo:find('%s') or repo:find('\0', 1, true) then return false end
+  if repo:match('^https://[^/@:]+/[^%s]+$') then return true end
+  if repo:match('^ssh://[^%s]+$') then return true end
+  if repo:match('^git@[%w%.%-]+:[%w%._/%-]+$') then return true end
+  return false
+end
+
+local function validRef(ref: string): boolean
+  if ref == '' or #ref > 240 or ref:sub(1, 1) == '-' or ref:sub(1, 1) == '/' then return false end
+  if ref:find('..', 1, true) or ref:find('//', 1, true) or ref:find('@{', 1, true) then return false end
+  if ref:sub(-1) == '/' or ref:sub(-1) == '.' or ref:find('\\', 1, true) then return false end
+  return ref:match('^[%w%._/%-]+$') ~= nil
+end
+
+-- A stable, predictable checkout key; repository identity is independently
+-- verified before a cached checkout is reused (collisions fail closed).
+local function key(repo: string): string
+  local value = 5381
+  for index = 1, #repo do value = (value * 33 + string.byte(repo, index)) % 4294967296 end
+  return string.format('%08x', value)
+end
+
+local function path(root: string, repo: string): string
+  return root .. '/work/sources/git-' .. key(repo)
+end
+
+local function checkout(options: Options)
+  if not validRepo(options.repo) then error('unsupported Git remote; use HTTPS or SSH') end
+  if not validRef(options.ref) then error('invalid Git ref') end
+  local target = options.source
+  local stat = fs.lstat(target)
+  if stat and stat.kind == 'symlink' then error('managed checkout must not be a symlink') end
+  if stat and stat.kind ~= 'dir' then error('managed checkout is not a directory') end
+
+  local marker = target .. '/.git/forge-origin'
+  if not stat then
+    util.mkdir(target)
+  end
+
+  if not fs.isDir(target .. '/.git') then
+    if #util.list(target) > 0 then error('refusing to adopt unmanaged checkout: ' .. target) end
+    util.stream('git', { 'init', target })
+    util.stream('git', { '-C', target, 'remote', 'add', 'origin', options.repo })
+    util.write(marker, options.repo .. '\n')
+  elseif not fs.isFile(marker) or util.file(marker) ~= options.repo .. '\n' then
+    error('source checkout is not owned by this Forge remote: ' .. target)
+  end
+
+  local status = util.checked('git', { '-C', target, 'status', '--porcelain', '--untracked-files=normal' })
+  if status ~= '' then error('refusing to reset modified source checkout: ' .. target) end
+  -- Source identity is immutable for this execution: FETCH_HEAD resolves the
+  -- remote ref once, and the selected SHA is reported for release provenance.
+  util.stream('git', { '-C', target, 'fetch', '--depth=1', 'origin', options.ref }, nil,
+    { GIT_TERMINAL_PROMPT = '0' })
+  util.stream('git', { '-C', target, 'checkout', '--detach', 'FETCH_HEAD' })
+  if not fs.isFile(target .. '/CMakeLists.txt') then error('selected repository lacks OpenMW CMakeLists.txt') end
+  local revision = util.checked('git', { '-C', target, 'rev-parse', 'HEAD' }):gsub('%s+$', '')
+  print('OpenMW revision: ' .. revision)
+end
+
+return table.freeze { checkout = checkout, validRepo = validRepo, validRef = validRef, path = path }
