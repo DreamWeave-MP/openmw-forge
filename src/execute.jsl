@@ -56,6 +56,11 @@ local function resolveProjected(path: string): (string?, string?)
       return resolved .. '/' .. table.concat(suffix, '/'), nil
     end
 
+    -- A dangling symlink must not be treated as an ordinary missing path.
+    local entry = fs.lstat(candidate)
+    if entry and entry.kind == 'symlink' then
+      return nil, `unresolvable symlink in writable path: {candidate}`
+    end
     local name = fs.fileName(candidate)
     local parent = fs.parent(candidate)
     if not name or not parent then
@@ -212,6 +217,18 @@ local function executeUnlocked(plan: Plan, options: Options): (boolean, string?)
       continue
     end
 
+    -- Docker bind mounts must be written by the host account, not root.
+    -- Resolve only at execution time so the planner remains side-effect-free.
+    if item.program == 'docker' then
+      for argIndex, value in item.args do
+        if value ~= '@forge-host-uidgid' then continue end
+        local uid = util.checked('id', { '-u' }):match('^(%d+)')
+        local gid = util.checked('id', { '-g' }):match('^(%d+)')
+        if not uid or not gid then return false, 'cannot resolve Docker host UID/GID' end
+        item.args[argIndex] = uid .. ':' .. gid
+      end
+    end
+
     local result, failure = process.run(item.program, item.args, { cwd = item.cwd, env = item.env })
     if result == nil then
       return false, `{item.name}: failed to start {item.program}: {failure or ''}`
@@ -224,59 +241,90 @@ local function executeUnlocked(plan: Plan, options: Options): (boolean, string?)
   return true, nil
 end
 
--- A managed fork is a mutable checkout: its lock must remain held throughout
--- CMake and packaging, not just while Git fetches. Similarly, builds sharing
--- the same output tree must never clean/stage it concurrently. Locks are
--- advisory, kernel-owned and released on errors (or process termination).
-local function execute(plan: Plan, options: Options): (boolean, string?)
-  local needsBuild = options.command == 'build' or options.command == 'package' or options.command == 'pipeline'
-  if not needsBuild then return executeUnlocked(plan, options) end
+-- All entrypoints (public and internal workers) take the same canonical
+-- resource locks. They live under the user's home cache, NOT options.root:
+-- separate Forge workspaces targeting one --build-dir must contend.
+-- Sorting canonical identities also rules out inverted-order deadlocks.
+local function withResourceLocks(options: Options, action: () -> (boolean, string?)): (boolean, string?)
+  local home = process.env('HOME')
+  if not home or home:sub(1, 1) ~= '/' then
+    return false, 'HOME must be an absolute path to coordinate Forge resource locks'
+  end
+  local lockRoot = home .. '/.cache/openmw-forge/locks'
+  local ready, failure = fs.mkdir(lockRoot, { recursive = true })
+  if not ready then return false, 'cannot initialize shared lock directory: ' .. (failure or '') end
 
-  -- No lock files, generated directories, or other writes are permitted before
-  -- validating that the work roots cannot overlap a user-owned source checkout.
-  local preflightOk, preflightMessage = preflight(options)
-  if not preflightOk then return false, preflightMessage end
-  local safe, safetyMessage = checkDestinations(options)
-  if not safe then return false, safetyMessage end
+  local identities: { string } = {}
+  for _, path in { options.deps, options.build, options.output, options.depsOutput } do
+    local canonical, problem = resolveProjected(path)
+    if not canonical then return false, problem end
+    table.insert(identities, canonical)
+  end
 
-  local directory = options.root .. '/work/locks'
-  util.mkdir(directory)
-  local sourceGuard = nil
   if options.repo ~= '' then
-    local lock, failure = fs.lock(directory .. '/source-' .. sourceModule.key(options.repo) .. '.lock')
-    if not lock then return false, 'managed source already in use: ' .. (failure or 'lock unavailable') end
-    sourceGuard = lock
+    local canonical, problem = resolveProjected(options.source)
+    if not canonical then return false, problem end
+    table.insert(identities, canonical)
   end
 
-  local dependencyGuard, dependencyFailure = fs.lock(directory .. '/deps-' .. sourceModule.key(options.deps) .. '.lock')
-  if not dependencyGuard then
-    if sourceGuard then sourceGuard:unlock() end
-    return false, 'dependency prefix already in use: ' .. (dependencyFailure or 'lock unavailable')
+  table.sort(identities)
+  local guards: { dream_fs_Lock } = {}
+  local prior: string? = nil
+  for _, resource in identities do
+    if resource == prior then continue end
+      local guard, problem = fs.lock(lockRoot .. '/resource-' .. sourceModule.key(resource) .. '.lock')
+      if not guard then
+        for index = #guards, 1, -1 do guards[index]:unlock() end
+        return false, 'resource already in use: ' .. resource .. ': ' .. (problem or 'lock unavailable')
+      end
+      table.insert(guards, guard)
+      prior = resource
   end
 
-  local buildGuard, buildFailure = fs.lock(directory .. '/build-' .. sourceModule.key(options.build) .. '.lock')
-  if not buildGuard then
-    dependencyGuard:unlock()
-    if sourceGuard then sourceGuard:unlock() end
-    return false, 'OpenMW build tree already in use: ' .. (buildFailure or 'lock unavailable')
-  end
-
-  local outputGuard, outputFailure = fs.lock(directory .. '/output-' .. sourceModule.key(options.output) .. '.lock')
-  if not outputGuard then
-    buildGuard:unlock()
-    dependencyGuard:unlock()
-    if sourceGuard then sourceGuard:unlock() end
-    return false, 'OpenMW output directory already in use: ' .. (outputFailure or 'lock unavailable')
-  end
-
-  -- Release every kernel lock when a planned source, build or package step throws.
-  local ok, success, message = pcall(executeUnlocked, plan, options)
-  outputGuard:unlock()
-  buildGuard:unlock()
-  dependencyGuard:unlock()
-  if sourceGuard then sourceGuard:unlock() end
+  -- Native workers can throw on external tools; locks must release on failure.
+  local ok, success, message = pcall(action)
+  for index = #guards, 1, -1 do guards[index]:unlock() end
   if not ok then return false, tostring(success) end
   return success, message
 end
 
-return table.freeze { execute = execute, preflight = preflight }
+local function guardPreflight(options: Options): (boolean, string?)
+  local ok, problem = preflight(options)
+  if not ok then return false, problem end
+  return checkDestinations(options)
+end
+
+local function execute(plan: Plan, options: Options): (boolean, string?)
+  local needsBuild = options.command == 'build' or options.command == 'package' or options.command == 'pipeline'
+  if not needsBuild then return executeUnlocked(plan, options) end
+  local safe, problem = guardPreflight(options)
+  if not safe then return false, problem end
+
+  return withResourceLocks(options, function(): (boolean, string?)
+    return executeUnlocked(plan, options)
+  end)
+end
+
+-- Docker/Podman still calls these worker entrypoints, but they no longer have
+-- an unguarded fast path through native.run.
+local function executeWorker(options: Options): (boolean, string?)
+  local safe, problem = guardPreflight(options)
+  if not safe then return false, problem end
+
+  local action = function(): (boolean, string?)
+    -- A native worker can throw on toolchain or filesystem errors.
+    local ok, message = pcall(native.run, options.command, options)
+    if not ok then return false, tostring(message) end
+    return true, nil
+  end
+
+  if options.command == 'build' or options.command == 'package' or options.command == 'deps' then
+    return withResourceLocks(options, action)
+  end
+  return action()
+end
+
+return table.freeze {
+  execute = execute, executeWorker = executeWorker,
+  preflight = preflight, checkDestinations = checkDestinations,
+}

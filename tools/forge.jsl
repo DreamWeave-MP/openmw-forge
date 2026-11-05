@@ -5,7 +5,6 @@ local process = require '@dream/process'
 local args = require '@forge/args'
 local planning = require '@forge/plan'
 local executor = require '@forge/execute'
-local native = require '@forge/native'
 
 local Help = [[
 OpenMW Forge — standalone Jess-native AlmaLinux 9 build tool
@@ -117,13 +116,8 @@ if options.command == 'version' then
   return
 end
 
-if string.sub(options.command, 1, 2) == '__' then
-  options.command = string.sub(options.command, 3)
-  local checked, validationError = planning.build(options)
-  if checked == nil then error(validationError or 'unsafe internal invocation') end
-  native.run(options.command, options)
-  return
-end
+local internalWorker = string.sub(options.command, 1, 2) == '__'
+if internalWorker then options.command = string.sub(options.command, 3) end
 
 local function absolute(value: string): string
   if value == '' then
@@ -152,6 +146,13 @@ end
 local plan, validationError = planning.build(options)
 if plan == nil then
   error(validationError or 'invalid build plan')
+end
+
+if internalWorker then
+  if options.dryRun then error('internal worker commands do not support --dry-run') end
+  local safe, reason = executor.executeWorker(options)
+  if not safe then error(reason or 'unsafe internal invocation') end
+  return
 end
 
 if options.dryRun then
