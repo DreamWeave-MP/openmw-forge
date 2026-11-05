@@ -6,6 +6,8 @@ local util = require '@forge/native-util'
 local sourceModule = require '@forge/source'
 local argsModule = require '@forge/args'
 local nativeOpenmw = require '@forge/native-openmw'
+local nativeQt = require '@forge/native-qt'
+local releaseArtifacts = require '@forge/native-release-artifacts'
 local sdkCache = require '@forge/native-sdk-cache'
 local config = require '@forge/config'
 
@@ -105,6 +107,23 @@ util.write(prefix .. '.build-meta', 'profile=alma9\ntriplet=x64-linux-dynamic\n'
   .. 'inputs_sha256=' .. string.rep('a', 64) .. '\narchive_sha256=' .. bogusHash .. '\n')
 check(not sdkCache.cacheHit(cacheDir, 'x64-linux-dynamic', string.rep('a', 64)),
   'matching SHA-256 with an invalid archive must fall back to rebuilding')
+
+-- Even a valid cache candidate cannot be audited while another writer owns
+-- the same SDK export path.
+local sdkLock, sdkLockFailure = fs.lock(cacheDir .. '/.forge-sdk.lock')
+if not sdkLock then error(sdkLockFailure or 'cannot lock SDK verification fixture') end
+
+local sdkVerifyOptions, sdkVerifyError = argsModule.parse({ 'verify', '--mode', 'local',
+  '--deps-output', cacheDir }, root)
+
+if not sdkVerifyOptions then error(sdkVerifyError or 'cannot parse SDK verification fixture') end
+
+local depsModule = require '@forge/native-deps'
+-- The deliberately contested SDK verification is expected to throw.
+local okToVerify = pcall(depsModule.verify, sdkVerifyOptions)
+check(not okToVerify, 'dependency verification must respect a concurrent SDK export lock')
+sdkLock:unlock()
+
 
 local function invoke(argv: { string }, cwd: string, env: { [string]: string }?): dream_process_Result
   local result, problem = process.run(binary, argv, { cwd = cwd, env = env, stdout = 'capture', stderr = 'capture' })
@@ -281,11 +300,43 @@ check(withoutCache.success, 'mocked compiled no-ccache build must succeed')
 check(util.file(mockLog):find('/forge/work/ccache', 1, true) == nil,
   '--no-ccache must actually omit the compiler-cache volume')
 
+local unsupportedHeadless = invoke({ 'build', '--no-qt' }, empty)
+check(not unsupportedHeadless.success and (unsupportedHeadless.stderr or ''):find('--no-qt', 1, true) ~= nil,
+  'unsupported Qt-less builds must be rejected at argument parsing')
+
+-- Two invocations targeting one CMake tree must not race a cleanup/package.
+local lockDirectory = empty .. '/work/locks'
+util.mkdir(lockDirectory)
+local sharedBuildLock, lockProblem = fs.lock(lockDirectory .. '/build-'
+  .. sourceModule.key(empty .. '/work/build') .. '.lock')
+if not sharedBuildLock then error(lockProblem or 'cannot lock build fixture') end
+
+local contested = invoke({ 'build', '--engine', 'podman', '--source', source,
+  '--deps-archive', mockArchive }, empty, mockEnv)
+check(not contested.success and (contested.stderr or ''):find('already in use', 1, true) ~= nil,
+  'second Forge invocation must refuse a locked CMake tree')
+sharedBuildLock:unlock()
+
+
 util.write(build .. '/openmw', 'mock compiled OpenMW executable\n')
 util.write(build .. '/resources/one.txt', 'resource\n')
 util.write(deps .. '/openmw-deps/installed/x64-linux-dynamic/lib/libTest.so.1', 'test library')
 util.write(deps .. '/QT/6.6.3/gcc_64/lib/libQt6Core.so.6.6.3', 'Qt fixture')
 util.write(deps .. '/QT/6.6.3/gcc_64/plugins/platforms/libqxcb.so', 'plugin')
+local qtOptions, qtReason = argsModule.parse({ 'package', '--deps-prefix', deps }, empty)
+if not qtOptions then error(qtReason or 'could not create Qt fixture options') end
+check(nativeQt.qualified(qtOptions), 'complete externally supplied Qt installation must be usable')
+local coreLibrary = deps .. '/QT/6.6.3/gcc_64/lib/libQt6Core.so.6.6.3'
+util.remove(coreLibrary)
+check(not nativeQt.qualified(qtOptions), 'Qt lib directory without Core library must not qualify')
+util.write(coreLibrary, 'Qt fixture')
+local qtMarker = deps .. '/QT/6.6.3/gcc_64/.openmw-forge-managed'
+util.write(qtMarker, 'openmw-forge-managed-v1\n')
+util.write(deps .. '/QT/6.6.3/gcc_64/.forge-qt-id', 'qt=wrong\n')
+check(not nativeQt.qualified(qtOptions), 'managed Qt cache must reject stale installer/version identity')
+util.write(deps .. '/QT/6.6.3/gcc_64/.forge-qt-id', nativeQt.identity(qtOptions))
+check(nativeQt.qualified(qtOptions), 'managed Qt cache must accept a complete matching installation')
+
 local linked, problem = fs.symlink('libTest.so.1', deps .. '/openmw-deps/installed/x64-linux-dynamic/lib/libTest.so')
 if not linked then error(problem or 'cannot create test symlink') end
 
@@ -303,6 +354,34 @@ check(fs.lstat(stage .. '/lib/libTest.so') ~= nil, 'vcpkg shared library symlink
 check(fs.isFile(stage .. '/plugins/platforms/libqxcb.so'), 'missing Qt plugin tree')
 check(fs.isFile(stage .. '/README.packagecontents.txt'), 'embedded package template missing')
 
+-- The pair is compressed completely before either existing artifact changes.
+-- A crash after one rename is repaired from a small managed recovery journal.
+local pairRoot = scratch .. '/archive-pair'
+local PairName = 'openmw-0.49.0-Linux-64Bit'
+util.mkdir(build .. '/package-staging-debug/' .. PairName .. '-debug')
+util.write(build .. '/package-staging-debug/' .. PairName .. '-debug/README', 'debug symbols fixture')
+releaseArtifacts.publish(pairRoot, PairName, build .. '/package-staging',
+  build .. '/package-staging-debug', true)
+local pairMain = pairRoot .. '/' .. PairName .. '.tar.gz'
+local pairDebug = pairRoot .. '/' .. PairName .. '-debug.tar.gz'
+check(fs.isFile(pairMain) and fs.isFile(pairDebug), 'both main and debug archives must be published')
+local oldMain = util.file(pairMain)
+local oldDebug = util.file(pairDebug)
+local pendingPair = pairRoot .. '/.forge-archive-publication'
+util.resetManaged(pendingPair)
+util.mkdir(pendingPair .. '/previous')
+util.write(pendingPair .. '/journal', PairName .. '.tar.gz 1\n' .. PairName .. '-debug.tar.gz 1\n')
+local savedMain, backupError = fs.rename(pairMain, pendingPair .. '/previous/' .. PairName .. '.tar.gz')
+if not savedMain then error(backupError or 'cannot stage interrupted main archive') end
+local savedDebug, debugBackupError = fs.rename(pairDebug, pendingPair .. '/previous/' .. PairName .. '-debug.tar.gz')
+if not savedDebug then error(debugBackupError or 'cannot stage interrupted debug archive') end
+util.write(pairMain, 'interrupted new main file')
+releaseArtifacts.recover(pairRoot)
+check(util.file(pairMain) == oldMain and util.file(pairDebug) == oldDebug,
+  'publication recovery must restore the previous complete main/debug pair')
+check(not fs.exists(pendingPair), 'archive recovery must retire its transaction directory')
+
+
 -- A valid tarball from the staged tree should pass the actual compiled smoke CLI.
 util.copy('/usr/bin/true', stage .. '/openmw.x86_64')
 util.stream('chmod', { '+x', stage .. '/openmw.x86_64' })
@@ -310,6 +389,17 @@ local valid = scratch .. '/valid.tar.gz'
 util.stream('tar', { 'czf', valid, '-C', build .. '/package-staging', 'openmw-0.49.0-Linux-64Bit' })
 local accepted = invoke({ 'smoke', '--archive', valid }, empty)
 check(accepted.success, 'valid synthetic ELF tarball must pass the native smoke CLI: ' .. (accepted.stderr or ''))
+
+-- Smoke runs unpack into a shared managed root; a second process must wait
+-- rather than deleting the first run's extracted package or Dockerfiles.
+local smokeGuard, smokeError = fs.lock(empty .. '/work/.forge-smoke.lock')
+if not smokeGuard then error(smokeError or 'cannot guard smoke fixture') end
+
+local collidedSmoke = invoke({ 'smoke', '--archive', valid }, empty)
+check(not collidedSmoke.success and (collidedSmoke.stderr or ''):find('already in use', 1, true) ~= nil,
+  'smoke workspace must be exclusive across Forge processes')
+smokeGuard:unlock()
+
 local missingQt = invoke({ 'smoke', '--archive', valid, '--with-qt' }, empty)
 check(not missingQt.success, 'Qt release check must reject a package without a Qt launcher')
 check((missingQt.stderr or ''):find('required OpenMW Qt launcher', 1, true) ~= nil,
@@ -426,6 +516,18 @@ local featurePlan = invoke({ 'build', '--repo', Url, '--ref', 'feature/fork', '-
 local mainPlan = invoke({ 'build', '--repo', Url, '--ref', 'main', '--dry-run' }, checkoutCwd)
 check(featurePlan.success and mainPlan.success, 'both refs must plan without side effects')
 check(featurePlan.stdout ~= mainPlan.stdout, 'separate remote refs must produce distinct plans')
+
+local sourceLocks = checkoutCwd .. '/work/locks'
+util.mkdir(sourceLocks)
+local guardedSource, sourceLockError = fs.lock(sourceLocks .. '/source-' .. sourceModule.key(Url) .. '.lock')
+if not guardedSource then error(sourceLockError or 'cannot lock source fixture') end
+local conflicting = invoke({ 'build', '--repo', Url, '--ref', 'feature/fork', '--no-prepare' }, checkoutCwd, gitEnv)
+check(not conflicting.success and (conflicting.stderr or ''):find('source already in use', 1, true) ~= nil,
+  'source checkout lock must cover the entire managed fork build, not just Git fetch')
+check(util.file(checkoutPath .. '/.git/forge-revision') == mainRev .. '\n',
+  'contested fork build must leave the selected source revision unchanged')
+guardedSource:unlock()
+
 
 local remoteStage = invoke({ 'package', '--mode', 'local', '--repo', Url, '--ref', 'main',
   '--build-dir', build, '--deps-prefix', deps, '--deps-output', depsOutput, '--output-dir', output,
