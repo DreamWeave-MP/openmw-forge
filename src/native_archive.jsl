@@ -44,7 +44,10 @@ local function listTar(archive: string): { string }
 end
 
 -- Conservative pre-extraction validation of 7z's structured listing.
--- Validate advertised link targets and refuse links without inspectable targets.
+-- Native .7z encodes a POSIX symlink's target in the file's data stream;
+-- unlike tar, 7z l -slt usually does NOT include a "Symbolic Link" field.
+-- Resolve those targets separately before allowing extraction, never by
+-- assuming that an absent metadata field means the link is safe.
 local function safeLinkTarget(path: string, target: string): boolean
   if target == '' or target:sub(1, 1) == '/' or target:find('\\', 1, true) then return false end
   if target:match('^[%a]:') or target:find('\0', 1, true) then return false end
@@ -62,13 +65,14 @@ local function safeLinkTarget(path: string, target: string): boolean
   return #components > 0
 end
 
-local function validate7zListing(listing: string)
+local function validate7zListing(listing: string, readTarget: ((string) -> string)?)
   local separator = listing:find('%-%-%-%-%-%-%-%-%-')
   if not separator then error('7zip listing missing archive entries') end
   local payload = listing:sub(separator)
   local found = false
   local count = 0
   local entry: { [string]: string } = {}
+  local seen: { [string]: boolean }, symlinks: { [string]: boolean } = {}, {}
 
   local function validate()
     local path = entry.Path
@@ -78,17 +82,33 @@ local function validate7zListing(listing: string)
       error('unsafe dependency archive entry: ' .. path)
     end
 
+    if seen[path] then error('duplicate dependency archive entry: ' .. path) end
+    seen[path] = true
+
     if path:find('installed/', 1, true) then found = true end
     local attributesEntry: { [string]: string } = entry
     local link = attributesEntry['Symbolic Link'] or attributesEntry['Link'] or attributesEntry['Target']
-    if link and not safeLinkTarget(path, link) then
-      error('unsafe dependency archive link: ' .. path)
-    end
-    -- POSIX symlink type is encoded in the Unix mode bits in 7z's attributes.
-    -- If the exporter hides the target, we cannot prove safe extraction.
     local attributes = attributesEntry['Attributes'] or ''
-    if attributes:match(' [l]') and not link then
-      error('uninspectable dependency symlink: ' .. path)
+    local isSymlink = link ~= nil or attributes:match('^l') ~= nil or attributes:match('%sl') ~= nil
+    if isSymlink then
+      symlinks[path] = true
+      if not link then
+        -- Link targets are data streams in native 7z. Reject files larger
+        -- than Linux's maximum link-target size before decompressing them.
+        local rawSize = attributesEntry['Size'] or ''
+        local size = tonumber(rawSize)
+        if not size or size < 1 or size > 4095 or size % 1 ~= 0 then
+          error('uninspectable dependency symlink size: ' .. path)
+        end
+
+        if not readTarget then error('uninspectable dependency symlink: ' .. path) end
+        link = readTarget(path)
+        if #link ~= size then error('invalid dependency symlink data: ' .. path) end
+      end
+
+      if not safeLinkTarget(path, link) then
+        error('unsafe dependency archive link: ' .. path)
+      end
     end
   end
 
@@ -104,10 +124,28 @@ local function validate7zListing(listing: string)
   validate()
   if count == 0 then error('dependency archive has no entries') end
   if not found then error('dependency archive lacks installed triplet tree') end
+
+  -- Even an otherwise internal link may cause an extractor to write through
+  -- it if another archive member names a child of that link. Ban that layout
+  -- before extraction; vcpkg's versioned .so symlinks are leaf entries.
+  for path in seen do
+    local prefix = ''
+    for segment in path:gmatch('[^/]+') do
+      prefix = if prefix == '' then segment else prefix .. '/' .. segment
+      if prefix ~= path and symlinks[prefix] then
+        error('dependency archive writes beneath symbolic link: ' .. path)
+      end
+    end
+  end
 end
 
 local function validateArchiveEntries(program: string, path: string)
-  validate7zListing(util.checked(program, { 'l', '-slt', path }))
+  validate7zListing(util.checked(program, { 'l', '-slt', path }), function(member: string): string
+    -- -spd disables 7z wildcard parsing: the listed member must be selected
+    -- literally, not matched against other entries by an archive-supplied glob.
+    -- -so reads the symlink target bytes without creating any filesystem link.
+    return util.checked(program, { 'e', '-so', '-spd', path, member })
+  end)
 end
 
 local function validateExtractedLinks(root: string)
