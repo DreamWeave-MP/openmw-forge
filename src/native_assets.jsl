@@ -1,9 +1,17 @@
 --!strict
 local fs = require '@dream/fs'
+local process = require '@dream/process'
 local util = require '@forge/native-util'
 local files = require '@forge/assets'
 
 local function stage(root: string, binary: boolean): string
+  if binary then
+    local probe = process.run('/proc/self/exe', { 'help' }, { stdout = 'capture', stderr = 'capture' })
+    if not probe or not probe.success or not (probe.stdout or ''):find('OpenMW Forge', 1, true) then
+      error('container execution requires a packed Forge ELF, not a bare Jess interpreter; run tools/release.jsl first')
+    end
+  end
+
   local dir = root .. '/work/forge-assets'
   for path, content in files do
     util.write(dir .. '/' .. path, content)

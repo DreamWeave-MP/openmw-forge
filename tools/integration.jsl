@@ -79,6 +79,8 @@ check(fs.isFile(empty .. '/work/forge-assets/Dockerfile'), 'compiled executable 
 check(fs.isFile(empty .. '/work/forge-assets/deps/vcpkg.json'), 'compiled executable must materialize vcpkg assets')
 local embedded = empty .. '/work/forge-assets/forge'
 check(fs.isFile(embedded), 'container context must carry self-contained compiled binary')
+local embeddedHelp, why = process.run(embedded, { 'help' }, { stdout = 'capture', stderr = 'capture' })
+check(embeddedHelp ~= nil and embeddedHelp.success and (embeddedHelp.stdout or ''):find('OpenMW Forge', 1, true) ~= nil, 'container context copy must be a runnable Forge command: ' .. (why or ''))
 local embeddedStat = fs.stat(embedded)
 local originalStat = fs.stat(binary)
 check(embeddedStat ~= nil and originalStat ~= nil and embeddedStat.size == originalStat.size, 'container binary copy should match original size')
