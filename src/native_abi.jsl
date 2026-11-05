@@ -56,7 +56,7 @@ local function scanAbi(root: string)
     if not result or not result.success then error('readelf failed: ' .. path) end
     local symbol, version, maximum = incompatibleNeed(result.stdout or '')
     if symbol and version and maximum then
-      error(`ABI violation: {path} needs {symbol}_{version} (max {maximum}); check that the builder uses the frozen AlmaLinux 9.6 sysroot, not newer EL9 backports`)
+      error(`ABI violation: {path} needs {symbol}_{version} (max {maximum}); check that the builder uses the frozen AlmaLinux 9.5 sysroot, not newer EL9 backports`)
     end
 
     if count % 100 == 0 then print(`ABI audit: checked {count} ELF files under {root}`) end

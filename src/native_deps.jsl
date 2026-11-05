@@ -130,7 +130,7 @@ local function runUnlocked(options: Options)
   -- Never restore packages built against the previous, floating EL9 glibc.
   -- The host-mounted parent persists, but the ABI baseline has a dedicated
   -- vcpkg binary-cache namespace for local and container executions.
-  local binaryCache = options.root .. '/work/vcpkg-binaries/alma9-6-glibc234-v1'
+  local binaryCache = options.root .. '/work/vcpkg-binaries/alma9-5-glibc234-v1'
   util.mkdir(binaryCache)
   env.VCPKG_DEFAULT_BINARY_CACHE = binaryCache
   local install = installedRoot(vcpkg)
