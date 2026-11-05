@@ -34,6 +34,10 @@ local function addEnvironment(env: { [string]: string }, wheelhouse: string): { 
   updated.PIP_NO_INPUT = '1'
   updated.PIP_DISABLE_PIP_VERSION_CHECK = '1'
   updated.PIP_CACHE_DIR = wheelhouse .. '/pip-cache'
+  -- Explicitly defeat inherited PIP_USER=1 (or a pip user-site default) for
+  -- vcpkg's isolated Python virtualenvs. The container must not set it for
+  -- every worker; venvs install into their own site-packages.
+  updated.PIP_USER = '0'
   return updated
 end
 

@@ -84,7 +84,16 @@ suite.describe('profile and CLI', function()
     test.expect(updated.PIP_CONSTRAINT).toBe('/forge/work/vcpkg/.forge-python-wheels/constraints.txt')
     test.expect(updated.PIP_NO_INPUT).toBe('1')
     test.expect(updated.PIP_NO_INDEX).toBeNil()
+    test.expect(updated.PIP_USER).toBe('0')
     test.expect(original.PIP_FIND_LINKS).toBeNil()
+  end)
+
+  suite.it('disables inherited user-site pip installs in vcpkg virtualenvs', function()
+    local original = { PATH = '/toolchain/bin', PIP_USER = '1' }
+    local updated = vcpkgPython.addEnvironment(original, '/forge/work/vcpkg/.forge-python-wheels')
+    test.expect(original.PIP_USER).toBe('1')
+    test.expect(updated.PIP_USER).toBe('0')
+    test.expect(updated.PATH).toBe('/toolchain/bin')
   end)
 
   suite.it('pins the AlmaLinux 9 ABI contract', function()

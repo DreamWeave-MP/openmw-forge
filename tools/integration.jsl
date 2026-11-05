@@ -267,8 +267,12 @@ local dockerLog = util.file(mockLog)
 check(hostUid ~= nil and hostGid ~= nil
   and dockerLog:find('\t--user\t' .. hostUid .. ':' .. hostGid .. '\t', 1, true) ~= nil,
   'Docker worker must use the invoking host account for writable volumes')
-check(dockerLog:find('HOME=/tmp', 1, true) ~= nil and dockerLog:find('PIP_USER=1', 1, true) ~= nil,
-  'unprivileged container workers must have writable HOME and user-local installers')
+check(dockerLog:find('HOME=/tmp', 1, true) ~= nil,
+  'unprivileged container workers must have a writable HOME')
+check(dockerLog:find('PIP_USER=1', 1, true) == nil,
+  'container workers must not force user-site pip installs inside vcpkg virtualenvs')
+check(vcpkgPython.addEnvironment({ PIP_USER = '1' }, '/forge/work/vcpkg/.forge-python-wheels').PIP_USER == '0',
+  'vcpkg Python must defeat an inherited pip user-install setting')
 
 local launched = invoke({ 'deps' }, empty, mockEnv)
 check(launched.success, 'compiled executable must run two mock container commands: ' .. (launched.stderr or ''))

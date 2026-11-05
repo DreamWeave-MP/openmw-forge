@@ -77,12 +77,15 @@ end
 -- justification for running third-party build steps as root in CI.
 local function containerUserArgs(options: Options): { string }
   if options.engine == 'podman' then
-    return { '--userns=keep-id', '-e', 'HOME=/tmp', '-e', 'PIP_USER=1' }
+    -- Do not force PIP_USER globally: vcpkg creates isolated virtualenvs and
+    -- pip refuses user-site installs inside those environments. Qt explicitly
+    -- requests --user when it needs a user-local installer.
+    return { '--userns=keep-id', '-e', 'HOME=/tmp' }
   end
 
   -- Resolved once by the executor, so planning stays pure and testable even
   -- when the package lacks process.spawn permissions.
-  return { '--user', '@forge-host-uidgid', '-e', 'HOME=/tmp', '-e', 'PIP_USER=1' }
+  return { '--user', '@forge-host-uidgid', '-e', 'HOME=/tmp' }
 end
 
 local function depsSteps(plan: Plan, options: Options)
