@@ -127,7 +127,10 @@ local function runUnlocked(options: Options)
   env.VCPKG_ROOT = vcpkg
   env.VCPKG_MAX_CONCURRENCY = tostring(options.jobs)
   -- The binary cache is a host volume for containers, and persistent locally.
-  local binaryCache = options.root .. '/work/vcpkg-binaries'
+  -- Never restore packages built against the previous, floating EL9 glibc.
+  -- The host-mounted parent persists, but the ABI baseline has a dedicated
+  -- vcpkg binary-cache namespace for local and container executions.
+  local binaryCache = options.root .. '/work/vcpkg-binaries/alma9-6-glibc234-v1'
   util.mkdir(binaryCache)
   env.VCPKG_DEFAULT_BINARY_CACHE = binaryCache
   local install = installedRoot(vcpkg)
@@ -146,6 +149,16 @@ local function runUnlocked(options: Options)
     error(tostring(installFailure))
   end
 
+  -- Audit the actual installed ELF tree BEFORE compression. The previous
+  -- implementation spent ~32 silent minutes inspecting 7z link payloads and
+  -- only then found a GLIBC_2.35 dependency in libsystemd's debug library.
+  -- Keep auditing debug libraries: a Debug OpenMW build can use them too.
+  local installedTree = install .. '/' .. options.triplet
+  if not fs.isDir(installedTree) then error('missing installed vcpkg triplet: ' .. installedTree) end
+  print('Preflight: verifying installed SDK symlinks and AlmaLinux 9 ABI before 7z export')
+  archiveSafety.validateExtractedLinks(installedTree)
+  abi.scanAbi(installedTree)
+
   -- vcpkg exports to a temporary directory. Validation must pass before the
   -- previous production artifact can be replaced.
   local pending = options.depsOutput .. '/.forge-export-pending'
@@ -156,8 +169,7 @@ local function runUnlocked(options: Options)
   }, root, env)
   local candidate = table.clone(options)
   candidate.depsOutput = pending
-  -- Verify against the installed tree, with no redundant archive extraction.
-  local installedTree = install .. '/' .. options.triplet
+  -- Verify against the already inspected installed tree, no extraction.
   util.write(pending .. '/vcpkg-' .. options.triplet .. '.build-meta',
     sdkCache.record(options.triplet, inputs, pending .. '/vcpkg-' .. options.triplet .. '.7z'))
   verify(candidate, installedTree)
@@ -201,7 +213,34 @@ verify = function(options: Options, scanOverride: string?)
     error('dependency export checksum mismatch')
   end
   local sevenZip = util.tool { '7zz', '7z', '7za' }
-  archiveSafety.validateArchiveEntries(sevenZip, archive)
+  if scanOverride then
+    -- The exporter just serialized our audited, local installed tree. 7z's
+    -- symlink target is stored as compressed file data: reopening its solid
+    -- archive for EVERY symlink can take over half an hour. Inspect the 7z
+    -- membership once, resolve links from the original installed tree, and
+    -- cross-check each entry's archived size. The local export is trusted only
+    -- on this path; cache restores and external archives still read each link
+    -- directly from the archive BEFORE extraction.
+    print('Validating fresh SDK archive against audited source symlinks (single 7z listing)')
+    local prefix = 'vcpkg-' .. options.triplet .. '/installed/' .. options.triplet .. '/'
+    archiveSafety.validateArchiveEntries(sevenZip, archive, function(member: string): string
+      if member:sub(1, #prefix) == prefix then
+        local original = scanOverride .. '/' .. member:sub(#prefix + 1)
+        local stat = fs.lstat(original)
+        if not stat or stat.kind ~= 'symlink' then
+          error('fresh SDK export symlink is missing from inspected source: ' .. member)
+        end
+        local target, failure = fs.readLink(original)
+        if not target then error('cannot inspect source SDK symlink: ' .. (failure or member)) end
+        return target
+      end
+      -- Never assume that unrecognized archive locations correspond to our
+      -- trusted vcpkg installed tree.
+      return util.checked(sevenZip, { 'e', '-so', '-spd', archive, member })
+    end)
+  else
+    archiveSafety.validateArchiveEntries(sevenZip, archive)
+  end
   local root = scanOverride or (options.root .. '/work/deps-verify')
   if not scanOverride then
     util.resetManaged(root)
@@ -219,7 +258,9 @@ verify = function(options: Options, scanOverride: string?)
   end
 
   if not fs.isDir(scan) then error('ABI scan root not found: ' .. scan) end
-  abi.scanAbi(scan)
+  -- runUnlocked already audited the source tree before export. Repeat this
+  -- only for independently extracted/cached archives, not the same source.
+  if not scanOverride then abi.scanAbi(scan) end
 end
 
 -- A direct `verify` must serialize with an SDK export, too. Internal

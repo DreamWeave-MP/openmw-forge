@@ -19,6 +19,28 @@ local function newer(left: string, right: string): boolean
   return false
 end
 
+-- readelf --version-info contains both version DEFINITIONS and NEEDS. Only
+-- imported versions impose a minimum glibc/libstdc++ requirement on the host.
+-- Grepping the whole listing can misclassify a library's own exported tags.
+local function incompatibleNeed(info: string): (string?, string?, string?)
+  local inNeeds = false
+  for line in info:gmatch('[^\r\n]+') do
+    if line:find('Version needs section', 1, true) then
+      inNeeds = true
+    elseif line:match('^Version .* section') then
+      inNeeds = false
+    elseif inNeeds then
+      for symbol, maximum in Ceilings do
+        local version = line:match('Name:%s*' .. symbol .. '_([%d%.]+)')
+        if version and newer(version, maximum) then
+          return symbol, version, maximum
+        end
+      end
+    end
+  end
+  return nil, nil, nil
+end
+
 local function scanAbi(root: string)
   local walkResult, failure = fs.walk(root, { include = 'files', sort = true })
   if not walkResult then error(failure or 'cannot walk ABI scan root') end
@@ -32,16 +54,16 @@ local function scanAbi(root: string)
     count += 1
     local result = process.run('readelf', { '--version-info', path }, { stdout = 'capture', stderr = 'capture' })
     if not result or not result.success then error('readelf failed: ' .. path) end
-    local info = result.stdout or ''
-    for symbol, max in Ceilings do
-      for version in info:gmatch(symbol .. '_([%d%.]+)') do
-        if newer(version, max) then error(`ABI violation: {path} needs {symbol}_{version} (max {max})`) end
-      end
+    local symbol, version, maximum = incompatibleNeed(result.stdout or '')
+    if symbol and version and maximum then
+      error(`ABI violation: {path} needs {symbol}_{version} (max {maximum}); check that the builder uses the frozen AlmaLinux 9.6 sysroot, not newer EL9 backports`)
     end
+
+    if count % 100 == 0 then print(`ABI audit: checked {count} ELF files under {root}`) end
   end
 
   if count == 0 then error('ABI audit found no ELF files') end
   print(`PASS {count} ELF files meet AlmaLinux 9 ABI ceilings`)
 end
 
-return table.freeze { scanAbi = scanAbi, newer = newer }
+return table.freeze { scanAbi = scanAbi, newer = newer, incompatibleNeed = incompatibleNeed }

@@ -139,8 +139,16 @@ local function validate7zListing(listing: string, readTarget: ((string) -> strin
   end
 end
 
-local function validateArchiveEntries(program: string, path: string)
+local function validateArchiveEntries(program: string, path: string, localLinkTarget: ((string) -> string)?)
+  local inspected = 0
   validate7zListing(util.checked(program, { 'l', '-slt', path }), function(member: string): string
+    if localLinkTarget then return localLinkTarget(member) end
+    -- On restored or external archives, the original link bytes are untrusted.
+    -- Never replace this with values from a separately supplied sidecar.
+    inspected += 1
+    if inspected == 1 or inspected % 25 == 0 then
+      print(`Validating cached 7z symlink targets: {inspected} inspected`)
+    end
     -- -spd disables 7z wildcard parsing: the listed member must be selected
     -- literally, not matched against other entries by an archive-supplied glob.
     -- -so reads the symlink target bytes without creating any filesystem link.
