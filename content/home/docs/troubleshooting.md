@@ -1,8 +1,9 @@
----
-layout: default
----
++++
+title = "Troubleshooting"
+weight = 80
+description = "OpenMW Forge: Troubleshooting"
++++
 
-# Troubleshooting and diagnostics
 
 ## The four-hour job did not run
 
@@ -129,12 +130,13 @@ permissions. The build job needs only `contents: read`; the separate publish
 job needs `contents: write` and a `GITHUB_TOKEN` able to create and update
 GitHub releases. A failed qualification must leave the release unmodified.
 
-## Docs site build fails
+## Documentation site build fails
 
-From the Forge source root run `jess run --trusted --package . tools/docs.jsl`
-then `zola --root site build --output-dir ../public`. Edit source Markdown in
-`docs/`, not `site/content/manual`. Check Zola version `0.23.6`; the site
-uses Zola (as StroggForge does), **not** the old Jekyll Pages builder.
+Forge uses the DreamWeave Mod Template's **Jess site renderer**, via StroggForge
+`modGlobalBuild.yml@v69`. No Zola installation is needed. Reproduce the site
+check, render, and link audit with the commands in [CI](@/home/docs/ci.md).
+Canonical Markdown is in `content/home/docs/`, and compiled output is in
+`public/`. Keep those outputs untracked.
 
 ## Docker created root-owned build/cache paths
 

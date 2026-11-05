@@ -1,8 +1,9 @@
----
-layout: default
----
++++
+title = "Migration audit"
+weight = 60
+description = "OpenMW Forge: Migration audit"
++++
 
-# Migration audit: two Bash-driven Linux build repositories to one native Jess tool
 
 The supplied inputs were `dream-deps-build.bundle` HEAD `5981e98` and `openmw-linux-build.bundle` HEAD `88d88df`. We preserve the **AlmaLinux 9** ABI floor, original dependency manifests/ports and packaging templates. The migration targets Linux; legacy macOS/Windows CI is not being replaced.
 
@@ -39,7 +40,7 @@ The dependency system's strengths were pinned source inputs, custom vcpkg ports,
 | `scripts/run_container.sh`, `run_distrobox.sh` | Interactive command-line wrappers | Removed, superseded by compiled Jess entry point and deterministic `src/plan.jsl` |
 | `scripts/build_local_staging.sh` | Local convenience helper with hardcoded home path | Removed; direct CLI `package`/`--stage-only` replaces it |
 | `templates/runtime_wrapper.sh.in`, `README.packagecontents.txt` | OpenMW distribution launcher and readme | Retained unchanged and embedded as data; POSIX runtime launcher is not an orchestration worker |
-| `docs/` | Old workflow documentation | Superseded by root README and this audit |
+| `content/home/docs/` | Canonical documentation | Rendered by the pinned DreamWeave Jess site builder |
 
 The OpenMW builder already had good source/build separation, portable packaging, debug symbols, and smoke/compatibility checks. Its weakest parts were overlapping Bash CLIs, hardcoded developer paths, implicit environment coupling and the possibility of silently using an old dependency release.
 

@@ -1,8 +1,9 @@
----
-layout: default
----
++++
+title = "CLI reference"
+weight = 10
+description = "OpenMW Forge: CLI reference"
++++
 
-# Forge CLI
 
 The compiled ELF is self-contained. Rename it to `forge`, make it executable,
 and run it from any writable directory. No workspace checkout is needed.

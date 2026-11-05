@@ -1,3 +1,8 @@
+# Forge and its DreamWeave documentation site are both built with Jess.
+# The mod-template is a pinned development tool, never a dependency of the Forge ELF.
 manifest_version = 1
 [workspace]
 members = ["."]
+
+[dev-dependencies]
+"org.dreamweave.mod-template" = "0.4"

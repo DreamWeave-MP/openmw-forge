@@ -1,8 +1,9 @@
----
-layout: default
----
++++
+title = "Performance"
+weight = 70
+description = "OpenMW Forge: Performance"
++++
 
-# Performance: fastest path to a qualified OpenMW tarball
 
 Forge is deliberately **not** a general build framework. Its expensive units
 are a pinned AlmaLinux 9 C++ toolchain, one pinned vcpkg SDK, one Qt installation,
@@ -105,8 +106,8 @@ store if the qualified SDK outgrows repository cache limits.
 - Ninja, `ccache`, Qt, compression and distro smoke behavior must be measured
   against a **real** OpenMW package before further micro-optimization.
 
-See [CI](CI.md), [release configuration](RELEASE.md), and
-[release readiness](RELEASE-READINESS.md).
+See [CI](@/home/docs/ci.md), [release configuration](@/home/docs/release.md), and
+[release readiness](@/home/docs/release-readiness.md).
 
 ## Extracted SDK integrity versus speed
 

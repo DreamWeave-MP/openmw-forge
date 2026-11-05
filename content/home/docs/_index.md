@@ -1,8 +1,20 @@
----
-layout: default
----
++++
+title = "Documentation"
+weight = 1
+sort_by = "weight"
+template = "docs/section.html"
+page_template = "docs/page.html"
 
-# OpenMW Forge
+[extra]
+api_docs = true
+docs_root = true
+docs_project_name = "OpenMW Forge"
+docs_short_title = "Forge Docs"
+docs_project_path = "@/home/docs/_index.md"
+docs_repository_url = "https://github.com/DreamWeave-MP/openmw-forge/tree/main/content/home/docs"
+docs_sidebar_label = "Documentation"
++++
+
 
 One standalone, Jess-compiled Linux command for reproducible OpenMW dependency
 builds, compilation, packaging and verification. Targets **AlmaLinux 9**.
@@ -21,14 +33,14 @@ required only to build the Forge executable from source.
 
 ## Documentation
 
-- [CLI usage and examples](CLI.md)
-- [CI and StroggForge integration](CI.md)
-- [Four-hour das-uberbranch release](RELEASE.md)
-- [Release-readiness limits](RELEASE-READINESS.md)
-- [Validation gates](VALIDATION.md)
-- [Migration audit](AUDIT.md)
-- [Performance and cache design](PERFORMANCE.md)
-- [Troubleshooting](TROUBLESHOOTING.md)
+- [CLI usage and examples](@/home/docs/cli.md)
+- [CI and StroggForge integration](@/home/docs/ci.md)
+- [Four-hour das-uberbranch release](@/home/docs/release.md)
+- [Release-readiness limits](@/home/docs/release-readiness.md)
+- [Validation gates](@/home/docs/validation.md)
+- [Migration audit](@/home/docs/audit.md)
+- [Performance and cache design](@/home/docs/performance.md)
+- [Troubleshooting](@/home/docs/troubleshooting.md)
 
 The built release is a portable OpenMW tarball, *not* a container image. A
 passing synthetic integration fixture does not prove that a production OpenMW

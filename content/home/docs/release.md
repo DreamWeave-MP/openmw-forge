@@ -1,8 +1,9 @@
----
-layout: default
----
++++
+title = "Scheduled releases"
+weight = 30
+description = "OpenMW Forge: Scheduled releases"
++++
 
-# das-uberbranch: four-hour Linux releases
 
 This is a **separate** GitHub Actions workflow, not part of the Forge source
 validation lane. It runs on standard `ubuntu-24.04` GitHub-hosted runners and
@@ -88,4 +89,4 @@ jess run --trusted --package . tools/uberbranch.jsl --dry-run
 GitHub schedules can be delayed or dropped under load. Two runs do not overlap;
 when a previous build occupies the runner beyond four hours, scheduled runs
 may coalesce. The hard limit is 330 minutes per build job. See
-[CI](CI.md), [performance](PERFORMANCE.md) and [release readiness](RELEASE-READINESS.md).
+[CI](@/home/docs/ci.md), [performance](@/home/docs/performance.md) and [release readiness](@/home/docs/release-readiness.md).

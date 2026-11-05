@@ -1,8 +1,9 @@
----
-layout: default
----
++++
+title = "Validation and testing"
+weight = 50
+description = "OpenMW Forge: Validation and testing"
++++
 
-# Verification of the standalone Jess-native OpenMW Forge
 
 ## Performed with the supplied Jess 0.3 / Luau 0.745 runtime
 
@@ -17,19 +18,28 @@ layout: default
   release, refused destructive `--clean` on unowned roots, refused unowned staging
   and smoke scratch paths, missing-main-binary smoke failures, and atomic
   archive replacement under a deliberately failing mocked `tar` executable.
-  **119 integration assertions pass** through the compiled ELF. The new
+  **134 integration assertions pass** through the compiled ELF. The new
   checks explicitly reject broken packaged launchers, test source/ref selection,
   verify content-derived builder image caching, and simulate publisher first
   creation, rolling asset pruning and checksum/provenance failures.
 - `tools/validate.jsl` (Jess shebang) runs these checks together and fails closed on any error.
 - The current revision also exercises persistent ccache Docker mounts, disabled-cache plans, rollback/recovery of a managed dependency tree, and rejected user-owned destinations. The latest integrated fixtures additionally verify a real synthetic `.tar.xz` dependency SDK extraction and unchanged-input reuse, a corrupted/invalid SDK metadata cache, prepublished OCI toolchain consumption, and safe CI-only cleanup. A second toolchain GHCR workflow is defined but has not run in GitHub during sandbox development.
-- The hosted-workflow YAML is structurally validated and all six jobs use `ubuntu-24.04`. Jess generates nine canonical-documentation pages for Zola. The site templates parse as Jinja-compatible templates, but Zola itself is **not available in this sandbox**, so this is not a successful site-render claim.
+- DreamWeave Mod Template (Jess packages pinned in `jess.lock`) validates
+  `content/home/mod.toml` and the content tree; the native site renderer builds
+  **12 pages**, and `dreamweave-links` checks **405 local links, assets and anchors**
+  on the local test fixture. GitHub Pages deployment itself remains unverified
+  until the new workflow runs on GitHub.
+
+The real OpenMW build remains unqualified: there is no Podman/Docker engine
+in this sandbox, so the pinned vcpkg graph, Qt, OpenMW compilation and actual
+user-visible Linux tarballs were not executed here.
+
 
 The final executable has no dependency on a checked-out Jess workspace. Its runtime and overlay assets are embedded, and the generated Podman/Docker image carries the executable itself.
 
 ## What has **not** been proven
 
-No Podman/Docker engine or Zola executable is available in the sandbox. We therefore did not compile the entire pinned vcpkg graph, install Qt from the network, compile a real OpenMW tree, test real debug symbol sidecars, or run the distro image matrix. Our staging fixture uses stub binaries; it is **not** a real OpenMW distribution.
+No Podman/Docker engine is available in the sandbox. We therefore did not compile the entire pinned vcpkg graph, install Qt from the network, compile a real OpenMW tree, test real debug symbol sidecars, or run the distro image matrix. Our staging fixture uses stub binaries; it is **not** a real OpenMW distribution.
 
 Known release risks: mutable AlmaLinux and distro image tags on first publication (the consumer pins GHCR digests); Qt installer
   downloads that are not content-pinned; the multi-file dependency export

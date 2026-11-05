@@ -1,0 +1,11 @@
+# DreamWeave Mod Template metadata for the Forge documentation site.
+# Forge's standalone binaries are published by its own CI; the site pipeline must
+# not publish an extra, incompatible Jess 0.2.2 build.
+id = "fbcc28b6-b3fe-51b9-a9a4-fce4872991f3"
+slug = "openmw-forge"
+type = "tool"
+status = "active"
+
+[[maintainers]]
+name = "DreamWeave"
+url = "https://github.com/DreamWeave-MP"

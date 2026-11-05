@@ -1,8 +1,9 @@
----
-layout: default
----
++++
+title = "Release readiness"
+weight = 40
+description = "OpenMW Forge: Release readiness"
++++
 
-# OpenMW Forge release-readiness checklist
 
 The CLI is built and exercised in a Jess 0.3/Luau 0.745 sandbox, **not yet
 qualified as a production OpenMW release builder**. No Docker/Podman engine is
@@ -58,7 +59,7 @@ synthetic fixtures.
 
 ## Adversarial review follow-up
 
-See [2026-11-05 hardening](HARDENING-2026-11-05.md) for the internal worker
+See [2026-11-05 hardening](@/home/docs/hardening-2026-11-05.md) for the internal worker
 checks, cross-root locks, extracted SDK fingerprint, Qt validation and Docker
 UID/GID behavior. This does not replace a real hosted cold/warm build, an
 independent transitive runtime/Qt plugin closure scan, or a native SHA-256

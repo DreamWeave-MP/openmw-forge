@@ -1,5 +1,0 @@
-title: OpenMW Forge
-description: Jess-native AlmaLinux 9 OpenMW build and release tool
-theme: jekyll-theme-cayman
-markdown: kramdown
-exclude: ["_config.yml"]

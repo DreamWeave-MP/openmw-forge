@@ -1,0 +1,40 @@
+# DreamWeave Mod Template's Jess site renderer consumes this Zola-shaped schema,
+# but Zola itself is not installed or invoked.
+base_url = "https://dreamweave-mp.github.io/openmw-forge"
+title = "OpenMW Forge"
+description = "Jess-native OpenMW builds, reproducible dependency SDKs and Linux release qualification."
+compile_sass = true
+build_search_index = true
+generate_feeds = true
+feed_filenames = ["atom.xml"]
+
+[search]
+index_format = "fuse_json"
+include_title = true
+include_description = true
+include_content = true
+truncate_content_length = 400
+
+[markdown]
+highlighting = { theme = "dracula-soft" }
+insert_anchor_links = "right"
+smart_punctuation = true
+
+[slugify]
+paths = "safe"
+
+[link_checker]
+skip_prefixes = ["https://github.com/", "https://gitlab.com/"]
+
+[extra]
+github_username = "DreamWeave-MP"
+github_project = "openmw-forge"
+logo_text = "OpenMW Forge"
+palette = "indigo"
+menu_items = [
+  { name = "Forge", url = "@/home/index.md" },
+  { name = "Documentation", url = "@/home/docs/_index.md" },
+]
+
+[extra.comments]
+enabled = false

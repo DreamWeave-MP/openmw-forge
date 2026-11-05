@@ -1,8 +1,9 @@
----
-layout: default
----
++++
+title = "Adversarial hardening"
+weight = 90
+description = "OpenMW Forge: Adversarial hardening"
++++
 
-# Adversarial hardening — 2026-11-05
 
 This pass responds to the adversarial audit of the `8dc8cc4` release tree. It
 preserves the AlmaLinux 9 build baseline, OpenMW-specific CLI, GitHub-hosted
