@@ -74,6 +74,22 @@ local function requireInstallation(options: Options): string
   return location(options)
 end
 
+-- aqtinstall opens `aqtinstall.log` relative to its process working directory.
+-- The container's /forge working directory is deliberately read-only for the
+-- unprivileged builder, while our Forge-owned staging tree is writable.
+-- Keep the invocation together so its cwd cannot drift from the output tree.
+local function aqtInvocation(options: Options, staging: string): { program: string, argv: { string }, cwd: string }
+  return {
+    program = 'python3',
+    argv = {
+      '-m', 'aqt', 'install-qt', 'linux', 'desktop', options.qtVersion, 'gcc_64',
+      '--archives', 'qtbase', 'qtdeclarative', 'qtsvg', 'qttools', 'qtwayland', 'icu',
+      '-O', staging,
+    },
+    cwd = staging,
+  }
+end
+
 local function prepare(options: Options)
   local final = location(options)
   util.recoverManagedDirectory(final)
@@ -89,11 +105,8 @@ local function prepare(options: Options)
   local pending = options.deps .. '/qt-install-staging'
   util.resetManaged(pending)
   util.stream('python3', { '-m', 'pip', 'install', '--user', 'aqtinstall==' .. config.aqtVersion })
-  util.stream('python3', {
-    '-m', 'aqt', 'install-qt', 'linux', 'desktop', options.qtVersion, 'gcc_64',
-    '--archives', 'qtbase', 'qtdeclarative', 'qtsvg', 'qttools', 'qtwayland', 'icu',
-    '-O', pending,
-  })
+  local installer = aqtInvocation(options, pending)
+  util.stream(installer.program, installer.argv, installer.cwd)
   local candidate = pending .. '/' .. options.qtVersion .. '/gcc_64'
   if not usable(candidate) then error('downloaded Qt installation lacks required libraries or platform plugins') end
   util.write(candidate .. '/.openmw-forge-managed', 'openmw-forge-managed-v1\n')
@@ -107,4 +120,5 @@ end
 return table.freeze {
   location = location, identity = identity, usable = usable,
   qualified = qualified, requireInstallation = requireInstallation, prepare = prepare,
+  aqtInvocation = aqtInvocation,
 }
