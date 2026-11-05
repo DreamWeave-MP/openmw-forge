@@ -8,19 +8,8 @@ local archiveSafety = require '@forge/native-archive'
 
 type Options = args.Options
 local sdkCache = require '@forge/native-sdk-cache'
+local abi = require '@forge/native-abi'
 local Revision = config.vcpkgRevision
-
-local function newer(left: string, right: string): boolean
-  local leftParts: { number }, rightParts: { number } = {}, {}
-  for part in string.gmatch(left, '%d+') do table.insert(leftParts, tonumber(part) or 0) end
-  for part in string.gmatch(right, '%d+') do table.insert(rightParts, tonumber(part) or 0) end
-
-  for index = 1, math.max(#leftParts, #rightParts) do
-    if (leftParts[index] or 0) > (rightParts[index] or 0) then return true end
-    if (leftParts[index] or 0) < (rightParts[index] or 0) then return false end
-  end
-  return false
-end
 
 local function installDependencies()
   util.stream('dnf', { 'install', '-y', 'epel-release', 'dnf-plugins-core' })
@@ -187,32 +176,23 @@ verify = function(options: Options, scanOverride: string?)
   end
 
   if not fs.isDir(scan) then error('ABI scan root not found: ' .. scan) end
-  local entries, failure = fs.walk(scan, { include = 'files', sort = true })
-  if not entries then error(failure or 'ABI walk failed') end
-  local count = 0
-  local ceiling: { [string]: string } = { GLIBC = '2.34', GLIBCXX = '3.4.29', CXXABI = '1.3.13' }
-  for _, relative in entries.paths do
-    local path = scan .. '/' .. relative
-    local first = fs.readAt(path, 0, 4)
-    if not first or buffer.readstring(first, 0, 4) ~= '\127ELF' then continue end
-
-    count += 1
-    local result = process.run('readelf', { '--version-info', path }, { stdout = 'capture', stderr = 'null' })
-    if not result or not result.success then error('readelf failed: ' .. path) end
-    local info = result.stdout or ''
-    for _, symbol in { 'GLIBC', 'GLIBCXX' } do
-      for version in string.gmatch(info, symbol .. '_([%d%.]+)') do
-        if newer(version, ceiling[symbol]) then error(`ABI violation: {path} needs {symbol}_{version}`) end
-      end
-    end
-
-    for version in string.gmatch(info, 'CXXABI_([%d%.]+)') do
-      if newer(version, ceiling.CXXABI) then error(`ABI violation: {path} needs CXXABI_{version}`) end
-    end
-  end
-
-  if count == 0 then error('ABI scan found no ELF files') end
-  print(`PASS ABI: {count} ELF files, AlmaLinux 9 ceilings`)
+  abi.scanAbi(scan)
 end
 
-return table.freeze { run = run, verify = verify, newer = newer, validateArchiveEntries = archiveSafety.validateArchiveEntries }
+-- A direct `verify` must serialize with an SDK export, too. Internal
+-- verification inside runUnlocked already holds this very same lock.
+local function verifyLocked(options: Options)
+  util.mkdir(options.depsOutput)
+  local lock, failure = fs.lock(options.depsOutput .. '/.forge-sdk.lock')
+  if not lock then error('SDK export is being modified: ' .. (failure or 'lock unavailable')) end
+
+  -- A failed ABI/archive audit cannot strand the advisory lock.
+  local ok, problem = pcall(function(): boolean
+    verify(options, nil)
+    return true
+  end)
+  lock:unlock()
+  if not ok then error(tostring(problem)) end
+end
+
+return table.freeze { run = run, verify = verifyLocked, validateArchiveEntries = archiveSafety.validateArchiveEntries }

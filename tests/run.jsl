@@ -5,7 +5,7 @@ local planning = require '@forge/plan'
 local profile = require '@forge/config'
 local nativeOpenmw = require '@forge/native-openmw'
 local nativeArchive = require '@forge/native-archive'
-local nativeDeps = require '@forge/native-deps'
+local nativeAbi = require '@forge/native-abi'
 local sdkCache = require '@forge/native-sdk-cache'
 local assets = require '@forge/assets'
 local source = require '@forge/source'
@@ -422,10 +422,10 @@ suite.describe('embedded assets, versions, and archive names', function()
   end)
 
   suite.it('compares ABI versions numerically', function()
-    test.expect(nativeDeps.newer('2.35', '2.34')).toBeTruthy()
-    test.expect(nativeDeps.newer('3.4.9', '3.4.29')).toBeFalsy()
-    test.expect(nativeDeps.newer('3.4.29', '3.4.29')).toBeFalsy()
-    test.expect(nativeDeps.newer('1.3.14', '1.3.13')).toBeTruthy()
+    test.expect(nativeAbi.newer('2.35', '2.34')).toBeTruthy()
+    test.expect(nativeAbi.newer('3.4.9', '3.4.29')).toBeFalsy()
+    test.expect(nativeAbi.newer('3.4.29', '3.4.29')).toBeFalsy()
+    test.expect(nativeAbi.newer('1.3.14', '1.3.13')).toBeTruthy()
   end)
 
   suite.it('rejects unsafe tar member names', function()
