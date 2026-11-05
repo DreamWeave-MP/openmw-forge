@@ -4,7 +4,7 @@
 
 - `jess package check .`: strict type checking of package sources.
 - `jess check --package . tools/*.jsl src/*.jsl tests/run.jsl`: typed checker including scripts.
-- `jess workspace test`: **36 tests in source + 36 tests in packed JPK = 72 passing executions**.
+- `jess workspace test`: **37 tests in source + 37 tests in packed JPK = 74 passing executions**.
 - `jess run --trusted tools/style.jsl`: Jess style checker clean.
 - `jess workspace pack --runtime /path/to/jess --output /path/to/openmw-forge`: produced a real Linux x86-64 ELF executable with an embedded Jess runtime.
 - `JESS_BIN=/path/to/jess jess run --trusted --package . tools/integration.jsl /path/to/openmw-forge`: compiled ELF tests from a checkout-free working directory. These cover generated assets, mock Podman build/run using an **independently packed Jess mock executable**, error propagation, staging of OpenMW+Qt+vcpkg symlinks and packaging templates, and synthetic `.tar.gz` safety scenarios.

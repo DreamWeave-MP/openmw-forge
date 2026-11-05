@@ -1,3 +1,4 @@
+#!/usr/bin/env jess
 --!strict
 local style = require '@jess/style'
 local findings = style.checkPackage '.'
