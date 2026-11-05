@@ -1,0 +1,13 @@
+FROM almalinux:9
+
+WORKDIR /builder
+
+COPY config/ config/
+COPY scripts/ scripts/
+COPY templates/ templates/
+
+RUN chmod +x scripts/*.sh
+
+VOLUME ["/src", "/build", "/deps", "/out"]
+
+CMD ["bash", "-lc", "scripts/build_binaries.sh --help"]

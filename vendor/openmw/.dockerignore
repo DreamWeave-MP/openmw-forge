@@ -1,0 +1,13 @@
+.git
+.cache
+.docker-context
+artifacts
+build
+work
+.tarball-deps
+*.tar
+*.tar.gz
+*.tar.xz
+*.7z
+*.zip
+*.log

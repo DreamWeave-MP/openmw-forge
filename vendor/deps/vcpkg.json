@@ -1,0 +1,52 @@
+{
+  "dependencies": [
+    "boost-geometry",
+    "boost-iostreams",
+    "boost-program-options",
+    {
+      "name": "bullet3",
+      "features": [
+        "double-precision",
+        "multithreading"
+      ]
+    },
+    "ffmpeg",
+    "freetype",
+    "icu",
+    "luajit",
+    "lz4",
+    {
+      "name": "mygui",
+      "platform": "!osx"
+    },
+    "openal-soft",
+    {
+      "name": "openmw-mygui-osx",
+      "platform": "osx"
+    },
+    {
+      "name": "libxrandr",
+      "platform": "linux"
+    },
+    "openmw-osg",
+    {
+      "name": "sdl2",
+      "platform": "!linux"
+    },
+    {
+      "name": "sdl2",
+      "default-features": false,
+      "platform": "linux",
+      "features": [
+        "dbus",
+        "x11",
+        "wayland"
+      ]
+    },
+    {
+      "name": "unshield",
+      "platform": "osx|linux"
+    },
+    "yaml-cpp"
+  ]
+}
