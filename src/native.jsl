@@ -7,42 +7,41 @@ local openmw = require '@forge/native-openmw'
 local packaging = require '@forge/native-package'
 local smoke = require '@forge/native-smoke'
 local args = require '@forge/args'
-local config = require '@forge/config'
+local process = require '@dream/process'
+local files = require '@forge/assets'
 local source = require '@forge/source'
 
 type Options = args.Options
 
-local Dockerfile = [[
-FROM almalinux:9
-# Build tooling belongs to the image layer, not every short-lived worker.
-RUN dnf install -y epel-release dnf-plugins-core
-RUN dnf config-manager --set-enabled crb
-RUN dnf install -y git tar gzip p7zip zip unzip curl gcc-toolset-13 cmake ninja-build ccache \
-    perl autoconf autoconf-archive automake libtool nasm pkgconfig mesa-libGL-devel \
-    mesa-libEGL-devel libXcursor-devel libX11-devel libXft-devel libXext-devel \
-    libxkbcommon-devel libxkbcommon-x11 wayland-devel texinfo gettext-devel \
-    kernel-headers python3 python3-pip make binutils patch libstdc++ \
-    libxcb xcb-util xcb-util-image xcb-util-keysyms xcb-util-wm \
-    xcb-util-renderutil xcb-util-cursor && dnf clean all
-# vcpkg requires Autoconf 2.72. Build it ONCE in the cached image rather than
-# recompiling it in each disposable dependency worker. Verify before extraction.
-RUN curl --fail --location --retry 3 -o /tmp/autoconf-2.72.tar.gz \
-      https://ftp.gnu.org/gnu/autoconf/autoconf-2.72.tar.gz \
-    && echo '@AUTOCONF_SHA512@  /tmp/autoconf-2.72.tar.gz' | sha512sum --check - \
-    && tar xzf /tmp/autoconf-2.72.tar.gz -C /tmp \
-    && cd /tmp/autoconf-2.72 && ./configure --prefix=/usr/local \
-    && make -j2 && make install \
-    && rm -rf /tmp/autoconf-2.72 /tmp/autoconf-2.72.tar.gz
-COPY forge /usr/local/bin/openmw-forge
+-- The toolchain recipe is a vendored source asset shared by CLI and CI.
+-- In hosted CI an already-published toolchain image replaces expensive DNF
+-- provisioning; standalone builds retain the fully functional local fallback.
+local RuntimeLayer = [[COPY forge /usr/local/bin/openmw-forge
 COPY deps/ /forge/work/forge-assets/deps/
 COPY openmw/ /forge/work/forge-assets/openmw/
 WORKDIR /forge
 ]]
 
+local function recipe(): string
+  local base = process.env('FORGE_TOOLCHAIN_IMAGE')
+  if base and base ~= '' then
+    -- A named digest can be supplied by CI after resolving a qualified GHCR
+    -- image. Refuse metacharacters or additional Dockerfile instructions.
+    if not base:match('^[%w%._/@:%-]+$') or base:find('..', 1, true) then
+      error('invalid FORGE_TOOLCHAIN_IMAGE reference')
+    end
+    return 'FROM ' .. base .. '\n' .. RuntimeLayer
+  end
+  local toolchain = files['builder/Dockerfile']
+  if not toolchain then error('embedded AlmaLinux 9 toolchain definition is missing') end
+  return toolchain .. RuntimeLayer
+end
+
+
 local function bootstrap(options: Options)
   local dir = embedded.stage(options.root, options.mode == 'container')
   if options.mode == 'container' then
-    local recipe = Dockerfile:gsub('@AUTOCONF_SHA512@', config.autoconfSha512)
+    local recipe = recipe()
     util.write(dir .. '/Dockerfile', recipe)
   end
 end

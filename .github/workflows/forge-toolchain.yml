@@ -1,0 +1,53 @@
+name: Forge AlmaLinux 9 toolchain image
+
+# Heavy toolchain provisioning is independent of ordinary Forge code changes.
+# No self-hosted/large runner, custom secrets, or privileged build jobs.
+on:
+  push:
+    paths:
+      - vendor/builder/Dockerfile
+      - .github/workflows/forge-toolchain.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: forge-alma9-toolchain
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Determine content-derived image tag
+        id: tag
+        env:
+          FORGE_REPO: ${{ github.repository }}
+        run: |
+          recipe=$(sha256sum vendor/builder/Dockerfile | cut -c1-20)
+          echo "image=ghcr.io/${FORGE_REPO,,}-builder:alma9-${recipe}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: vendor/builder
+          file: vendor/builder/Dockerfile
+          platforms: linux/amd64
+          tags: ${{ steps.tag.outputs.image }}
+          push: true
+          provenance: true
+          cache-from: type=gha,scope=openmw-forge-alma9-toolchain
+          cache-to: type=gha,mode=max,scope=openmw-forge-alma9-toolchain

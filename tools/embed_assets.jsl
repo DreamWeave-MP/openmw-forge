@@ -31,6 +31,10 @@ collect(root .. '/vendor/openmw', 'openmw', function(path: string): boolean
   return path:sub(1, 10) == 'templates/'
 end)
 
+collect(root .. '/vendor/builder', 'builder', function(path: string): boolean
+  return path == 'Dockerfile'
+end)
+
 table.sort(assets, function(left: Asset, right: Asset): boolean return left.key < right.key end)
 local output = {
   '--!strict',
