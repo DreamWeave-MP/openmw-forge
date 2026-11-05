@@ -3,7 +3,8 @@ FROM almalinux:9
 # Build tooling belongs to the image layer, not every short-lived worker.
 RUN dnf install -y epel-release dnf-plugins-core
 RUN dnf config-manager --set-enabled crb
-RUN dnf install -y git tar gzip p7zip zip unzip curl gcc-toolset-13 cmake ninja-build ccache \
+# AlmaLinux 9 ships curl-minimal; full curl conflicts with the base RPM.
+RUN dnf install -y git tar gzip p7zip zip unzip curl-minimal gcc-toolset-13 cmake ninja-build ccache \
     perl autoconf autoconf-archive automake libtool nasm pkgconfig mesa-libGL-devel \
     mesa-libEGL-devel libXcursor-devel libX11-devel libXft-devel libXext-devel \
     libxkbcommon-devel libxkbcommon-x11 wayland-devel texinfo gettext-devel \

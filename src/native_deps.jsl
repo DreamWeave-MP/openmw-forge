@@ -19,7 +19,7 @@ local function installDependencies()
   end
 
   util.stream('dnf', {
-    'install', '-y', 'git', 'tar', 'p7zip', 'zip', 'unzip', 'curl', 'gcc-toolset-13',
+    'install', '-y', 'git', 'tar', 'p7zip', 'zip', 'unzip', 'curl-minimal', 'gcc-toolset-13',
     'cmake', 'ninja-build', 'perl', 'autoconf', 'autoconf-archive', 'automake',
     'libtool', 'nasm', 'pkgconfig', 'mesa-libGL-devel', 'mesa-libEGL-devel',
     'libXcursor-devel', 'libX11-devel', 'libXft-devel', 'libXext-devel',
