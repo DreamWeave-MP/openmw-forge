@@ -191,6 +191,23 @@ end
 ]])
 local jessBin = process.env('JESS_BIN') or util.checked('which', { 'jess' }):gsub('%s+$', '')
 
+-- CI invokes Jess by command name, but the standalone packer requires a
+-- real filesystem path for --runtime.  Exercise both the PATH-only fallback
+-- and an invalid, relative JESS_BIN without relying on the host's shell.
+local pathOnlyOutput = scratch .. '/path-only-forge'
+local pathOnly, pathFailure = process.run(jessBin, {
+  'run', '--trusted', 'tools/release.jsl', pathOnlyOutput,
+}, { cwd = root, env = { JESS_BIN = '' }, stdout = 'capture', stderr = 'capture' })
+check(pathOnly ~= nil and pathOnly.success and fs.isFile(pathOnlyOutput),
+  'standalone release must resolve Jess from PATH when JESS_BIN is absent: '
+    .. (pathFailure or (if pathOnly then pathOnly.stderr or '' else '')))
+local invalidRuntime = process.run(jessBin, {
+  'run', '--trusted', 'tools/release.jsl', scratch .. '/should-not-exist',
+}, { cwd = root, env = { JESS_BIN = 'jess' }, stdout = 'capture', stderr = 'capture' })
+check(invalidRuntime ~= nil and not invalidRuntime.success and not fs.exists(scratch .. '/should-not-exist'),
+  'standalone release must reject a relative JESS_BIN before packing')
+
+
 util.stream(jessBin, { 'workspace', 'pack', '--workspace', mockSource,
   '--output', mockedBin .. '/podman', '--runtime', jessBin })
 -- The disk reclamation helper must refuse local invocation and unowned

@@ -25,6 +25,15 @@ tag is derived from the Dockerfile checksum, so changing the recipe produces
 a different image identity. A successful image publication alone does not
 qualify a complete OpenMW release; run the separate release workflow next.
 
+## Standalone compilation reports `failed to read 'jess'`
+
+`jess` on `PATH` is sufficient to **run** the CLI, but `jess workspace pack
+--runtime` requires an actual executable file path. Forge's setup action
+exports `JESS_BIN` as an absolute path for later CI steps, and its release
+script resolves the executable from `PATH` if that variable is absent.
+If invoking the script by hand, use `JESS_BIN=/absolute/path/to/jess`.
+Do not pass the bare string `jess` to the packer's `--runtime` option.
+
 ## Docker or AlmaLinux cannot start
 
 The workflow requires only a standard GitHub-hosted `ubuntu-24.04` runner,

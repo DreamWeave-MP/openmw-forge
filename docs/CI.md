@@ -66,6 +66,13 @@ tag **before running CI**. An empty tag now fails instead of downloading a mutab
 `latest` release. Do not assume an unverified newer Jess tag is compatible. The executable built by
 CI embeds Jess and can be downloaded from the workflow artifacts.
 
+The setup action also exports `JESS_BIN` as the **absolute path** to the
+installed Jess executable. This is required because `jess workspace pack
+--runtime` reads an executable file; it does not resolve its argument from
+`PATH`. For a local build, `tools/release.jsl` discovers that path with
+`which jess` if `JESS_BIN` is not set.
+
+
 ## Hosted image and SDK cache lifecycle
 
 The toolchain is built from **`vendor/builder/Dockerfile`**. A separate
