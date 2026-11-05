@@ -84,6 +84,29 @@ jobs:
         env:
           FORGE_BIN: ${{ github.workspace }}/build/openmw-forge-linux-x64
         run: jess run --trusted --package . tools/uberbranch.jsl --prepare-deps
+      - name: Preserve upstream vcpkg failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: forge-vcpkg-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            work/vcpkg/buildtrees/**/pip-install-packages-*-err.log
+            work/vcpkg/buildtrees/**/pip-install-packages-*-out.log
+            work/vcpkg/buildtrees/**/venv-setup-*-err.log
+            work/vcpkg/buildtrees/**/venv-setup-*-out.log
+          if-no-files-found: warn
+          retention-days: 7
+      # A failed 150-port build has already generated valuable binary cache
+      # entries. Preserve them under a unique key so the next hosted runner can
+      # resume without recompiling successful ports. It must share the normal
+      # restore-key prefix or this save would have no effect.
+      - name: Save partial vcpkg binaries on failed dependency build
+        if: failure() && steps.sdk.outputs.cache-hit != 'true' && steps.vcpkg.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: work/cache/vcpkg-binaries
+          key: forge-vcpkg-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ hashFiles('vendor/deps/**', 'src/config.jsl') }}-failed-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Save qualified SDK even if subsequent OpenMW compilation fails
         if: steps.sdk.outputs.cache-hit != 'true'
         continue-on-error: true

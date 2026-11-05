@@ -175,3 +175,32 @@ before Docker removes the worker. Check those logs for a true compiler, linker,
 permission, or toolchain mismatch; an outer `unable to detect compiler` error
 alone is insufficient to identify the cause. This change does not qualify the
 full vcpkg/OpenMW production pipeline without a real hosted build.
+
+
+## `libsystemd` fails installing Jinja2 inside vcpkg
+
+The AlmaLinux 9 dependency build uses a third-party vcpkg port that creates its
+own isolated Python virtual environment. Installing Jinja2 globally on the
+runner does **not** make it available inside that environment. This is upstream
+Meson/vcpkg build tooling; Forge's orchestration remains Jess-native.
+
+Forge prepares a local wheelhouse with **Jinja2 3.1.6** and **MarkupSafe 2.1.5**,
+verifies each downloaded wheel against its pinned PyPI SHA-256, and tests
+installation inside an isolated virtual environment **before** starting the
+expensive vcpkg build. The wheels are cached within Forge's vcpkg checkout.
+Its `PIP_FIND_LINKS` and `PIP_CONSTRAINT` environment settings expose that
+verified wheelhouse to vcpkg's subsequent virtualenvs without forcing other
+ports to build offline.
+
+If this preflight fails, inspect the pip stdout/stderr printed directly by
+Forge; do not bypass TLS checks or install Python packages globally. If a
+later vcpkg port fails, download the `forge-vcpkg-failure-*` workflow artifact
+and inspect the port's `*-err.log`. The workflow also attempts to save partial
+vcpkg binary-cache results on failure, so a retry can reuse completed ports.
+A successful isolated-venv preflight is **not** proof that every third-party
+Python port will succeed; it validates the specific Jinja2 failure encountered
+in the initial OpenMW dependency build.
+
+The package version and checksum contract intentionally targets the pinned
+AlmaLinux 9 x86-64 builder with Python 3.9. Update the wheel set and rerun
+regression checks before changing the builder's Python ABI.
