@@ -136,7 +136,7 @@ local function multiSmoke(options: Options, staging: string)
   end
 end
 
-local function smoke(options: Options)
+local function smokeUnlocked(options: Options)
   archive.listTar(options.archive)
   local root = options.root .. '/work/forge-smoke'
   util.resetManaged(root)
@@ -165,5 +165,19 @@ local function smoke(options: Options)
   print('PASS tarball smoke ' .. options.archive)
 end
 
+
+-- Both archive extraction and generated smoke-image Dockerfiles are shared
+-- under one Forge root. A second smoke run must not replace either while the
+-- first run is inspecting or executing its extracted package.
+local function smoke(options: Options)
+  util.mkdir(options.root .. '/work')
+  local lock, failure = fs.lock(options.root .. '/work/.forge-smoke.lock')
+  if not lock then error('smoke workspace already in use: ' .. (failure or 'lock unavailable')) end
+
+  -- Keep the kernel lock until all archive and distro subprocesses have exited.
+  local ok, problem = pcall(smokeUnlocked, options)
+  lock:unlock()
+  if not ok then error(tostring(problem)) end
+end
 
 return table.freeze { smoke = smoke, smokeBinaries = smokeBinaries }

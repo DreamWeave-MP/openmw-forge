@@ -5,6 +5,7 @@ local planning = require '@forge/plan'
 local argsModule = require '@forge/args'
 local native = require '@forge/native'
 local util = require '@forge/native-util'
+local sourceModule = require '@forge/source'
 
 type Options = argsModule.Options
 type Plan = planning.Plan
@@ -133,7 +134,7 @@ local function cachedImage(step: planning.Step): boolean
   return result ~= nil and result.success and (result.stdout or ''):find('sha256:', 1, true) ~= nil
 end
 
-local function execute(plan: Plan, options: Options): (boolean, string?)
+local function executeUnlocked(plan: Plan, options: Options): (boolean, string?)
   local ok, message = preflight(options)
   if not ok then
     return false, message
@@ -221,6 +222,54 @@ local function execute(plan: Plan, options: Options): (boolean, string?)
     end
   end
   return true, nil
+end
+
+-- A managed fork is a mutable checkout: its lock must remain held throughout
+-- CMake and packaging, not just while Git fetches. Similarly, builds sharing
+-- the same output tree must never clean/stage it concurrently. Locks are
+-- advisory, kernel-owned and released on errors (or process termination).
+local function execute(plan: Plan, options: Options): (boolean, string?)
+  local needsBuild = options.command == 'build' or options.command == 'package' or options.command == 'pipeline'
+  if not needsBuild then return executeUnlocked(plan, options) end
+
+  local directory = options.root .. '/work/locks'
+  util.mkdir(directory)
+  local sourceGuard = nil
+  if options.repo ~= '' then
+    local lock, failure = fs.lock(directory .. '/source-' .. sourceModule.key(options.repo) .. '.lock')
+    if not lock then return false, 'managed source already in use: ' .. (failure or 'lock unavailable') end
+    sourceGuard = lock
+  end
+
+  local dependencyGuard, dependencyFailure = fs.lock(directory .. '/deps-' .. sourceModule.key(options.deps) .. '.lock')
+  if not dependencyGuard then
+    if sourceGuard then sourceGuard:unlock() end
+    return false, 'dependency prefix already in use: ' .. (dependencyFailure or 'lock unavailable')
+  end
+
+  local buildGuard, buildFailure = fs.lock(directory .. '/build-' .. sourceModule.key(options.build) .. '.lock')
+  if not buildGuard then
+    dependencyGuard:unlock()
+    if sourceGuard then sourceGuard:unlock() end
+    return false, 'OpenMW build tree already in use: ' .. (buildFailure or 'lock unavailable')
+  end
+
+  local outputGuard, outputFailure = fs.lock(directory .. '/output-' .. sourceModule.key(options.output) .. '.lock')
+  if not outputGuard then
+    buildGuard:unlock()
+    dependencyGuard:unlock()
+    if sourceGuard then sourceGuard:unlock() end
+    return false, 'OpenMW output directory already in use: ' .. (outputFailure or 'lock unavailable')
+  end
+
+  -- Release every kernel lock when a planned source, build or package step throws.
+  local ok, success, message = pcall(executeUnlocked, plan, options)
+  outputGuard:unlock()
+  buildGuard:unlock()
+  dependencyGuard:unlock()
+  if sourceGuard then sourceGuard:unlock() end
+  if not ok then return false, tostring(success) end
+  return success, message
 end
 
 return table.freeze { execute = execute, preflight = preflight }
