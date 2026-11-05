@@ -41,6 +41,14 @@ local function incompatibleNeed(info: string): (string?, string?, string?)
   return nil, nil, nil
 end
 
+-- Files enumerated by fs.walk can be empty or shorter than the ELF magic.
+-- fs.readAt returns a *short, non-nil buffer* at EOF, so never read four
+-- bytes from it until checking its actual length.
+local function isElf(path: string): boolean
+  local first = fs.readAt(path, 0, 4)
+  return first ~= nil and buffer.len(first) >= 4 and buffer.readstring(first, 0, 4) == '\127ELF'
+end
+
 local function scanAbi(root: string)
   local walkResult, failure = fs.walk(root, { include = 'files', sort = true })
   if not walkResult then error(failure or 'cannot walk ABI scan root') end
@@ -48,8 +56,7 @@ local function scanAbi(root: string)
   local count = 0
   for _, name in walkResult.paths do
     local path = root .. '/' .. name
-    local first = fs.readAt(path, 0, 4)
-    if not first or buffer.readstring(first, 0, 4) ~= '\127ELF' then continue end
+    if not isElf(path) then continue end
 
     count += 1
     local result = process.run('readelf', { '--version-info', path }, { stdout = 'capture', stderr = 'capture' })
@@ -66,4 +73,4 @@ local function scanAbi(root: string)
   print(`PASS {count} ELF files meet AlmaLinux 9 ABI ceilings`)
 end
 
-return table.freeze { scanAbi = scanAbi, newer = newer, incompatibleNeed = incompatibleNeed }
+return table.freeze { scanAbi = scanAbi, isElf = isElf, newer = newer, incompatibleNeed = incompatibleNeed }

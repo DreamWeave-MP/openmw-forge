@@ -7,6 +7,7 @@ local sourceModule = require '@forge/source'
 local argsModule = require '@forge/args'
 local nativeOpenmw = require '@forge/native-openmw'
 local nativeQt = require '@forge/native-qt'
+local nativeAbi = require '@forge/native-abi'
 local releaseArtifacts = require '@forge/native-release-artifacts'
 local sdkCache = require '@forge/native-sdk-cache'
 local config = require '@forge/config'
@@ -26,6 +27,27 @@ local function check(condition: boolean, message: string)
   if not condition then error('integration assertion: ' .. message) end
   cases += 1
 end
+
+-- vcpkg installs many non-ELF files (including zero/short byte files).
+-- A short successful read is NOT a four-byte ELF header. The old scanner
+-- crashed after auditing 100 ELFs because it read past such a buffer.
+local abiFixture = scratch .. '/abi-short-headers'
+util.mkdir(abiFixture)
+for size = 0, 3 do
+  local path = abiFixture .. '/short-' .. tostring(size)
+  util.write(path, string.rep('X', size))
+  local prefix, why = fs.readAt(path, 0, 4)
+  if not prefix then error('readAt fixture failed: ' .. (why or path)) end
+  check(buffer.len(prefix) == size, 'readAt must return the actual short buffer length')
+  check(not nativeAbi.isElf(path), 'ABI scanner must skip a ' .. tostring(size) .. '-byte file')
+end
+util.write(abiFixture .. '/header-only', '\127ELF')
+check(nativeAbi.isElf(abiFixture .. '/header-only'), 'four-byte ELF magic must be recognized')
+util.remove(abiFixture .. '/header-only')
+util.copy(binary, abiFixture .. '/real-forge-elf')
+check(nativeAbi.isElf(abiFixture .. '/real-forge-elf'), 'packed Forge executable must be recognized as ELF')
+nativeAbi.scanAbi(abiFixture)
+check(true, 'ABI scanner must traverse short files and audit a real ELF without crashing')
 
 -- Reproduce the glibc 9.5 false-positive and prove the frozen 9.7 symbol
 -- gate only matches dangerous *defined* exports, not mere version nodes.
