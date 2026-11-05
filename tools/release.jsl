@@ -1,0 +1,31 @@
+#!/usr/bin/env jess
+--!strict
+local fs = require '@dream/fs'
+local process = require '@dream/process'
+
+local output = ...
+if type(output) ~= 'string' or output:sub(1, 1) ~= '/' then
+  error('usage: tools/release.jsl /absolute/path/to/openmw-forge-linux-x64')
+end
+
+local runtime = process.env('JESS_BIN') or 'jess'
+local root = fs.cwd()
+if not root or not fs.isFile(root .. '/jess.toml') then
+  error('run the Jess release script from the OpenMW Forge source root')
+end
+
+local result, problem = process.run(runtime, {
+  'workspace', 'pack', '--output', output, '--runtime', runtime,
+}, { stdout = 'capture', stderr = 'capture' })
+
+if not result or not result.success then
+  error(`Jess release compilation failed: {problem or ''}\n{if result then result.stderr or '' else ''}`)
+end
+
+local metadata = fs.stat(output)
+if not metadata or metadata.size < 1024 * 1024 then error('compiled ELF executable is missing or empty') end
+local header = fs.readAt(output, 0, 4)
+if not header or buffer.readstring(header, 0, 4) ~= '\127ELF' then error('Jess pack did not produce an ELF executable') end
+
+print(result.stdout or '')
+print('PASS standalone ELF Forge executable: ' .. output)

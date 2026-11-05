@@ -1,0 +1,158 @@
+#!/usr/bin/env -S jess run --trusted --package .
+--!strict
+local fs = require '@dream/fs'
+local process = require '@dream/process'
+local util = require '@forge/native-util'
+
+local binary = ...
+if type(binary) ~= 'string' or not fs.isFile(binary) then error('usage: tools/integration.jsl /absolute/path/to/compiled-forge') end
+local root, failure = fs.cwd()
+if not root then error(failure or 'cannot determine current directory') end
+local scratch = root .. '/work/native-integration'
+util.remove(scratch)
+util.mkdir(scratch)
+local cases = 0
+
+local function check(condition: boolean, message: string)
+  if not condition then error('integration assertion: ' .. message) end
+  cases += 1
+end
+
+local function invoke(argv: { string }, cwd: string, env: { [string]: string }?): dream_process_Result
+  local result, problem = process.run(binary, argv, { cwd = cwd, env = env, stdout = 'capture', stderr = 'capture' })
+  if not result then error('could not start binary: ' .. (problem or 'unknown')) end
+  return result
+end
+
+local empty = scratch .. '/empty'
+util.mkdir(empty)
+local dry = invoke({ 'deps', '--dry-run' }, empty)
+check(dry.success, 'the standalone executable must plan without a workspace')
+check((dry.stdout or ''):find('openmw-forge:alma9', 1, true) ~= nil, 'missing AlmaLinux 9 native image')
+check(not fs.exists(empty .. '/work'), 'dry-run must have no write effects')
+
+-- The fake Podman is itself a packed Jess executable, not a shell test shim.
+local mockedBin = scratch .. '/bin'
+local mockSource = scratch .. '/mock-package'
+util.mkdir(mockedBin)
+util.mkdir(mockSource .. '/tools')
+util.write(mockSource .. '/jess-workspace.toml', 'manifest_version = 1\n[workspace]\nmembers = ["."]\n')
+util.write(mockSource .. '/jess.toml', [=[manifest_version = 1
+[package]
+id = "org.openmw.forge.mock"
+version = "0.1.0"
+jess_api = "1"
+include = ["tools"]
+default_target = "mock"
+[[layer]]
+id = "openmw.forge.mock"
+exports = []
+[targets.mock]
+kind = "command"
+command = "podman"
+entry = "tools/mock.jsl"
+capabilities = ["process.environment", "filesystem.write"]
+]=])
+util.write(mockSource .. '/tools/mock.jsl', [[--!strict
+local fs = require '@dream/fs'
+local process = require '@dream/process'
+local arguments = { ... }
+local destination = process.env('FORGE_MOCK_LOG')
+if not destination then error('missing mock command log') end
+local recorded, failure = fs.writeFile(destination, table.concat(arguments, '\t') .. '\n', { append = true })
+if not recorded then error(failure or 'mock log write failed') end
+if process.env('FORGE_MOCK_FAIL') == arguments[1] then error('intentional mock container failure') end
+]])
+local jessBin = process.env('JESS_BIN')
+if not jessBin then error('integration tests require JESS_BIN to launch mock engine') end
+
+util.stream(jessBin, { 'workspace', 'pack', '--workspace', mockSource,
+  '--output', mockedBin .. '/podman', '--runtime', jessBin })
+local mockLog = scratch .. '/mock.log'
+local mockEnv = {
+  PATH = mockedBin .. ':' .. (fs.parent(jessBin) or '') .. ':' .. (process.env('PATH') or ''),
+  FORGE_MOCK_LOG = mockLog,
+}
+local launched = invoke({ 'deps' }, empty, mockEnv)
+check(launched.success, 'compiled executable must run two mock container commands: ' .. (launched.stderr or ''))
+check(fs.isFile(empty .. '/work/forge-assets/Dockerfile'), 'compiled executable must materialize the image Dockerfile')
+check(fs.isFile(empty .. '/work/forge-assets/deps/vcpkg.json'), 'compiled executable must materialize vcpkg assets')
+local embedded = empty .. '/work/forge-assets/forge'
+check(fs.isFile(embedded), 'container context must carry self-contained compiled binary')
+local embeddedStat = fs.stat(embedded)
+local originalStat = fs.stat(binary)
+check(embeddedStat ~= nil and originalStat ~= nil and embeddedStat.size == originalStat.size, 'container binary copy should match original size')
+local log = util.file(mockLog)
+check(log:find('build\t', 1, true) ~= nil, 'first container command must build image')
+check(log:find('run\t', 1, true) ~= nil and log:find('__deps', 1, true) ~= nil, 'second container command must invoke the native worker')
+
+local failingEnv = table.clone(mockEnv)
+failingEnv.FORGE_MOCK_FAIL = 'run'
+local failed = invoke({ 'deps' }, empty, failingEnv)
+check(not failed.success, 'container failures must not report build success')
+
+local source = scratch .. '/source'
+local build = scratch .. '/build'
+local deps = scratch .. '/deps'
+local output = scratch .. '/output'
+local depsOutput = scratch .. '/deps-output'
+for _, path in {
+  source, build .. '/resources', deps .. '/openmw-deps/installed/x64-linux-dynamic/lib',
+  deps .. '/QT/6.6.3/gcc_64/lib', deps .. '/QT/6.6.3/gcc_64/plugins/platforms', output, depsOutput,
+} do util.mkdir(path) end
+util.write(source .. '/CMakeLists.txt', 'set(OPENMW_VERSION_MAJOR 0)\nset(OPENMW_VERSION_MINOR 49)\nset(OPENMW_VERSION_RELEASE 0)\n')
+util.write(build .. '/openmw', 'mock compiled OpenMW executable\n')
+util.write(build .. '/resources/one.txt', 'resource\n')
+util.write(deps .. '/openmw-deps/installed/x64-linux-dynamic/lib/libTest.so.1', 'test library')
+util.write(deps .. '/QT/6.6.3/gcc_64/lib/libQt6Core.so.6.6.3', 'Qt fixture')
+util.write(deps .. '/QT/6.6.3/gcc_64/plugins/platforms/libqxcb.so', 'plugin')
+local linked, problem = fs.symlink('libTest.so.1', deps .. '/openmw-deps/installed/x64-linux-dynamic/lib/libTest.so')
+if not linked then error(problem or 'cannot create test symlink') end
+
+local result = invoke({
+  'package', '--mode', 'local', '--source', source, '--build-dir', build,
+  '--deps-prefix', deps, '--output-dir', output, '--deps-output', depsOutput,
+  '--stage-only',
+}, empty)
+check(result.success, 'the compiled executable must stage an existing OpenMW build: ' .. (result.stderr or ''))
+local stage = build .. '/package-staging/openmw-0.49.0-Linux-64Bit'
+check(fs.isFile(stage .. '/openmw.x86_64'), 'missing staged binary')
+check(fs.isFile(stage .. '/openmw'), 'missing installed OpenMW runtime wrapper')
+check(fs.isFile(stage .. '/resources/one.txt'), 'missing embedded OpenMW resource')
+check(fs.lstat(stage .. '/lib/libTest.so') ~= nil, 'vcpkg shared library symlink lost')
+check(fs.isFile(stage .. '/plugins/platforms/libqxcb.so'), 'missing Qt plugin tree')
+check(fs.isFile(stage .. '/README.packagecontents.txt'), 'embedded package template missing')
+
+-- A valid tarball from the staged tree should pass the actual compiled smoke CLI.
+util.copy('/usr/bin/true', stage .. '/openmw.x86_64')
+util.stream('chmod', { '+x', stage .. '/openmw.x86_64' })
+local valid = scratch .. '/valid.tar.gz'
+util.stream('tar', { 'czf', valid, '-C', build .. '/package-staging', 'openmw-0.49.0-Linux-64Bit' })
+local accepted = invoke({ 'smoke', '--archive', valid }, empty)
+check(accepted.success, 'valid synthetic ELF tarball must pass the native smoke CLI: ' .. (accepted.stderr or ''))
+
+local pathArchive = scratch .. '/traversal.tar.gz'
+util.stream('tar', { 'czf', pathArchive, '--transform=s#^openmw-0.49.0-Linux-64Bit#../escape#',
+  '-C', build .. '/package-staging', 'openmw-0.49.0-Linux-64Bit' })
+local traversal = invoke({ 'smoke', '--archive', pathArchive }, empty)
+check(not traversal.success, 'compiled executable must reject parent-directory tar members')
+
+local absoluteArchive = scratch .. '/absolute.tar.gz'
+util.stream('tar', { 'czf', absoluteArchive, '--transform=s#^openmw-0.49.0-Linux-64Bit#/root/escape#',
+  '-C', build .. '/package-staging', 'openmw-0.49.0-Linux-64Bit' })
+local absolute = invoke({ 'smoke', '--archive', absoluteArchive }, empty)
+check(not absolute.success, 'compiled executable must reject absolute tar members')
+
+local archiveSource = scratch .. '/malicious'
+util.mkdir(archiveSource)
+local unsafeLink, unsafeError = fs.symlink('../../../escape', archiveSource .. '/escape')
+if not unsafeLink then error(unsafeError or 'cannot create test archive link') end
+local tarball = scratch .. '/unsafe.tar.gz'
+util.stream('tar', { 'czf', tarball, '-C', scratch, 'malicious' })
+local unsafeRoot = scratch .. '/unsafe-cwd'
+util.mkdir(unsafeRoot)
+local rejected = invoke({ 'smoke', '--archive', tarball }, unsafeRoot)
+check(not rejected.success, 'compiled executable must reject escaping symlinks before tar extraction')
+check(not fs.isDir(unsafeRoot .. '/work/forge-smoke'), 'rejected archive must not be unpacked')
+
+print(`PASS Jess-native compiled integration: {cases} assertions`)
