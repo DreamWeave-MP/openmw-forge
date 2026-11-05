@@ -8,9 +8,8 @@ if type(output) ~= 'string' or output:sub(1, 1) ~= '/' then
   error('usage: tools/release.jsl /absolute/path/to/openmw-forge-linux-x64')
 end
 
--- Jess resolves the CLI name on PATH when launching a process, but
--- `workspace pack --runtime` reads the argument as a filesystem path.
--- Always pass an absolute executable path to the packer.
+-- Jess resolves CLI names on PATH, while `workspace pack --runtime`
+-- interprets its argument as a path to an existing executable.
 local function runtimePath(): string
   local configured = process.env('JESS_BIN')
   if configured and configured ~= '' then
@@ -31,24 +30,100 @@ local function runtimePath(): string
   return resolved
 end
 
+local function checkedCopy(source: string, destination: string)
+  local parent = fs.parent(destination)
+  if parent then
+    local ok, problem = fs.mkdir(parent, { recursive = true })
+    if not ok then error('cannot create staging directory: ' .. (problem or 'unknown')) end
+  end
+  local ok, problem = fs.copy(source, destination)
+  if not ok then error('cannot stage Forge source ' .. source .. ': ' .. (problem or 'unknown')) end
+end
+
+local function stagePackage(sourceRoot: string, destination: string)
+  checkedCopy(sourceRoot .. '/jess.toml', destination .. '/jess.toml')
+  -- These are exactly the payload directories declared by Forge's jess.toml.
+  -- The site workspace, jess.lock and .jess/packages are deliberately absent.
+  for _, directory in { 'src', 'tools', 'tests', 'ci' } do
+    local source = sourceRoot .. '/' .. directory
+    local entries, problem = fs.walk(source, { include = 'all', sort = true })
+    if not entries then error('cannot stage ' .. directory .. ': ' .. (problem or 'unknown')) end
+
+    for index, relative in entries.paths do
+      local from = fs.join(source, relative)
+      local to = fs.join(destination, directory, relative)
+      local kind = entries.kinds[index]
+      if kind == 'dir' then
+        local ok, failure = fs.mkdir(to, { recursive = true })
+        if not ok then error('cannot stage directory ' .. to .. ': ' .. (failure or 'unknown')) end
+      elseif kind == 'file' then
+        checkedCopy(from, to)
+      else
+        error('unsupported package source entry (' .. kind .. '): ' .. from)
+      end
+    end
+  end
+end
+
+local function packageDigest(runtime: string, path: string): string
+  local result, failure = process.run(runtime, { 'package', 'inspect', path }, {
+    stdout = 'capture', stderr = 'capture',
+  })
+
+  if not result or not result.success then
+    error('cannot inspect Forge package ' .. path .. ': '
+      .. (failure or (if result then result.stderr or '' else 'unknown')))
+  end
+  local digest = (result.stdout or ''):match('digest:%s*([0-9a-f]+)')
+  if not digest then error('Jess package inspection omitted the package digest: ' .. path) end
+  return digest
+end
+
 local runtime = runtimePath()
 local root = fs.cwd()
 if not root or not fs.isFile(root .. '/jess.toml') then
   error('run the Jess release script from the OpenMW Forge source root')
 end
 
-local result, problem = process.run(runtime, {
-  'workspace', 'pack', '--output', output, '--runtime', runtime,
-}, { stdout = 'capture', stderr = 'capture' })
+-- The repository workspace pins DreamWeave site dev-dependencies for the
+-- StroggForge docs job. Those packages are NOT Forge runtime dependencies.
+-- Pack the package alone so fresh CI runners do not need six site JPKs.
+local temp, tempError = process.run('mktemp', { '-d', '-t', 'openmw-forge-pack.XXXXXXXX' }, {
+  stdout = 'capture', stderr = 'capture',
+})
 
-if not result or not result.success then
-  error(`Jess release compilation failed: {problem or ''}\n{if result then result.stderr or '' else ''}`)
+if not temp or not temp.success then
+  error('cannot allocate private release workspace: ' .. (tempError or (if temp then temp.stderr or '' else '')))
+end
+local packageRoot = (temp.stdout or ''):match('^([^\r\n]+)')
+if not packageRoot or packageRoot:sub(1, 1) ~= '/' then
+  error('mktemp returned an invalid staging directory')
 end
 
-local metadata = fs.stat(output)
-if not metadata or metadata.size < 1024 * 1024 then error('compiled ELF executable is missing or empty') end
-local header = fs.readAt(output, 0, 4)
-if not header or buffer.readstring(header, 0, 4) ~= '\127ELF' then error('Jess pack did not produce an ELF executable') end
+-- Staging and the packer throw on failure; preserve the error while ensuring
+-- that the private temporary directory is cleaned up before propagating it.
+local succeeded, problem = pcall(function()
+  stagePackage(root, packageRoot)
+  if packageDigest(runtime, root) ~= packageDigest(runtime, packageRoot) then
+    error('isolated Forge package differs from the source package; check jess.toml include paths')
+  end
 
-print(result.stdout or '')
+  local result, reason = process.run(runtime, {
+    'workspace', 'pack', '--workspace', packageRoot,
+    '--output', output, '--runtime', runtime,
+  }, { stdout = 'capture', stderr = 'capture' })
+
+  if not result or not result.success then
+    error(`Jess release compilation failed: {reason or ''}\n{if result then result.stderr or '' else ''}`)
+  end
+  local metadata = fs.stat(output)
+  if not metadata or metadata.size < 1024 * 1024 then error('compiled ELF executable is missing or empty') end
+  local header = fs.readAt(output, 0, 4)
+  if not header or buffer.readstring(header, 0, 4) ~= '\127ELF' then error('Jess pack did not produce an ELF executable') end
+  print(result.stdout or '')
+end)
+
+local removed, removeError = fs.remove(packageRoot, { recursive = true })
+if not removed then error('cannot remove private release workspace: ' .. (removeError or 'unknown')) end
+if not succeeded then error(problem) end
 print('PASS standalone ELF Forge executable: ' .. output)
