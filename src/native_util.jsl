@@ -1,0 +1,90 @@
+--!strict
+local fs = require '@dream/fs'
+local process = require '@dream/process'
+
+local function checked(program: string, argv: { string }, cwd: string?, env: { [string]: string }?): string
+  local result, failure = process.run(program, argv, { cwd = cwd, env = env, stdout = 'capture', stderr = 'capture' })
+  if not result then error(`failed to launch {program}: {failure or 'unknown error'}`) end
+
+  if not result.success then
+    error(`{program} {table.concat(argv, ' ')} failed ({tostring(result.code or result.signal)}):\n{result.stdout or ''}\n{result.stderr or ''}`)
+  end
+  return result.stdout or ''
+end
+
+local function stream(program: string, argv: { string }, cwd: string?, env: { [string]: string }?)
+  print(`+ {program} {table.concat(argv, ' ')}`)
+  local result, failure = process.run(program, argv, { cwd = cwd, env = env })
+  if not result then error(`failed to launch {program}: {failure or 'unknown error'}`) end
+  if not result.success then error(`{program} failed: {tostring(result.code or result.signal)}`) end
+end
+
+local function mkdir(path: string)
+  local created, message = fs.mkdir(path, { recursive = true })
+  if not created then error(`mkdir {path}: {message or 'unknown error'}`) end
+end
+
+local function remove(path: string)
+  if not fs.exists(path) and not fs.lstat(path) then return end
+  local done, failure = fs.remove(path, { recursive = true })
+  if not done then error(`remove {path}: {failure or 'unknown error'}`) end
+end
+
+local function write(path: string, content: string)
+  local done, failure = fs.writeFile(path, content, { createParents = true, atomic = true })
+  if not done then error(`write {path}: {failure or 'unknown error'}`) end
+end
+
+local function copy(source: string, destination: string)
+  local parent = fs.parent(destination)
+  if parent then mkdir(parent) end
+  local done, failure = fs.copy(source, destination)
+  if not done then error(`copy {source}: {failure or 'unknown error'}`) end
+end
+
+local function tree(source: string, destination: string)
+  mkdir(destination)
+  local found, message = fs.walk(source, { include = 'all', sort = true })
+  if not found then error(`walk {source}: {message or 'unknown error'}`) end
+
+  for index, relative in found.paths do
+    local original = fs.join(source, relative)
+    local output = fs.join(destination, relative)
+    local kind = found.kinds[index]
+    if kind == 'dir' then mkdir(output)
+    elseif kind == 'symlink' then
+      local target, failure = fs.readLink(original)
+      if not target then error(`readLink {original}: {failure or ''}`) end
+      local parent = fs.parent(output)
+      if parent then mkdir(parent) end
+      local ok, problem = fs.symlink(target, output)
+      if not ok then error(`symlink {output}: {problem or ''}`) end
+    elseif kind == 'file' then copy(original, output)
+    end
+  end
+end
+
+local function list(path: string): { string }
+  local names, problem = fs.list(path)
+  if not names then error(`list {path}: {problem or ''}`) end
+  return names
+end
+
+local function file(path: string): string
+  local value, problem = fs.readFileString(path)
+  if not value then error(`read {path}: {problem or ''}`) end
+  return value
+end
+
+local function tool(names: { string }): string
+  for _, candidate in names do
+    local result = process.run(candidate, { '--help' }, { stdout = 'null', stderr = 'null' })
+    if result then return candidate end
+  end
+  error(`required executable unavailable: {table.concat(names, ', ')}`)
+end
+
+return table.freeze {
+  checked = checked, stream = stream, mkdir = mkdir, remove = remove,
+  write = write, copy = copy, tree = tree, list = list, file = file, tool = tool,
+}

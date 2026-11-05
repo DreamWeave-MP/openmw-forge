@@ -1,5 +1,4 @@
 --!strict
-local config = require '@forge/config'
 local argsModule = require '@forge/args'
 
 type Options = argsModule.Options
@@ -34,192 +33,108 @@ local function step(plan: Plan, name: string, program: string, argv: { string },
   table.insert(plan.steps, item)
 end
 
-local function addFlag(argv: { string }, condition: boolean, flag: string)
-  if condition then
-    table.insert(argv, flag)
-  end
-end
-
 local function addOption(argv: { string }, flag: string, value: string)
   table.insert(argv, flag)
   table.insert(argv, value)
 end
 
-local function runFlags(options: Options, includeAssemble: boolean): { string }
-  local argv = {
-    '--openmw-source-root', options.source,
-    '--build-dir', options.build,
-    '--deps-prefix', options.deps,
-    '--output-dir', options.output,
-    '--build-type', options.buildType,
+local function flags(options: Options, inner: boolean): { string }
+  local output = {
+    '--source', if inner then '/src' else options.source,
+    '--build-dir', if inner then '/build' else options.build,
+    '--deps-prefix', if inner then '/deps' else options.deps,
+    '--output-dir', if inner then '/out' else options.output,
+    '--triplet', options.triplet, '--qt-version', options.qtVersion,
+    '--build-type', options.buildType, '--jobs', tostring(options.jobs),
   }
 
-  if options.archive ~= '' and not options.noPrepare then
-    addOption(argv, '--deps-archive', options.archive)
+  for _, toggle in {
+    { options.clean, '--clean' }, { options.portable, '--portable' },
+    { options.stageOnly, '--stage-only' }, { options.runTests, '--run-tests' },
+    { options.noQt, '--no-qt' }, { options.noSystemPackages, '--no-system-packages' },
+    { options.noCcache, '--no-ccache' }, { options.noPrepare, '--no-prepare' },
+    { options.noCompat, '--no-compat' }, { options.noSmoke, '--no-smoke' },
+  } do
+    if toggle[1] then table.insert(output, toggle[2] :: string) end
   end
-  addOption(argv, '--jobs', tostring(options.jobs))
-  addOption(argv, '--triplet', options.triplet)
-  addOption(argv, '--qt-version', options.qtVersion)
-  addFlag(argv, options.clean, '--clean')
-  addFlag(argv, options.portable, '--portable')
-  addFlag(argv, options.stageOnly, '--stage-only')
-  addFlag(argv, options.noQt, '--no-qt')
-  addFlag(argv, options.noSystemPackages, '--no-system-packages')
-  addFlag(argv, options.noCcache, '--no-ccache')
-  addFlag(argv, options.noPrepare, '--no-prepare')
-  table.insert(argv, '--strict-deps')
-  addFlag(argv, options.runTests, '--run-tests')
-  addFlag(argv, options.noCompat, '--no-compat-check')
-  addFlag(argv, options.noSmoke, '--no-smoke')
-  if options.runTests then
-    addOption(argv, '--gtest-filter', options.gtestFilter)
-  end
-  addFlag(argv, includeAssemble, '--assemble')
-  for _, arg in options.cmakeArgs do
-    addOption(argv, '--cmake-arg', arg)
-  end
-  return argv
+
+  if options.runTests then addOption(output, '--gtest-filter', options.gtestFilter) end
+  for _, arg in options.cmakeArgs do addOption(output, '--cmake-arg', arg) end
+  return output
 end
 
 local function containerVolume(options: Options, host: string, guest: string, readonly: boolean): string
   local suffix = if readonly then ':ro' else ''
-  if options.engine == 'podman' then
-    suffix ..= if readonly then ',z' else ':Z'
-  end
+  if options.engine == 'podman' then suffix ..= if readonly then ',z' else ':Z' end
   return host .. ':' .. guest .. suffix
 end
 
 local function depsSteps(plan: Plan, options: Options)
-  local vendor = options.root .. '/vendor/deps'
   table.insert(plan.directories, options.depsOutput)
   if options.mode == 'container' then
-    step(plan, 'build dependency image', options.engine, {
-      'build', '--build-arg', 'BASE_IMAGE=' .. config.image,
-      '-t', 'openmw-forge-deps:alma9', '-f', vendor .. '/Dockerfile', vendor,
-    }, options.root)
+    local command = {
+      'run', '--rm', '-v', containerVolume(options, options.depsOutput, '/depout', false),
+      'openmw-forge:alma9', '/usr/local/bin/openmw-forge', '__deps',
+      '--deps-output', '/depout', '--triplet', options.triplet, '--jobs', tostring(options.jobs),
+    }
 
-    step(plan, 'build, export and verify dependencies', options.engine, {
-      'run', '--rm', '-v', containerVolume(options, options.depsOutput, '/out', false),
-      '-e', 'PROFILE=alma9', '-e', 'TRIPLET=' .. options.triplet,
-      '-e', 'OUTPUT_DIR=/out', '-e', 'OPENMW_DEPS_SKIP_DOCTOR=1',
-      'openmw-forge-deps:alma9', 'bash', '-e', 'scripts/build-all.sh',
-    }, options.root)
-  elseif options.mode == 'distrobox' then
-    step(plan, 'build dependencies in distrobox', 'bash', { '-e', vendor .. '/scripts/cleanbuild.sh' }, vendor, {
-      PROFILE = config.profile, TRIPLET = options.triplet, OUTPUT_DIR = options.depsOutput,
-      MODE = 'distrobox', CONTAINER_ENGINE = options.engine,
-    })
+    if options.noSystemPackages then table.insert(command, '--no-system-packages') end
+    if options.clean then table.insert(command, '--clean') end
+    step(plan, 'build dependencies with Jess', options.engine, command, options.root)
   else
-    step(plan, 'build and verify dependencies locally', 'bash', { '-e', vendor .. '/scripts/build-all.sh' }, vendor, {
-      PROFILE = config.profile, TRIPLET = options.triplet, OUTPUT_DIR = options.depsOutput,
-    })
+    step(plan, 'build dependencies with Jess', '@forge', { 'deps' }, options.root)
   end
-end
-
-local function containerBase(options: Options, plan: Plan, includeArchive: boolean): { string }
-  local flags = {
-    'run', '--rm',
-    '-v', containerVolume(options, options.source, '/src', true),
-    '-v', containerVolume(options, options.build, '/build', false),
-    '-v', containerVolume(options, options.deps, '/deps', false),
-    '-v', containerVolume(options, options.output, '/out', false),
-  }
-
-  if includeArchive and options.archive ~= '' and string.sub(options.archive, 1, 8) ~= 'https://' then
-    table.insert(plan.requiredFiles, options.archive)
-    table.insert(flags, '-v')
-    table.insert(flags, containerVolume(options, options.archive, '/input/deps.7z', true))
-  end
-  return flags
-end
-
-local function containerArchive(options: Options): string
-  if options.archive == '' or string.sub(options.archive, 1, 8) == 'https://' then
-    return options.archive
-  end
-  return '/input/deps.7z'
 end
 
 local function buildSteps(plan: Plan, options: Options, packageOnly: boolean)
-  local vendor = options.root .. '/vendor/openmw'
-  table.insert(plan.requiredFiles, options.source .. '/CMakeLists.txt')
   table.insert(plan.directories, options.build)
   table.insert(plan.directories, options.deps)
   table.insert(plan.directories, options.output)
+  table.insert(plan.requiredFiles, options.source .. '/CMakeLists.txt')
   if options.mode == 'container' then
-    step(plan, 'build OpenMW image', options.engine, {
-      'build', '-t', 'openmw-forge-openmw:alma9',
-      '-f', vendor .. '/docker/Dockerfile.tarball', vendor,
-    }, options.root)
-    local flags = containerBase(options, plan, not packageOnly and not options.noPrepare)
-    table.insert(flags, 'openmw-forge-openmw:alma9')
-    if packageOnly then
-      table.insert(flags, '/builder/scripts/assemble_tarball.sh')
-      addOption(flags, '--openmw-source-root', '/src')
-      addOption(flags, '--build-dir', '/build')
-      addOption(flags, '--deps-prefix', '/deps')
-      addOption(flags, '--output-dir', '/out')
-      addOption(flags, '--triplet', options.triplet)
-      addOption(flags, '--qt-version', options.qtVersion)
-      addOption(flags, '--build-type', options.buildType)
-      addFlag(flags, options.stageOnly, '--stage-only')
-      addFlag(flags, options.portable, '--portable')
-      addFlag(flags, options.noCompat, '--no-compat-check')
-      addFlag(flags, options.noSmoke, '--no-smoke')
-    else
-      table.insert(flags, '/builder/scripts/build_binaries.sh')
-      local copy = table.clone(options) :: Options
-      copy.source = '/src'
-      copy.build = '/build'
-      copy.deps = '/deps'
-      copy.output = '/out'
-      copy.archive = if options.noPrepare then '' else containerArchive(options)
-      for _, flag in runFlags(copy, true) do
-        table.insert(flags, flag)
-      end
-    end
-    step(plan, if packageOnly then 'assemble OpenMW package' else 'build and package OpenMW', options.engine, flags, options.root)
-  elseif options.mode == 'distrobox' then
-    local argv = { '-e', vendor .. '/scripts/run_distrobox.sh' }
-    for _, flag in runFlags(options, false) do
-      table.insert(argv, flag)
-    end
-    addFlag(argv, options.keepBox, '--keep-box')
-    step(plan, 'build OpenMW in distrobox', 'bash', argv, options.root, {
-      CONTAINER_ENGINE = options.engine,
-      DBX_CONTAINER_MANAGER = options.engine,
-      BOX_NAME = 'openmw-forge-alma9',
-    })
-  elseif packageOnly then
-    local argv = {
-      '-e', vendor .. '/scripts/assemble_tarball.sh',
-      '--openmw-source-root', options.source,
-      '--build-dir', options.build,
-      '--deps-prefix', options.deps,
-      '--output-dir', options.output,
-      '--triplet', options.triplet,
-      '--qt-version', options.qtVersion,
-      '--build-type', options.buildType,
+    local exec = {
+      'run', '--rm',
+      '-v', containerVolume(options, options.source, '/src', true),
+      '-v', containerVolume(options, options.build, '/build', false),
+      '-v', containerVolume(options, options.deps, '/deps', false),
+      '-v', containerVolume(options, options.output, '/out', false),
     }
-    addFlag(argv, options.stageOnly, '--stage-only')
-    addFlag(argv, options.portable, '--portable')
-    addFlag(argv, options.noCompat, '--no-compat-check')
-    addFlag(argv, options.noSmoke, '--no-smoke')
-    step(plan, 'assemble OpenMW package locally', 'bash', argv, options.root)
-  else
-    step(plan, 'build OpenMW locally', 'bash', (function(): { string }
-      local argv = { '-e', vendor .. '/scripts/build_binaries.sh' }
-      for _, flag in runFlags(options, true) do
-        table.insert(argv, flag)
+
+    if options.archive ~= '' and not packageOnly and not options.noPrepare then
+      if string.sub(options.archive, 1, 8) ~= 'https://' then
+        if options.command == 'pipeline' then
+          table.insert(exec, '-v')
+          table.insert(exec, containerVolume(options, options.depsOutput, '/depout', true))
+        else
+          table.insert(exec, '-v')
+          table.insert(exec, containerVolume(options, options.archive, '/input/deps.7z', true))
+          table.insert(plan.requiredFiles, options.archive)
+        end
       end
-      return argv
-    end)(), options.root)
+    end
+    table.insert(exec, 'openmw-forge:alma9')
+    table.insert(exec, '/usr/local/bin/openmw-forge')
+    table.insert(exec, if packageOnly then '__package' else '__build')
+    for _, value in flags(options, true) do table.insert(exec, value) end
+
+    if not packageOnly and not options.noPrepare and options.archive ~= '' then
+      local archive = options.archive
+      if string.sub(archive, 1, 8) ~= 'https://' then
+        archive = if options.command == 'pipeline' then '/depout/vcpkg-' .. options.triplet .. '.7z' else '/input/deps.7z'
+      end
+      addOption(exec, '--deps-archive', archive)
+    end
+    step(plan, if packageOnly then 'assemble OpenMW with Jess' else 'build and package OpenMW with Jess', options.engine, exec, options.root)
+  else
+    step(plan, if packageOnly then 'assemble OpenMW with Jess' else 'build and package OpenMW with Jess', '@forge', {
+      if packageOnly then 'package' else 'build',
+    }, options.root)
   end
 end
 
 local function build(options: Options): (Plan?, string?)
-  if options.mode ~= 'container' and options.mode ~= 'local' and options.mode ~= 'distrobox' then
-    return nil, 'mode must be container, local, or distrobox'
+  if options.mode ~= 'container' and options.mode ~= 'local' then
+    return nil, 'mode must be container or local; distrobox orchestration is no longer supported'
   end
 
   if options.engine ~= 'podman' and options.engine ~= 'docker' then
@@ -256,8 +171,8 @@ local function build(options: Options): (Plan?, string?)
     return nil, '--with-qt is only valid for smoke'
   end
 
-  if options.command == 'package' and options.mode == 'distrobox' then
-    return nil, 'package-only distrobox mode is unavailable; use container or local'
+  if options.distros ~= '' and options.command ~= 'smoke' then
+    return nil, '--distros is only valid for smoke'
   end
 
   if options.stageOnly and options.command ~= 'build' and options.command ~= 'pipeline' and options.command ~= 'package' then
@@ -340,36 +255,27 @@ local function build(options: Options): (Plan?, string?)
     options.archive = options.depsOutput .. '/vcpkg-' .. options.triplet .. '.7z'
   end
   local plan: Plan = { steps = {}, directories = {}, requiredFiles = {} }
-  if options.command == 'pipeline' or options.command == 'deps' then
-    depsSteps(plan, options)
+  if options.mode == 'container' and (options.command == 'pipeline' or options.command == 'deps'
+    or options.command == 'build' or options.command == 'package') then
+    step(plan, 'build AlmaLinux 9 Jess image', options.engine, {
+      'build', '-t', 'openmw-forge:alma9', '-f', options.root .. '/work/forge-assets/Dockerfile',
+      options.root .. '/work/forge-assets',
+    }, options.root)
   end
+
+  if options.command == 'pipeline' or options.command == 'deps' then depsSteps(plan, options) end
 
   if options.command == 'pipeline' or options.command == 'build' or options.command == 'package' then
     buildSteps(plan, options, options.command == 'package')
   end
 
   if options.command == 'verify' then
-    step(plan, 'verify dependency archive and ABI', 'bash', { '-e', options.root .. '/vendor/deps/scripts/verify-build.sh' }, options.root .. '/vendor/deps', {
-      PROFILE = 'alma9', OUTPUT_DIR = options.depsOutput, TRIPLET = options.triplet,
-    })
+    step(plan, 'verify dependencies in Jess', '@forge', { 'verify' }, options.root)
   end
 
   if options.command == 'smoke' then
     table.insert(plan.requiredFiles, options.archive)
-    if options.distros == '' then
-      local smokeArgs = { '-e', options.root .. '/vendor/openmw/tests/test_tarball.sh' }
-      addFlag(smokeArgs, options.withQt, '--with-qt')
-      table.insert(smokeArgs, options.archive)
-      step(plan, 'smoke test OpenMW package', 'bash', smokeArgs, options.root)
-    else
-      local smokeArgs = {
-        '-e', options.root .. '/vendor/openmw/tests/multi_distro_test.sh', '--distros', options.distros,
-        '--container-engine', options.engine,
-      }
-      addFlag(smokeArgs, options.withQt, '--with-qt')
-      table.insert(smokeArgs, options.archive)
-      step(plan, 'multi-distro OpenMW smoke tests', 'bash', smokeArgs, options.root)
-    end
+    step(plan, 'smoke test package in Jess', '@forge', { 'smoke' }, options.root)
   end
   return plan, nil
 end

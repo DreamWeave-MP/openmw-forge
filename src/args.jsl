@@ -30,7 +30,6 @@ export type Options = {
   noPrepare: boolean,
   noCompat: boolean,
   noSmoke: boolean,
-  keepBox: boolean,
   withQt: boolean,
 }
 
@@ -43,6 +42,7 @@ local Commands: { [string]: boolean } = {
   smoke = true,
   doctor = true,
   help = true,
+  __deps = true, __build = true, __package = true, __verify = true, __smoke = true,
 }
 
 local Switches: { [string]: string } = {
@@ -76,7 +76,6 @@ local Booleans: { [string]: string } = {
   ['--no-prepare'] = 'noPrepare',
   ['--no-compat'] = 'noCompat',
   ['--no-smoke'] = 'noSmoke',
-  ['--keep-box'] = 'keepBox',
   ['--with-qt'] = 'withQt',
 }
 
@@ -110,7 +109,6 @@ local function defaults(root: string): Options
     noPrepare = false,
     noCompat = false,
     noSmoke = false,
-    keepBox = false,
     withQt = false,
   }
 end
@@ -154,7 +152,6 @@ local function parse(argv: { string }, root: string): (Options?, string?)
       elseif booleanKey == 'noPrepare' then options.noPrepare = true
       elseif booleanKey == 'noCompat' then options.noCompat = true
       elseif booleanKey == 'noSmoke' then options.noSmoke = true
-      elseif booleanKey == 'keepBox' then options.keepBox = true
       elseif booleanKey == 'withQt' then options.withQt = true
       end
     elseif flag == '--cmake-arg' or flag == '--jobs' then

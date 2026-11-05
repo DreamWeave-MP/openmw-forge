@@ -1,0 +1,190 @@
+--!strict
+local fs = require '@dream/fs'
+local process = require '@dream/process'
+local util = require '@forge/native-util'
+local config = require '@forge/config'
+local args = require '@forge/args'
+
+type Options = args.Options
+local Revision = '6d332a018c433fad20822ff4b536e4ccdc3413bd'
+local AutoconfSha512 = '3f71d459e2127ef2c98b37f11f5284f0c92318ad8d31c5b6034bed370adfe9f3d0f7a12f87e2efced06c11e2a159de4d4a292b751104e83daf11342f25ba9721'
+
+local function newer(left: string, right: string): boolean
+  local leftParts: { number }, rightParts: { number } = {}, {}
+  for part in string.gmatch(left, '%d+') do table.insert(leftParts, tonumber(part) or 0) end
+  for part in string.gmatch(right, '%d+') do table.insert(rightParts, tonumber(part) or 0) end
+
+  for index = 1, math.max(#leftParts, #rightParts) do
+    if (leftParts[index] or 0) > (rightParts[index] or 0) then return true end
+    if (leftParts[index] or 0) < (rightParts[index] or 0) then return false end
+  end
+  return false
+end
+
+local function installDependencies()
+  util.stream('dnf', { 'install', '-y', 'epel-release', 'dnf-plugins-core' })
+  local crb = process.run('crb', { 'enable' }, { stdout = 'null', stderr = 'null' })
+  if not crb or not crb.success then
+    util.stream('dnf', { 'config-manager', '--set-enabled', 'crb' })
+  end
+
+  util.stream('dnf', {
+    'install', '-y', 'git', 'tar', 'p7zip', 'zip', 'unzip', 'curl', 'gcc-toolset-13',
+    'cmake', 'ninja-build', 'perl', 'autoconf', 'autoconf-archive', 'automake',
+    'libtool', 'nasm', 'pkgconfig', 'mesa-libGL-devel', 'mesa-libEGL-devel',
+    'libXcursor-devel', 'libX11-devel', 'libXft-devel', 'libXext-devel',
+    'libxkbcommon-devel', 'wayland-devel', 'texinfo', 'gettext-devel',
+    'kernel-headers', 'python3', 'make', 'binutils', 'patch',
+  })
+end
+
+local function setupAutoconf(root: string)
+  local result = process.run('/usr/local/bin/autoconf', { '--version' }, { stdout = 'capture', stderr = 'null' })
+  if result and result.success and string.find(result.stdout or '', '2.72', 1, true) then return end
+  local temp = root .. '/work/autoconf-build'
+  util.remove(temp)
+  util.mkdir(temp)
+  local archive = temp .. '/autoconf-2.72.tar.gz'
+  util.stream('curl', { '--fail', '--location', '--retry', '3', '--output', archive, 'https://ftp.gnu.org/gnu/autoconf/autoconf-2.72.tar.gz' })
+  local sha = util.checked('sha512sum', { archive })
+  if string.sub(sha, 1, #AutoconfSha512) ~= AutoconfSha512 then error('Autoconf source SHA-512 mismatch') end
+  util.stream('tar', { 'xzf', archive, '-C', temp })
+  local source = temp .. '/autoconf-2.72'
+  util.stream('./configure', { '--prefix=/usr/local' }, source)
+  util.stream('make', {}, source)
+  util.stream('make', { 'install' }, source)
+  util.remove(temp)
+end
+
+local function toolsetEnv(): { [string]: string }
+  local path = process.env('PATH') or '/usr/bin:/bin'
+  return { PATH = '/opt/rh/gcc-toolset-13/root/usr/bin:/usr/local/bin:' .. path,
+    CC = '/opt/rh/gcc-toolset-13/root/usr/bin/gcc',
+    CXX = '/opt/rh/gcc-toolset-13/root/usr/bin/g++' }
+end
+
+local function exportPath(options: Options): string
+  return options.depsOutput .. '/vcpkg-' .. options.triplet .. '.7z'
+end
+
+local verify: (Options, string?) -> ()
+
+local function run(options: Options)
+  if options.triplet ~= config.triplet then error('only pinned x64-linux-dynamic triplet is qualified') end
+  local root = options.root .. '/work/forge-assets/deps'
+  if not fs.isFile(root .. '/vcpkg.json') then error('embedded dependency assets not staged') end
+  util.mkdir(options.depsOutput)
+  if not options.noSystemPackages then installDependencies() end
+  setupAutoconf(options.root)
+  local vcpkg = options.root .. '/work/vcpkg'
+  if options.clean then util.remove(vcpkg) end
+
+  if not fs.isDir(vcpkg .. '/.git') then
+    util.stream('git', { 'clone', 'https://github.com/microsoft/vcpkg.git', vcpkg })
+  else
+    util.stream('git', { 'fetch', 'origin', Revision }, vcpkg)
+  end
+  util.stream('git', { 'checkout', '--detach', Revision }, vcpkg)
+  -- vcpkg owns its bootstrap shell script; Forge never runs a Bash orchestration worker.
+  util.stream('./bootstrap-vcpkg.sh', { '-disableMetrics' }, vcpkg, toolsetEnv())
+  local env = toolsetEnv()
+  env.VCPKG_ROOT = vcpkg
+  env.VCPKG_MAX_CONCURRENCY = tostring(options.jobs)
+  util.stream(vcpkg .. '/vcpkg', {
+    'install', '--overlay-ports=' .. root .. '/ports', '--overlay-triplets=' .. root .. '/triplets',
+    '--triplet', options.triplet, '--host-triplet', options.triplet,
+  }, root, env)
+
+  util.stream(vcpkg .. '/vcpkg', {
+    'export', '--x-all-installed', '--7zip', '--output-dir', options.depsOutput,
+    '--output', 'vcpkg-' .. options.triplet,
+  }, root, env)
+  util.write(options.depsOutput .. '/vcpkg-' .. options.triplet .. '.build-meta',
+    `profile=alma9\ntriplet={options.triplet}\nimage=almalinux:9\nvcpkg_revision={Revision}\nvcpkg_dir={vcpkg}\n`)
+  print('Exported ' .. exportPath(options))
+  -- Verify against the installed tree, with no redundant archive extraction.
+  local installed = root .. '/vcpkg_installed/' .. options.triplet
+  if not fs.isDir(installed) then installed = vcpkg .. '/installed/' .. options.triplet end
+  verify(options, installed)
+end
+
+local function parseMetadata(contents: string): { [string]: string }
+  local result: { [string]: string } = {}
+  for key, value in string.gmatch(contents, '([%w_]+)=([^\r\n]*)') do result[key] = value end
+  return result
+end
+
+local function validateArchiveEntries(program: string, archive: string)
+  local listing = util.checked(program, { 'l', '-slt', archive })
+  local start = string.find(listing, '%-%-%-%-%-%-%-%-%-')
+  if not start then error('7zip listing missing archive entries') end
+  local tail = string.sub(listing, start)
+  local found = false
+  for path in string.gmatch(tail, 'Path = ([^\r\n]+)') do
+    if path:sub(1, 1) == '/' or path:find('\\', 1, true) or
+      path:find('%.%./') or path:find('/%.%.') or path == '..' then
+      error(`unsafe dependency archive entry: {path}`)
+    end
+
+    if path:find('installed/', 1, true) then found = true end
+  end
+
+  if not found then error('dependency archive lacks installed triplet tree') end
+end
+
+verify = function(options: Options, scanOverride: string?)
+  local archive = exportPath(options)
+  local info = fs.stat(archive)
+  if not info or info.size == 0 then error('missing or empty dependency export ' .. archive) end
+  local meta = parseMetadata(util.file(options.depsOutput .. '/vcpkg-' .. options.triplet .. '.build-meta'))
+  if meta.profile ~= 'alma9' or meta.triplet ~= options.triplet or meta.vcpkg_revision ~= Revision then
+    error('dependency metadata profile/triplet/vcpkg pin mismatch')
+  end
+  local sevenZip = util.tool { '7zz', '7z', '7za' }
+  validateArchiveEntries(sevenZip, archive)
+  local root = scanOverride or (options.root .. '/work/deps-verify')
+  if not scanOverride then
+    util.remove(root)
+    util.mkdir(root)
+    util.stream(sevenZip, { 'x', '-y', '-o' .. root, archive })
+  end
+  local scan = root
+  if not scanOverride then
+    local walkResult, failure = fs.walk(root, { include = 'dirs', sort = true })
+    if not walkResult then error(failure or 'failed to locate extracted dependencies') end
+    local wanted = '/installed/' .. options.triplet
+    for _, name in walkResult.paths do
+      if string.sub('/' .. name, -#wanted) == wanted then scan = root .. '/' .. name break end
+    end
+  end
+
+  if not fs.isDir(scan) then error('ABI scan root not found: ' .. scan) end
+  local entries, failure = fs.walk(scan, { include = 'files', sort = true })
+  if not entries then error(failure or 'ABI walk failed') end
+  local count = 0
+  local ceiling: { [string]: string } = { GLIBC = '2.34', GLIBCXX = '3.4.29', CXXABI = '1.3.13' }
+  for _, relative in entries.paths do
+    local path = scan .. '/' .. relative
+    local first = fs.readAt(path, 0, 4)
+    if not first or buffer.readstring(first, 0, 4) ~= '\127ELF' then continue end
+
+    count += 1
+    local result = process.run('readelf', { '--version-info', path }, { stdout = 'capture', stderr = 'null' })
+    if not result or not result.success then error('readelf failed: ' .. path) end
+    local info = result.stdout or ''
+    for _, symbol in { 'GLIBC', 'GLIBCXX' } do
+      for version in string.gmatch(info, symbol .. '_([%d%.]+)') do
+        if newer(version, ceiling[symbol]) then error(`ABI violation: {path} needs {symbol}_{version}`) end
+      end
+    end
+
+    for version in string.gmatch(info, 'CXXABI_([%d%.]+)') do
+      if newer(version, ceiling.CXXABI) then error(`ABI violation: {path} needs CXXABI_{version}`) end
+    end
+  end
+
+  if count == 0 then error('ABI scan found no ELF files') end
+  print(`PASS ABI: {count} ELF files, AlmaLinux 9 ceilings`)
+end
+
+return table.freeze { run = run, verify = verify, newer = newer, validateArchiveEntries = validateArchiveEntries }

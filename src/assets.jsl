@@ -1,0 +1,496 @@
+--!strict
+-- Build assets embedded in the compiled command; no source checkout is required.
+local files: { [string]: string } = {
+  ['deps/ports/openmw-osg/usage'] = [===[The package osg can be configured to use different OpenGL profiles via a custom triplet file.
+Possible values are GLCORE, GL2, GL3, GLES1, GLES2, GLES3 and GLES2+GLES3.
+The default value is GL3.
+set(osg_OPENGL_PROFILE GL2)
+]===],
+  ['deps/ports/openmw-osg/macos-dedicated-image-plugin.patch'] = [===[diff --git a/CMakeLists.txt b/CMakeLists.txt
+index b44ef8b..85c29cd 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -799,6 +799,8 @@ IF(NOT ANDROID)
+         ENDIF()
+
+     ELSE()
++        FIND_PACKAGE(JPEG)
++        FIND_PACKAGE(PNG)
+         FIND_PACKAGE(TIFF)
+         FIND_PACKAGE(QuickTime)
+         FIND_PACKAGE(QTKit)
+diff --git a/src/osgDB/Registry.cpp b/src/osgDB/Registry.cpp
+index 14a8d04..83bacf2 100644
+--- a/src/osgDB/Registry.cpp
++++ b/src/osgDB/Registry.cpp
+@@ -308,18 +308,6 @@ Registry::Registry()
+
+     addFileExtensionAlias("js", "V8");
+
+-#if defined(DARWIN_IMAGEIO)
+-    addFileExtensionAlias("jpg",  "imageio");
+-    addFileExtensionAlias("jpe",  "imageio");
+-    addFileExtensionAlias("jpeg", "imageio");
+-    addFileExtensionAlias("tif",  "imageio");
+-    addFileExtensionAlias("tiff", "imageio");
+-    addFileExtensionAlias("gif",  "imageio");
+-    addFileExtensionAlias("png",  "imageio");
+-    addFileExtensionAlias("psd",  "imageio");
+-    addFileExtensionAlias("tga",  "imageio");
+-
+-#endif
+
+ #if defined(USE_QTKIT)
+     addFileExtensionAlias("mov",  "QTKit");
+diff --git a/src/osgPlugins/CMakeLists.txt b/src/osgPlugins/CMakeLists.txt
+index f2ca656..dbeb39c 100644
+--- a/src/osgPlugins/CMakeLists.txt
++++ b/src/osgPlugins/CMakeLists.txt
+@@ -239,8 +239,5 @@ ENDIF()
+ #    ADD_SUBDIRECTORY(OpenAL)
+ # ENDIF()
+
+-IF(APPLE AND NOT ANDROID)
+-    ADD_PLUGIN_DIRECTORY(imageio)
+-ENDIF()
+
+ IF(AV_FOUNDATION_FOUND)
+     ADD_PLUGIN_DIRECTORY(avfoundation)]===],
+  ['deps/ports/openmw-osg/vcpkg.json'] = [===[{
+  "name": "openmw-osg",
+  "version-date": "2026-01-30",
+  "port-version": 1,
+  "description": "Fork of OpenSceneGraph for OpenMW-specific performance improvements.",
+  "homepage": "https://github.com/openmw/osg",
+  "license": null,
+  "supports": "!uwp",
+  "dependencies": [
+    "collada-dom",
+    "freetype",
+    {
+      "name": "fontconfig",
+      "platform": "linux"
+    },
+    "libiconv",
+    "libjpeg-turbo",
+    "libpng",
+    "libxml2",
+    {
+      "name": "lz4",
+      "platform": "linux"
+    },
+    "opengl-registry",
+    {
+      "name": "sdl2",
+      "platform": "linux"
+    },
+    "tiff",
+    "zlib",
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ]
+}
+]===],
+  ['deps/ports/openmw-osg/portfile.cmake'] = [===[set(VCPKG_POLICY_DLLS_WITHOUT_EXPORTS enabled)
+
+set(OSG_VER 3.6.5)
+
+set(PATCHES "")
+
+if(VCPKG_TARGET_IS_OSX)
+  list(
+    APPEND PATCHES
+    "macos-dedicated-image-plugin.patch"
+  )
+endif()
+
+vcpkg_from_github(
+    OUT_SOURCE_PATH SOURCE_PATH
+    REPO openmw/osg
+    REF 8aa8d91747ff414ab0de19aae1e0dbd739acea2c
+    SHA512 698372ddf8751a927f8f6bd71d67bd9428e9e12207b8f40f8aa13e5e84bd1e8db8fc6c6bbeb5f7e930d78915d5d3570463dbfc9e44dc155e0475a374f39a6280
+    HEAD_REF 3.6
+    PATCHES ${PATCHES}
+)
+
+file(REMOVE
+    "${SOURCE_PATH}/CMakeModules/FindFontconfig.cmake"
+    "${SOURCE_PATH}/CMakeModules/FindFreetype.cmake"
+    "${SOURCE_PATH}/CMakeModules/Findilmbase.cmake"
+    "${SOURCE_PATH}/CMakeModules/FindOpenEXR.cmake"
+    "${SOURCE_PATH}/CMakeModules/FindSDL2.cmake"
+)
+
+string(COMPARE EQUAL "${VCPKG_LIBRARY_LINKAGE}" "dynamic" OSG_DYNAMIC)
+
+set(OPTIONS "")
+
+# Skip try_run checks
+if(VCPKG_TARGET_IS_MINGW)
+    list(APPEND OPTIONS -D_OPENTHREADS_ATOMIC_USE_WIN32_INTERLOCKED=0 -D_OPENTHREADS_ATOMIC_USE_GCC_BUILTINS=1)
+elseif(VCPKG_TARGET_IS_WINDOWS)
+  list(APPEND OPTIONS
+    -D_OPENTHREADS_ATOMIC_USE_WIN32_INTERLOCKED=1
+    -D_OPENTHREADS_ATOMIC_USE_GCC_BUILTINS=0
+    -DPKG_CONFIG_USE_CMAKE_PREFIX_PATH=ON
+  )
+elseif(VCPKG_TARGET_IS_OSX)
+  list(
+    APPEND OPTIONS
+    -DOSG_WINDOWING_SYSTEM=Cocoa
+  )
+elseif(VCPKG_CROSSCOMPILING)
+    message(WARNING "Atomics detection may fail for cross builds. You can set osg cmake variables in a custom triplet.")
+endif()
+
+# The package osg can be configured to use different OpenGL profiles via a custom triplet file:
+# Possible values are GLCORE, GL2, GL3, GLES1, GLES2, GLES3, and GLES2+GLES3
+if(NOT DEFINED osg_OPENGL_PROFILE)
+    set(osg_OPENGL_PROFILE "GL2")
+endif()
+
+vcpkg_cmake_configure(
+    SOURCE_PATH "${SOURCE_PATH}"
+    OPTIONS
+        -DDYNAMIC_OPENSCENEGRAPH=${OSG_DYNAMIC}
+        -DDYNAMIC_OPENTHREADS=${OSG_DYNAMIC}
+        -DOSG_MSVC_VERSIONED_DLL=OFF
+        -DOSG_DETERMINE_WIN_VERSION=OFF
+        -DOSG_FIND_3RD_PARTY_DEPS=OFF
+        -DOSG_DISABLE_MSVC_WARNINGS=OFF
+        -DOPENGL_PROFILE=${osg_OPENGL_PROFILE}
+        -DBUILD_DASHBOARD_REPORTS=OFF
+        -DCMAKE_CXX_STANDARD=11
+        -DBUILD_OSG_PLUGINS_BY_DEFAULT=OFF
+        -DBUILD_OSG_PLUGIN_OSG=ON
+        -DBUILD_OSG_PLUGIN_DDS=ON
+        -DBUILD_OSG_PLUGIN_TGA=ON
+        -DBUILD_OSG_PLUGIN_BMP=ON
+        -DBUILD_OSG_PLUGIN_JPEG=ON
+        -DBUILD_OSG_PLUGIN_PNG=ON
+        -DBUILD_OSG_PLUGIN_FREETYPE=ON
+        -DBUILD_OSG_PLUGIN_DAE=ON
+        -DBUILD_OSG_PLUGIN_KTX=ON
+        -DBUILD_OSG_DEPRECATED_SERIALIZERS=OFF
+        -DBUILD_OSG_APPLICATIONS=OFF
+        -DBUILD_OSG_EXAMPLES=OFF
+        -DBUILD_DOCUMENTATION=OFF
+        ${OPTIONS}
+    MAYBE_UNUSED_VARIABLES
+        OSG_DETERMINE_WIN_VERSION
+)
+vcpkg_cmake_install()
+vcpkg_copy_pdbs()
+
+if(VCPKG_LIBRARY_LINKAGE STREQUAL "static")
+    file(APPEND "${CURRENT_PACKAGES_DIR}/include/osg/Config" "#ifndef OSG_LIBRARY_STATIC\n#define OSG_LIBRARY_STATIC 1\n#endif\n")
+endif()
+
+file(REMOVE_RECURSE
+    "${CURRENT_PACKAGES_DIR}/debug/include"
+    "${CURRENT_PACKAGES_DIR}/debug/share"
+)
+
+vcpkg_replace_string("${CURRENT_PACKAGES_DIR}/lib/pkgconfig/openscenegraph.pc" "\\\n" " ")
+if(NOT VCPKG_BUILD_TYPE)
+    vcpkg_replace_string("${CURRENT_PACKAGES_DIR}/debug/lib/pkgconfig/openscenegraph.pc" "\\\n" " ")
+endif()
+vcpkg_fixup_pkgconfig()
+
+file(COPY "${CMAKE_CURRENT_LIST_DIR}/usage" DESTINATION "${CURRENT_PACKAGES_DIR}/share/${PORT}")
+file(INSTALL "${SOURCE_PATH}/LICENSE.txt" DESTINATION "${CURRENT_PACKAGES_DIR}/share/${PORT}" RENAME copyright)
+]===],
+  ['deps/ports/openmw-mygui-osx/mygui.patch'] = [===[--- myguin/CMake/Utils/MyGUIConfigTargets.bak	2023-08-07 11:39:13
++++ myguin/CMake/Utils/MyGUIConfigTargets.cmake	2023-08-07 11:39:26
+@@ -421,15 +421,6 @@
+ 			# add GCC visibility flags to shared library build
+ 			target_compile_options(${PROJECTNAME} PRIVATE ${MYGUI_GCC_VISIBILITY_OPTIONS})
+ 			target_compile_definitions(${PROJECTNAME} PRIVATE ${MYGUI_GCC_VISIBILITY_DEFINITIONS})
+-			if (APPLE)
+-				# deal with Mac OS X's framework system
+-				set_target_properties(${PROJECTNAME} PROPERTIES FRAMEWORK TRUE)
+-				set_target_properties(${PROJECTNAME} PROPERTIES PUBLIC_HEADER "${${PROJECTNAME}_HEADERS}")
+-				set_target_properties(${PROJECTNAME} PROPERTIES OUTPUT_NAME ${PROJECTNAME})
+-				set_target_properties(${PROJECTNAME} PROPERTIES BUILD_WITH_INSTALL_RPATH TRUE)
+-				set_target_properties(${PROJECTNAME} PROPERTIES BUILD_WITH_INSTALL_NAME_DIR TRUE)
+-				set_target_properties(${PROJECTNAME} PROPERTIES INSTALL_NAME_DIR "@executable_path/../lib")
+-			endif (APPLE)
+ 		endif ()
+ 	endif (MYGUI_STATIC)
+ 	mygui_install_target(${PROJECTNAME} "")
+]===],
+  ['deps/ports/openmw-mygui-osx/vcpkg.json'] = [===[{
+  "name": "openmw-mygui-osx",
+  "version": "3.4.3",
+  "description": "MyGUI patched/setup for Openmw on OSX",
+  "port-version": 1,
+  "homepage": "https://github.com/MyGUI/mygui",
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    "freetype"
+  ]
+}
+]===],
+  ['deps/ports/openmw-mygui-osx/portfile.cmake'] = [===[vcpkg_from_github(
+  OUT_SOURCE_PATH SOURCE_PATH
+  REPO MyGUI/mygui
+  REF MyGUI3.4.3
+  SHA512 88c69ca2e706af364b72d425f95013eb285501881d8094f8d67e31a54c45ca11b0eb5b62c382af0d4c43f69aa8197648259ac306b72efa7ef3e25eecb9b039cb
+  PATCHES
+    "mygui.patch"
+)
+
+set(CMAKE_BUILD_TYPE "Release")
+
+vcpkg_cmake_configure(
+  SOURCE_PATH "${SOURCE_PATH}"
+  OPTIONS
+    -DMYGUI_RENDERSYSTEM=1
+    -DMYGUI_BUILD_DEMOS=OFF
+    -DMYGUI_BUILD_TOOLS=OFF
+    -DMYGUI_BUILD_PLUGINS=OFF
+    -DMYGUI_DONT_USE_OBSOLETE=ON
+)
+
+vcpkg_cmake_install()
+vcpkg_fixup_pkgconfig()
+file(REMOVE_RECURSE
+    "${CURRENT_PACKAGES_DIR}/debug/include"
+    "${CURRENT_PACKAGES_DIR}/debug/share"
+)
+vcpkg_install_copyright(FILE_LIST "${SOURCE_PATH}/COPYING.MIT")
+]===],
+  ['deps/ports/unshield/vcpkg.json'] = [===[{
+  "name": "unshield",
+  "version": "1.4.2",
+  "port-version": 1,
+  "homepage": "https://github.com/twogood/unshield",
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    }
+  ]
+}
+]===],
+  ['deps/ports/unshield/portfile.cmake'] = [===[vcpkg_from_github(
+  OUT_SOURCE_PATH SOURCE_PATH
+  REPO twogood/unshield
+  REF 1.4.2
+  SHA512 3ddd5df47198adade66acf89644efe3a1c87d60fcdf511f8e5c1fb29bbb07e77a9abc57a05b161ecb54a26a2a86242bbcba6e90df770b1325965ff5aa8eddf58
+)
+set(UNSHIELD_CMAKE_ARGS
+  "-DUSE_OUR_OWN_MD5=ON"
+)
+vcpkg_cmake_configure(
+  SOURCE_PATH "${SOURCE_PATH}"
+  OPTIONS "${UNSHIELD_CMAKE_ARGS}"
+)
+vcpkg_cmake_install()
+vcpkg_install_copyright(FILE_LIST "${SOURCE_PATH}/LICENSE")
+file(REMOVE_RECURSE
+    "${CURRENT_PACKAGES_DIR}/debug/include"
+    "${CURRENT_PACKAGES_DIR}/debug/share"
+)
+vcpkg_fixup_pkgconfig()
+]===],
+  ['deps/triplets/arm64-osx-dynamic.cmake'] = [===[set(VCPKG_TARGET_ARCHITECTURE arm64)
+set(VCPKG_CRT_LINKAGE dynamic)
+set(VCPKG_LIBRARY_LINKAGE dynamic)
+
+set(VCPKG_CMAKE_SYSTEM_NAME Darwin)
+set(VCPKG_OSX_ARCHITECTURES arm64)
+set(VCPKG_OSX_DEPLOYMENT_TARGET "14.0")
+]===],
+  ['deps/triplets/x64-osx-dynamic.cmake'] = [===[set(VCPKG_TARGET_ARCHITECTURE x64)
+set(VCPKG_CRT_LINKAGE dynamic)
+set(VCPKG_LIBRARY_LINKAGE dynamic)
+
+set(VCPKG_CMAKE_SYSTEM_NAME Darwin)
+set(VCPKG_OSX_ARCHITECTURES x86_64)
+set(VCPKG_OSX_DEPLOYMENT_TARGET "13.0")
+]===],
+  ['deps/triplets/x64-linux-dynamic.cmake'] = [===[set(VCPKG_TARGET_ARCHITECTURE x64)
+set(VCPKG_CRT_LINKAGE dynamic)
+set(VCPKG_LIBRARY_LINKAGE dynamic)
+
+set(VCPKG_CMAKE_SYSTEM_NAME Linux)
+]===],
+  ['deps/vcpkg.json'] = [===[{
+  "dependencies": [
+    "boost-geometry",
+    "boost-iostreams",
+    "boost-program-options",
+    {
+      "name": "bullet3",
+      "features": [
+        "double-precision",
+        "multithreading"
+      ]
+    },
+    "ffmpeg",
+    "freetype",
+    "icu",
+    "luajit",
+    "lz4",
+    {
+      "name": "mygui",
+      "platform": "!osx"
+    },
+    "openal-soft",
+    {
+      "name": "openmw-mygui-osx",
+      "platform": "osx"
+    },
+    {
+      "name": "libxrandr",
+      "platform": "linux"
+    },
+    "openmw-osg",
+    {
+      "name": "sdl2",
+      "platform": "!linux"
+    },
+    {
+      "name": "sdl2",
+      "default-features": false,
+      "platform": "linux",
+      "features": [
+        "dbus",
+        "x11",
+        "wayland"
+      ]
+    },
+    {
+      "name": "unshield",
+      "platform": "osx|linux"
+    },
+    "yaml-cpp"
+  ]
+}
+]===],
+  ['openmw/templates/README.packagecontents.txt'] = [===[=== Package Content README ===
+
+This package contains Linux binaries for openmw and its suite of utilities. It is intended to run on most moderately old and recent Linux distributions. These archives are built on Alma Linux and should work on any distribution with glibc 2.34 or later when the configured symbol-version audit passes.
+
+=== Running the provided binaries ===
+The binaries depend on libraries that might not be installed on your system or in an incompatible version. Therefore these libraries are included in the "lib" subdirectory. To automatically use the provided libraries there are scripts which set the LD_LIBRARY_PATH variable to the "lib" directory.
+
+To run openmw or a utility simply run the provided shell script (the file without a suffix -> <filename> not <filename>.x86_64). In case of openmw this would be "openmw" not openmw.x86_64.
+]===],
+}
+files['openmw/templates/runtime_wrapper.sh.in'] = [===[#!/bin/sh
+
+# If openmw was started from launcher under gdb, just exec directly.
+if [ "$(basename "$0" .x86_64)" = "openmw" ] && [ -n "$DEBUG" ] && [ -n "$DEBUG_START_FROM_LAUNCHER" ]
+then
+  exec ./openmw.x86_64 "$@"
+fi
+
+readlink() {
+  path=$1
+
+  if [ -L "$path" ]
+  then
+    ls -l "$path" | sed 's/^.*-> //'
+  else
+    return 1
+  fi
+}
+
+SCRIPT="$0"
+COUNT=0
+while [ -L "${SCRIPT}" ]
+do
+  SCRIPT=$(readlink "${SCRIPT}")
+  COUNT=$(expr "${COUNT}" + 1)
+  if [ "${COUNT}" -gt 100 ]
+  then
+    echo "Too many symbolic links"
+    exit 1
+  fi
+done
+GAMEDIR=$(dirname "${SCRIPT}")
+BINNAME=$(basename "$0")
+
+cd "$GAMEDIR" || (echo "Failed to enter game directory $GAMEDIR" && exit 1)
+
+export LD_LIBRARY_PATH="./lib"
+
+# Qt apps need the plugin path.
+case "$BINNAME" in
+  openmw-launcher|openmw-cs|openmw-wizard)
+    export QT_PLUGIN_PATH="./plugins"
+
+    wayland_client_has_symbol() {
+      client_lib=$1
+
+      if command -v readelf >/dev/null 2>&1
+      then
+        readelf -sW "$client_lib" 2>/dev/null | grep -q "wl_proxy_marshal_flags"
+        return $?
+      elif command -v objdump >/dev/null 2>&1
+      then
+        objdump -T "$client_lib" 2>/dev/null | grep -q "wl_proxy_marshal_flags"
+        return $?
+      else
+        return 2
+      fi
+    }
+
+    # Debian 11 ships libwayland-client 1.18, but Qt 6.6.3's wayland
+    # backend expects wl_proxy_marshal_flags. Force xcb when probing fails.
+    if [ -z "${QT_QPA_PLATFORM+x}" ] && ( [ "${XDG_SESSION_TYPE:-}" = "wayland" ] || [ -n "${WAYLAND_DISPLAY:-}" ] )
+    then
+      WAYLAND_CLIENT=""
+
+      if command -v ldconfig >/dev/null 2>&1
+      then
+        WAYLAND_CLIENT="$(ldconfig -p 2>/dev/null | awk '/libwayland-client\.so\.0/{print $NF; exit}')"
+      fi
+
+      if [ -n "$WAYLAND_CLIENT" ]
+      then
+        if ! wayland_client_has_symbol "$WAYLAND_CLIENT"
+        then
+          export QT_QPA_PLATFORM="xcb"
+        fi
+      else
+        export QT_QPA_PLATFORM="xcb"
+      fi
+    fi
+    ;;
+esac
+
+if [ -n "$DEBUG" ]
+then
+  which gdb >/dev/null 2>/dev/null
+  if [ "$?" -ne 0 ]
+  then
+    echo "Could not find gdb"
+    exit 1
+  fi
+  export DEBUGINFOD_URLS=""
+
+  if [ "$BINNAME" = "openmw-launcher" ]
+  then
+    export DEBUG_START_FROM_LAUNCHER=1
+    gdb -iex "set follow-fork-mode child" -iex "set detach-on-fork off" -iex "set follow-exec-mode same" --args "./${BINNAME}.x86_64" "$@"
+  else
+    gdb --args "./${BINNAME}.x86_64" "$@"
+  fi
+  exit $?
+fi
+
+"./${BINNAME}.x86_64" "$@"
+]===]
+return table.freeze(files)

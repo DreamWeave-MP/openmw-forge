@@ -1,12 +1,14 @@
+#!/usr/bin/env -S jess run --trusted --package .
 --!strict
 local fs = require '@dream/fs'
 local process = require '@dream/process'
 local args = require '@forge/args'
 local planning = require '@forge/plan'
 local executor = require '@forge/execute'
+local native = require '@forge/native'
 
 local Help = [[
-OpenMW Forge — consolidated AlmaLinux 9 build workspace
+OpenMW Forge — standalone Jess-native AlmaLinux 9 build tool
 
 Usage: openmw-forge COMMAND [OPTIONS]
 Commands:
@@ -21,7 +23,7 @@ Commands:
 
 Common switches:
   --source PATH             OpenMW checkout (required for build/pipeline/package)
-  --mode container|local|distrobox   Default: container
+  --mode container|local    Default: container
   --engine podman|docker    Default: podman
   --deps-archive FILE|HTTPS_URL   Existing dependency export (build)
   --deps-output PATH        Dependency export directory
@@ -36,12 +38,11 @@ Common switches:
   --no-qt --no-system-packages --no-prepare --no-ccache
   --no-compat --no-smoke     Opt out of package validation steps
   --cmake-arg ARG           Repeatable
-  --distros CSV --with-qt    Smoke test across distrobox distros
-  --keep-box                Reuse distrobox environment
+  --distros CSV --with-qt    Smoke test in isolated distro containers
   --dry-run                 Print exact plan; execute nothing
 
-Only AlmaLinux 9 is a supported build baseline. Work from the repository
-root. Paths may be relative to the current working directory.
+Only AlmaLinux 9 is a supported build baseline. Run the compiled Forge
+executable from any directory; no workspace is needed.
 ]]
 
 local root, cwdError = fs.cwd()
@@ -56,6 +57,14 @@ end
 
 if options.command == 'help' then
   print(Help)
+  return
+end
+
+if string.sub(options.command, 1, 2) == '__' then
+  options.command = string.sub(options.command, 3)
+  local checked, validationError = planning.build(options)
+  if checked == nil then error(validationError or 'unsafe internal invocation') end
+  native.run(options.command, options)
   return
 end
 

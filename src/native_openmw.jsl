@@ -1,0 +1,486 @@
+--!strict
+local fs = require '@dream/fs'
+local process = require '@dream/process'
+local util = require '@forge/native-util'
+local args = require '@forge/args'
+local dependencies = require '@forge/native-deps'
+local assets = require '@forge/assets'
+
+type Options = args.Options
+
+local function setTools(): { [string]: string }
+  local path = process.env('PATH') or '/usr/bin:/bin'
+  return {
+    PATH = '/opt/rh/gcc-toolset-13/root/usr/bin:/usr/local/bin:' .. path,
+    CC = '/opt/rh/gcc-toolset-13/root/usr/bin/gcc',
+    CXX = '/opt/rh/gcc-toolset-13/root/usr/bin/g++',
+  }
+end
+
+local function isSafeName(name: string): boolean
+  if name == '' or name:sub(1, 1) == '/' or name:find('\\', 1, true) then return false end
+
+  for component in name:gmatch('[^/]+') do
+    if component == '..' or component == '.' then return false end
+  end
+  return true
+end
+
+local function listTar(archive: string): { string }
+  local contents = util.checked('tar', { '-tf', archive })
+  local paths: { string } = {}
+  for line in contents:gmatch('[^\r\n]+') do
+    if not isSafeName(line) then error('unsafe tar path: ' .. line) end
+    table.insert(paths, line)
+  end
+
+  -- GNU tar's verbose listing exposes links before any extraction. Refuse links
+  -- with absolute/parent targets instead of discovering an escape afterward.
+  local verbose = util.checked('tar', { '-tvf', archive })
+  local index = 0
+  for line in verbose:gmatch('[^\r\n]+') do
+    index += 1
+    local kind = line:sub(1, 1)
+    if kind == 'l' or kind == 'h' then
+      local link = line:match(' %-%> (.+)$') or line:match(' link to (.+)$')
+      if not link or not isSafeName(link) then
+        error(`unsafe link entry {paths[index] or tostring(index)}`)
+      end
+    elseif kind ~= 'd' and kind ~= '-' then
+      error(`unsupported tar entry type: {kind}`)
+    end
+  end
+
+  if index ~= #paths then error('tar listing length mismatch') end
+  if #paths == 0 then error('archive contains no files') end
+  return paths
+end
+
+local function requireSafeArchive(archive: string)
+  if string.match(archive, '%.tar%.xz$') then
+    listTar(archive)
+  else
+    dependencies.validateArchiveEntries(util.tool { '7zz', '7z', '7za' }, archive)
+  end
+end
+
+local function installHostDeps()
+  util.stream('dnf', { 'install', '-y', 'epel-release', 'dnf-plugins-core' })
+  local crb = process.run('crb', { 'enable' }, { stdout = 'null', stderr = 'null' })
+  if not crb or not crb.success then
+    util.stream('dnf', { 'config-manager', '--set-enabled', 'crb' })
+  end
+
+  util.stream('dnf', {
+    'install', '-y', 'gcc-toolset-13', 'cmake', 'ccache', 'git', 'python3-pip',
+    'mesa-libGL-devel', 'mesa-libEGL-devel', 'libxkbcommon-devel',
+    'libxkbcommon-x11', 'libxcb', 'xcb-util', 'xcb-util-image',
+    'xcb-util-keysyms', 'xcb-util-wm', 'xcb-util-renderutil',
+    'xcb-util-cursor', 'binutils', 'tar', 'gzip', 'p7zip', 'curl',
+  })
+end
+
+local function extractDeps(options: Options)
+  local archive = options.archive
+  if string.sub(archive, 1, 8) == 'https://' then
+    local suffix = if archive:match('%.tar%.xz$') then '.tar.xz' elseif archive:match('%.7z$') then '.7z' else nil
+    if not suffix then error('dependency HTTPS URL must end in .7z or .tar.xz') end
+    local dest = options.deps .. '/archive-cache/download' .. suffix
+    util.mkdir(options.deps .. '/archive-cache')
+    if not fs.isFile(dest) then
+      util.stream('curl', { '--fail', '--location', '--retry', '3', '--output', dest, archive })
+    end
+    archive = dest
+  end
+
+  if not fs.isFile(archive) then error('missing AlmaLinux 9 dependencies archive: ' .. archive) end
+  requireSafeArchive(archive)
+  local temp = options.deps .. '/extracting'
+  util.remove(temp)
+  util.mkdir(temp)
+  if string.match(archive, '%.tar%.xz$') then
+    util.stream('tar', { '-xJf', archive, '-C', temp })
+  else
+    util.stream(util.tool { '7zz', '7z', '7za' }, { 'x', '-y', '-o' .. temp, archive })
+  end
+  local discovered, failure = fs.walk(temp, { include = 'files', sort = true })
+  if not discovered then error(failure or 'dependency extraction failed') end
+  local root: string? = nil
+  local suffix = '/scripts/buildsystems/vcpkg.cmake'
+  for _, relative in discovered.paths do
+    if relative:sub(-#suffix) == suffix then
+      root = temp .. '/' .. relative:sub(1, -#suffix - 1)
+      break
+    end
+  end
+
+  if not root or not fs.isDir(root .. '/installed/' .. options.triplet .. '/lib') then
+    error('dependency export lacks vcpkg.cmake and installed triplet libraries')
+  end
+  local final = options.deps .. '/openmw-deps'
+  util.remove(final)
+  -- A copied tree handles archives containing symlinks with shared ancestors.
+  util.tree(root, final)
+  util.remove(temp)
+end
+
+local function prepare(options: Options)
+  if not options.noSystemPackages then installHostDeps() end
+  util.mkdir(options.deps)
+  if not options.noQt then
+    print(`Installing Qt {options.qtVersion}`)
+    util.stream('python3', { '-m', 'pip', 'install', 'aqtinstall' })
+    util.stream('python3', {
+      '-m', 'aqt', 'install-qt', 'linux', 'desktop', options.qtVersion, 'gcc_64',
+      '--archives', 'qtbase', 'qtdeclarative', 'qtsvg', 'qttools', 'qtwayland', 'icu',
+      '-O', options.deps .. '/QT',
+    })
+  end
+  extractDeps(options)
+end
+
+local function configure(options: Options)
+  local installed = options.deps .. '/openmw-deps'
+  local lib = installed .. '/installed/' .. options.triplet
+  local qt = options.deps .. '/QT/' .. options.qtVersion .. '/gcc_64'
+  if not fs.isDir(lib .. '/lib') then error('missing vcpkg installed libs: ' .. lib) end
+  if not fs.isFile(installed .. '/scripts/buildsystems/vcpkg.cmake') then error('missing vcpkg CMake toolchain') end
+  if not fs.isDir(qt .. '/lib') then error('missing Qt installation: ' .. qt) end
+
+  local flags = {
+    '-S', options.source, '-B', options.build,
+    '-DCMAKE_C_COMPILER=' .. (process.env('CC') or (if fs.isFile('/opt/rh/gcc-toolset-13/root/usr/bin/gcc') then '/opt/rh/gcc-toolset-13/root/usr/bin/gcc' else '/usr/bin/cc')),
+    '-DCMAKE_CXX_COMPILER=' .. (process.env('CXX') or (if fs.isFile('/opt/rh/gcc-toolset-13/root/usr/bin/g++') then '/opt/rh/gcc-toolset-13/root/usr/bin/g++' else '/usr/bin/c++')),
+    '-DOPENMW_CXX_FLAGS=',
+    '-DCMAKE_INSTALL_RPATH=$ORIGIN/../lib',
+    '-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON',
+    '-DCMAKE_PREFIX_PATH=' .. lib .. ';' .. qt,
+    '-Dcollada_dom_DIR=' .. lib .. '/share/collada-dom',
+    '-DOPENMW_USE_SYSTEM_RECASTNAVIGATION=OFF',
+    '-DOPENMW_USE_SYSTEM_SQLITE3=OFF',
+    '-DVCPKG_HOST_TRIPLET=' .. options.triplet,
+    '-DVCPKG_TARGET_TRIPLET=' .. options.triplet,
+    '-DCMAKE_TOOLCHAIN_FILE=' .. installed .. '/scripts/buildsystems/vcpkg.cmake',
+    '-DCMAKE_BUILD_TYPE=' .. options.buildType,
+  }
+
+  if not options.noCcache then
+    table.insert(flags, '-DCMAKE_C_COMPILER_LAUNCHER=ccache')
+    table.insert(flags, '-DCMAKE_CXX_COMPILER_LAUNCHER=ccache')
+  end
+
+  if options.runTests then
+    table.insert(flags, '-DBUILD_OPENMW_TESTS=ON')
+    table.insert(flags, '-DBUILD_COMPONENTS_TESTS=ON')
+  end
+
+  for _, value in options.cmakeArgs do table.insert(flags, value) end
+  util.stream('cmake', flags, nil, setTools())
+end
+
+local function binaryVersion(source: string): string
+  local cmake = util.file(source .. '/CMakeLists.txt')
+  local parts: { string } = {}
+  for _, key in { 'MAJOR', 'MINOR', 'RELEASE' } do
+    local value = string.match(cmake, 'set%(%s*OPENMW_VERSION_' .. key .. '%s+(%d+)')
+    if not value then error('cannot read OpenMW version ' .. key) end
+    table.insert(parts, value)
+  end
+  return table.concat(parts, '.')
+end
+
+local function scanAbi(root: string)
+  local walkResult, failure = fs.walk(root, { include = 'files', sort = true })
+  if not walkResult then error(failure or 'cannot walk ABI scan root') end
+  local count = 0
+  local ceilings: { [string]: string } = { GLIBC = '2.34', GLIBCXX = '3.4.29', CXXABI = '1.3.13' }
+  for _, name in walkResult.paths do
+    local path = root .. '/' .. name
+    local first = fs.readAt(path, 0, 4)
+    if not first or buffer.readstring(first, 0, 4) ~= '\127ELF' then continue end
+
+    count += 1
+      local result = process.run('readelf', { '--version-info', path }, { stdout = 'capture', stderr = 'null' })
+      if not result or not result.success then error('readelf failed: ' .. path) end
+      local info = result.stdout or ''
+      for symbol, max in ceilings do
+        for version in info:gmatch(symbol .. '_([%d%.]+)') do
+          if dependencies.newer(version, max) then error(`{path} requires {symbol}_{version} (max {max})`) end
+        end
+      end
+  end
+
+  if count == 0 then error('no ELF files discovered for compatibility audit') end
+  print(`PASS {count} ELF files meet AlmaLinux 9 ABI ceilings`)
+end
+
+local function addLibraries(source: string, target: string, matcher: (string) -> boolean)
+  if not fs.isDir(source) then return end
+
+  for _, name in util.list(source) do
+    if not matcher(name) then continue end
+
+    local from = source .. '/' .. name
+      local to = target .. '/' .. name
+      if not fs.exists(to) and not fs.lstat(to) then
+        local stat = fs.lstat(from)
+        if stat and stat.kind == 'symlink' then
+          local link, problem = fs.readLink(from)
+          if not link then error(problem or 'cannot read shared library symlink') end
+          local success, why = fs.symlink(link, to)
+          if not success then error(why or 'cannot create library symlink') end
+        elseif stat and stat.kind == 'dir' then util.tree(from, to)
+        elseif stat and stat.kind == 'file' then util.copy(from, to)
+        end
+      end
+  end
+end
+
+local function splitDebug(stage: string, debugRoot: string)
+  local walkResult, problem = fs.walk(stage, { include = 'files', sort = true })
+  if not walkResult then error(problem or 'cannot walk staging') end
+
+  for _, name in walkResult.paths do
+    local path = stage .. '/' .. name
+    local first = fs.readAt(path, 0, 4)
+    if first and buffer.readstring(first, 0, 4) == '\127ELF' and not name:find('libicudata%.so') then
+      local link = process.run('objdump', { '-h', path }, { stdout = 'capture', stderr = 'null' })
+      if not link or not string.find(link.stdout or '', '.gnu_debuglink', 1, true) then
+        local debug = debugRoot .. '/' .. name .. '.debug'
+        util.mkdir(fs.parent(debug) or debugRoot)
+        util.stream('chmod', { 'u+w', path })
+        util.stream('objcopy', { '--only-keep-debug', path, debug })
+        util.stream('strip', { '--strip-debug', '--strip-unneeded', path })
+        util.stream('objcopy', { '--add-gnu-debuglink=' .. debug, path })
+      end
+    end
+  end
+end
+
+local function smokeBinaries(stage: string, withQt: boolean?)
+  local names = {
+    'openmw', 'openmw-iniimporter', 'openmw-essimporter', 'openmw-navmeshtool',
+    'openmw-bulletobjecttool', 'bsatool', 'esmtool', 'niftest',
+  }
+
+  if withQt then
+    for _, name in { 'openmw-launcher', 'openmw-cs', 'openmw-wizard' } do
+      table.insert(names, name)
+    end
+  end
+
+  for _, name in names do
+    local binary = stage .. '/' .. name .. '.x86_64'
+    if not fs.isFile(binary) then continue end
+
+    local env = { LD_LIBRARY_PATH = stage .. '/lib', QT_PLUGIN_PATH = stage .. '/plugins' }
+      local result, failure = process.run(binary, { '--help' }, { cwd = stage, env = env, stdout = 'capture', stderr = 'capture' })
+      if not result then error(`smoke could not run {name}: {failure or ''}`) end
+      if not result.success then error(`smoke {name} exited with {tostring(result.code or result.signal)}`) end
+      local output = (result.stdout or '') .. (result.stderr or '')
+      for _, problem in { 'error while loading shared libraries', 'symbol lookup error', 'undefined symbol', 'cannot open shared object' } do
+        if output:find(problem, 1, true) then error(`smoke failure in {name}: {output}`) end
+      end
+    print('PASS smoke ' .. name)
+  end
+end
+
+local function package(options: Options)
+  local version = binaryVersion(options.source)
+  local name = 'openmw-' .. version .. '-Linux-64Bit' .. (if options.portable then '-portable' else '')
+  local stage = options.build .. '/package-staging/' .. name
+  local debugRoot = options.build .. '/package-staging-debug/' .. name .. '-debug'
+  util.remove(options.build .. '/package-staging')
+  util.remove(options.build .. '/package-staging-debug')
+  util.mkdir(stage .. '/lib')
+  local count = 0
+  for _, app in {
+    'openmw', 'openmw-launcher', 'openmw-cs', 'openmw-wizard',
+    'openmw-iniimporter', 'openmw-essimporter', 'openmw-navmeshtool',
+    'openmw-bulletobjecttool', 'bsatool', 'esmtool', 'niftest',
+  } do
+    if not fs.isFile(options.build .. '/' .. app) then continue end
+
+    count += 1
+      util.copy(options.build .. '/' .. app, stage .. '/' .. app .. '.x86_64')
+      -- Preserve the official OpenMW POSIX launcher, not a Forge orchestration script.
+      -- Install the launcher from the upstream template when building a distribution.
+      util.write(stage .. '/' .. app, assets['openmw/templates/runtime_wrapper.sh.in'])
+    util.stream('chmod', { '+x', stage .. '/' .. app })
+  end
+
+  if count == 0 then error('no OpenMW binaries found in the build directory') end
+  local depsLib = options.deps .. '/openmw-deps/installed/' .. options.triplet
+  local lib = depsLib .. (if options.buildType == 'Debug' and fs.isDir(depsLib .. '/debug/lib') then '/debug/lib' else '/lib')
+  addLibraries(lib, stage .. '/lib', function(name: string): boolean
+    return (name:find('.so', 1, true) ~= nil or name:match('^osgPlugins%-') ~= nil)
+      and not name:match('^libasound') and not name:match('^libatopology')
+  end)
+  local qt = options.deps .. '/QT/' .. options.qtVersion .. '/gcc_64'
+  addLibraries(qt .. '/lib', stage .. '/lib', function(name: string): boolean
+    return name:match('^libQt6.+%.so') ~= nil or name:match('^libicu.+%.so') ~= nil
+  end)
+
+  if not fs.isDir(qt .. '/plugins') then error('missing Qt plugins: ' .. qt) end
+  util.tree(qt .. '/plugins', stage .. '/plugins')
+  util.remove(stage .. '/plugins/designer')
+  local system = if fs.isDir('/usr/lib64') then '/usr/lib64' elseif fs.isDir('/usr/lib/x86_64-linux-gnu') then '/usr/lib/x86_64-linux-gnu' else '/usr/lib'
+  addLibraries(system, stage .. '/lib', function(name: string): boolean
+    return name:match('^libxcb%-.*%.so') ~= nil or name:match('^libxkbcommon.*%.so') ~= nil
+  end)
+
+  if not fs.isDir(options.build .. '/resources') then error('missing OpenMW resources directory') end
+  util.tree(options.build .. '/resources', stage .. '/resources')
+  for _, file in { 'defaults.bin', 'defaults-cs.bin', 'gamecontrollerdb.txt' } do
+    if fs.isFile(options.build .. '/' .. file) then util.copy(options.build .. '/' .. file, stage .. '/' .. file) end
+  end
+  local cfg = options.build .. '/openmw.cfg'
+  if fs.isFile(cfg) then
+    local contents = util.file(cfg)
+    if options.portable then
+      contents = contents:gsub('config="%?userconfig%?"', 'config=config')
+      contents = contents:gsub('user%-data="%?userdata%?"', 'user-data=userdata')
+      contents = contents:gsub('data%-local="%?userdata%?data"', 'data-local=userdata/data')
+    end
+    util.write(stage .. '/openmw.cfg', contents)
+  end
+
+  local docs: { [string]: string } = {
+    ['CHANGELOG.md'] = 'CHANGELOG.txt', ['LICENSE'] = 'LICENSE.txt', ['README.md'] = 'README.md',
+  }
+
+  for original, renamed in docs do
+    if fs.isFile(options.source .. '/' .. original) then util.copy(options.source .. '/' .. original, stage .. '/' .. renamed) end
+  end
+
+  for _, path in { 'files/launcher/images/openmw.png', 'files/opencs/openmw-cs.png' } do
+    if fs.isFile(options.source .. '/' .. path) then
+      util.copy(options.source .. '/' .. path, stage .. '/' .. (fs.fileName(path) or path))
+    end
+  end
+  util.write(stage .. '/README.packagecontents.txt', assets['openmw/templates/README.packagecontents.txt'])
+  if options.stageOnly then print('Staged OpenMW package at ' .. stage) return end
+
+  if options.buildType ~= 'Debug' then
+    util.mkdir(debugRoot)
+    splitDebug(stage, debugRoot)
+  end
+
+  if not options.noCompat then scanAbi(stage) end
+  if not options.noSmoke then smokeBinaries(stage) end
+  util.mkdir(options.output)
+  util.stream('tar', { 'czf', options.output .. '/' .. name .. '.tar.gz', '-C', options.build .. '/package-staging', name })
+  if options.buildType ~= 'Debug' then
+    util.stream('tar', { 'czf', options.output .. '/' .. name .. '-debug.tar.gz', '-C', options.build .. '/package-staging-debug', name .. '-debug' })
+  end
+  print('OpenMW package: ' .. options.output .. '/' .. name .. '.tar.gz')
+end
+
+local function build(options: Options)
+  if options.clean then util.remove(options.build) end
+  util.mkdir(options.build)
+  if not options.noPrepare then prepare(options) end
+  configure(options)
+  util.stream('cmake', { '--build', options.build, '--', '-j' .. tostring(options.jobs) }, nil, setTools())
+  if options.runTests then
+    util.stream('cmake', { '--build', options.build, '--target', 'openmw-tests', 'components-tests', '--', '-j' .. tostring(options.jobs) }, nil, setTools())
+    local env = { LD_LIBRARY_PATH = options.deps .. '/openmw-deps/installed/' .. options.triplet .. '/lib:' .. options.deps .. '/QT/' .. options.qtVersion .. '/gcc_64/lib' }
+    for _, name in { 'openmw-tests', 'components-tests' } do
+      local binary = options.build .. '/' .. name
+      if not fs.isFile(binary) then error('missing GoogleTest binary: ' .. binary) end
+      util.stream(binary, { '--gtest_filter=' .. options.gtestFilter }, options.build, env)
+    end
+  end
+  package(options)
+end
+
+local DistroImages: { [string]: { string } } = {
+  ['almalinux-9'] = { 'almalinux:9', 'dnf install -y mesa-libGL' },
+  ['debian-12'] = { 'debian:12', 'apt-get update && apt-get install -y libgl1' },
+  ['debian-13'] = { 'debian:trixie', 'apt-get update && apt-get install -y libgl1' },
+  ['ubuntu-22.04'] = { 'ubuntu:22.04', 'apt-get update && apt-get install -y libgl1' },
+  ['ubuntu-24.04'] = { 'ubuntu:24.04', 'apt-get update && apt-get install -y libgl1' },
+  ['fedora-latest'] = { 'fedora:latest', 'dnf install -y mesa-libGL' },
+  ['archlinux'] = { 'archlinux:latest', 'pacman -Sy --noconfirm --needed libglvnd' },
+  ['opensuse-tumbleweed'] = { 'opensuse/tumbleweed', 'zypper --non-interactive install Mesa-libGL1' },
+  ['voidlinux'] = { 'ghcr.io/void-linux/void-glibc-full:latest', 'xbps-install -Sy libglvnd' },
+}
+
+local function multiSmoke(options: Options, staging: string)
+  local selected: { string } = {}
+  for tag in options.distros:gmatch('[^,]+') do
+    if not DistroImages[tag] then error('unknown smoke distro: ' .. tag) end
+    table.insert(selected, tag)
+  end
+
+  if #selected == 0 then error('--distros needs at least one known distribution') end
+
+  for _, tag in selected do
+    local image = DistroImages[tag]
+    local buildDir = options.root .. '/work/forge-smoke-images/' .. tag
+    util.mkdir(buildDir)
+    util.write(buildDir .. '/Dockerfile', `FROM {image[1]}\nRUN {image[2]}\n`)
+    local imageTag = 'openmw-forge-smoke:' .. tag
+    util.stream(options.engine, { 'build', '-t', imageTag, '-f', buildDir .. '/Dockerfile', buildDir })
+    local count = 0
+    local names = if options.withQt then {
+      'openmw', 'openmw-launcher', 'openmw-cs', 'openmw-wizard', 'bsatool', 'esmtool', 'niftest',
+    } else {
+      'openmw', 'openmw-iniimporter', 'openmw-essimporter', 'openmw-navmeshtool',
+      'openmw-bulletobjecttool', 'bsatool', 'esmtool', 'niftest',
+    }
+
+    for _, name in names do
+      if not fs.isFile(staging .. '/' .. name .. '.x86_64') then continue end
+      count += 1
+      local volume = staging .. ':/pkg:ro' .. (if options.engine == 'podman' then ',z' else '')
+      local result, failure = process.run(options.engine, {
+        'run', '--rm', '--network', 'none', '-v', volume, '-w', '/pkg',
+        '-e', 'LD_LIBRARY_PATH=/pkg/lib', '-e', 'QT_PLUGIN_PATH=/pkg/plugins',
+        '-e', 'QT_QPA_PLATFORM=offscreen', imageTag, '/pkg/' .. name .. '.x86_64', '--help',
+      }, { stdout = 'capture', stderr = 'capture' })
+
+      if not result or not result.success then
+        error(`{tag}/{name} failed to execute: {failure or (if result then result.stderr or '' else '')}`)
+      end
+      print(`PASS {tag}: {name}`)
+    end
+
+    if count == 0 then error('no binaries available for distro smoke tests') end
+  end
+end
+
+local function smoke(options: Options)
+  listTar(options.archive)
+  local root = options.root .. '/work/forge-smoke'
+  util.remove(root)
+  util.mkdir(root)
+  util.stream('tar', { 'xzf', options.archive, '-C', root })
+  -- Inspect every link after extraction; never follow a link outside this root.
+  local walk, problem = fs.walk(root, { include = 'all', sort = true })
+  if not walk then error(problem or 'cannot inspect extracted archive') end
+
+  for index, name in walk.paths do
+    if walk.kinds[index] ~= 'symlink' then continue end
+
+    local target = root .. '/' .. name
+      local resolved = fs.canonicalize(target)
+      if not resolved or (resolved ~= root and resolved:sub(1, #root + 1) ~= root .. '/') then
+        error('archive has escaping or dangling symbolic link: ' .. name)
+      end
+  end
+  local first = listTar(options.archive)[1]
+  local top = first:match('^[^/]+') or ''
+  if not isSafeName(top) then error('unsafe archive root') end
+  local staging = root .. '/' .. top
+  if not fs.isDir(staging) then error('archive does not have a single package root') end
+  scanAbi(staging)
+  if options.distros == '' then smokeBinaries(staging, options.withQt)
+  else multiSmoke(options, staging) end
+  print('PASS tarball smoke ' .. options.archive)
+end
+
+return table.freeze {
+  build = build, package = package, prepare = prepare, configure = configure,
+  smoke = smoke, scanAbi = scanAbi, listTar = listTar, isSafeName = isSafeName,
+}

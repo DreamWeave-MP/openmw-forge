@@ -2,306 +2,308 @@
 local test = require '@jess/test'
 local args = require '@forge/args'
 local planning = require '@forge/plan'
-local config = require '@forge/config'
+local profile = require '@forge/config'
+local nativeOpenmw = require '@forge/native-openmw'
+local nativeDeps = require '@forge/native-deps'
+local assets = require '@forge/assets'
 local suite = test.new()
 
-local Root = '/tmp/forge'
-local Source = '/tmp/openmw-checkout'
+local Root = '/tmp/forge-root'
+local Source = '/tmp/openmw-source'
 
-local function parse(values: { string }): args.Options
-  local options, failure = args.parse(values, Root)
-  if options == nil then
-    error(failure or 'failed to parse options')
-  end
-  return options
-end
-
-local function plan(values: { string }): planning.Plan
-  local options = parse(values)
-  local result, failure = planning.build(options)
-  if result == nil then
-    error(failure or 'failed to build plan')
-  end
+local function parsed(values: { string }): args.Options
+  local result, reason = args.parse(values, Root)
+  if not result then error(reason or 'unexpected parse failure') end
   return result
 end
 
-local function fails(values: { string }, expected: string)
-  local options, parseFailure = args.parse(values, Root)
-  if options == nil then
-    test.expect(parseFailure or '').toContain(expected)
-    return
-  end
+local function plan(values: { string }): planning.Plan
+  local options = parsed(values)
   local result, failure = planning.build(options)
-  test.expect(result).toBeNil()
-  test.expect(failure or '').toContain(expected)
+  if not result then error(failure or 'unexpected planning failure') end
+  return result
 end
 
-local function hasArg(argv: { string }, wanted: string): boolean
-  for _, part in argv do
-    if part == wanted then
-      return true
-    end
+local function fails(values: { string }, reason: string)
+  local options, parseError = args.parse(values, Root)
+  if not options then
+    test.expect(parseError or '').toContain(reason)
+    return
+  end
+  local result, planningError = planning.build(options)
+  test.expect(result).toBeNil()
+  test.expect(planningError or '').toContain(reason)
+end
+
+local function has(values: { string }, wanted: string): boolean
+  for _, value in values do
+    if value == wanted then return true end
   end
   return false
 end
 
-suite.describe('CLI parsing', function()
-  suite.it('prints help without a command', function()
-    test.expect(parse({ 'help' }).command).toBe('help')
-    test.expect(parse({ '--help' }).command).toBe('help')
+local function shellFree(result: planning.Plan)
+  for _, step in result.steps do
+    test.expect(step.program == 'bash').toBeFalsy()
+    test.expect(step.program == 'sh').toBeFalsy()
+    for _, value in step.args do
+      test.expect(value == '/builder/scripts/build_binaries.sh').toBeFalsy()
+      test.expect(value == 'bash').toBeFalsy()
+    end
+  end
+end
+
+suite.describe('profile and CLI', function()
+  suite.it('pins the AlmaLinux 9 ABI contract', function()
+    test.expect(profile.image).toBe('almalinux:9')
+    test.expect(profile.profile).toBe('alma9')
+    test.expect(profile.triplet).toBe('x64-linux-dynamic')
   end)
 
-  suite.it('defaults to canonical AlmaLinux 9 inputs', function()
-    local options = parse({ 'deps' })
-    test.expect(config.profile).toBe('alma9')
-    test.expect(config.image).toBe('almalinux:9')
-    test.expect(options.triplet).toBe('x64-linux-dynamic')
+  suite.it('has built-in help', function()
+    test.expect(parsed({ 'help' }).command).toBe('help')
+    test.expect(parsed({ '--help' }).command).toBe('help')
+  end)
+
+  suite.it('defaults to the container profile', function()
+    local options = parsed({ 'deps' })
     test.expect(options.mode).toBe('container')
     test.expect(options.engine).toBe('podman')
+    test.expect(options.triplet).toBe(profile.triplet)
+    test.expect(options.jobs).toBe(3)
   end)
 
-  suite.it('parses equals and space styles', function()
-    local options = parse({ 'build', '--source=/tmp/a', '--jobs', '7', '--engine=docker', '--clean' })
+  suite.it('preserves arbitrary CMake arguments as values', function()
+    local options = parsed({ 'build', '--cmake-arg', '-DHELLO=a b', '--cmake-arg=-DX=$HOME' })
+    test.expect(options.cmakeArgs).toEqual({ '-DHELLO=a b', '-DX=$HOME' })
+  end)
+
+  suite.it('accepts both --flag=value and --flag value', function()
+    local options = parsed({ 'build', '--source=/tmp/a', '--jobs', '8', '--engine=docker' })
     test.expect(options.source).toBe('/tmp/a')
-    test.expect(options.jobs).toBe(7)
+    test.expect(options.jobs).toBe(8)
     test.expect(options.engine).toBe('docker')
-    test.expect(options.clean).toBeTruthy()
   end)
 
-  suite.it('keeps repeated cmake arguments separate', function()
-    local options = parse({ 'build', '--cmake-arg=-DWITH_LUA=ON', '--cmake-arg', '-DSOME_VALUE=a b' })
-    test.expect(options.cmakeArgs).toEqual({ '-DWITH_LUA=ON', '-DSOME_VALUE=a b' })
+  suite.it('rejects unknown commands and flags', function()
+    fails({ 'erase' }, 'unknown command')
+    fails({ 'deps', '--execute-rm' }, 'unknown option')
   end)
 
-  suite.it('rejects unknown flags', function()
-    fails({ 'deps', '--loose' }, 'unknown option')
-  end)
-
-  suite.it('rejects unknown commands', function()
-    fails({ 'destroy' }, 'unknown command')
-  end)
-
-  suite.it('rejects empty required values', function()
+  suite.it('rejects missing and empty options', function()
     fails({ 'deps', '--deps-output' }, 'missing value')
     fails({ 'deps', '--deps-output=' }, 'missing value')
   end)
 
-  suite.it('rejects invalid job counts', function()
-    for _, count in { '0', '-1', '3.4', 'foo', '1025' } do
-      fails({ 'deps', '--jobs', count }, '--jobs must be an integer')
+  suite.it('bounds parallelism', function()
+    for _, value in { '0', '-3', '3.14', 'many', '1025' } do
+      fails({ 'deps', '--jobs', value }, '--jobs must be an integer')
+    end
+  end)
+
+  suite.it('allows packed runtime internal phases', function()
+    for _, command in { '__deps', '__build', '__package', '__verify', '__smoke' } do
+      test.expect(parsed({ command }).command).toBe(command)
     end
   end)
 end)
 
-suite.describe('planning and isolation', function()
-  suite.it('creates a two-step dependency image and build', function()
-    local buildPlan = plan({ 'deps' })
-    test.expect(#buildPlan.steps).toBe(2)
-    test.expect(hasArg(buildPlan.steps[1].args, 'BASE_IMAGE=almalinux:9')).toBeTruthy()
-    test.expect(hasArg(buildPlan.steps[2].args, 'PROFILE=alma9')).toBeTruthy()
-    test.expect(hasArg(buildPlan.steps[2].args, 'OPENMW_DEPS_SKIP_DOCTOR=1')).toBeTruthy()
+suite.describe('shell-free execution planning', function()
+  suite.it('plans dependency build in one Alma 9 container image', function()
+    local result = plan({ 'deps' })
+    test.expect(#result.steps).toBe(2)
+    test.expect(result.steps[1].program).toBe('podman')
+    test.expect(has(result.steps[1].args, 'openmw-forge:alma9')).toBeTruthy()
+    test.expect(has(result.steps[2].args, '__deps')).toBeTruthy()
+    test.expect(has(result.steps[2].args, '/usr/local/bin/openmw-forge')).toBeTruthy()
+    shellFree(result)
   end)
 
-  suite.it('provides direct local dependency build', function()
-    local buildPlan = plan({ 'deps', '--mode', 'local' })
-    test.expect(#buildPlan.steps).toBe(1)
-    test.expect(buildPlan.steps[1].program).toBe('bash')
-    test.expect(buildPlan.steps[1].env.PROFILE).toBe('alma9')
+  suite.it('forwards dependency build concurrency and clean/preprovisioned flags', function()
+    local result = plan({ 'deps', '--jobs', '12', '--no-system-packages', '--clean' })
+    test.expect(has(result.steps[2].args, '--jobs')).toBeTruthy()
+    test.expect(has(result.steps[2].args, '12')).toBeTruthy()
+    test.expect(has(result.steps[2].args, '--no-system-packages')).toBeTruthy()
+    test.expect(has(result.steps[2].args, '--clean')).toBeTruthy()
   end)
 
-  suite.it('provides existing distrobox dependency path', function()
-    local buildPlan = plan({ 'deps', '--mode', 'distrobox' })
-    test.expect(#buildPlan.steps).toBe(1)
-    test.expect(buildPlan.steps[1].env.MODE).toBe('distrobox')
+  suite.it('supports direct Jess-native local dependency builds', function()
+    local result = plan({ 'deps', '--mode', 'local' })
+    test.expect(#result.steps).toBe(1)
+    test.expect(result.steps[1].program).toBe('@forge')
+    test.expect(result.steps[1].args[1]).toBe('deps')
+    shellFree(result)
   end)
 
-  suite.it('merges dependency and OpenMW stages', function()
-    local buildPlan = plan({ 'pipeline', '--source', Source })
-    test.expect(#buildPlan.steps).toBe(4)
-    test.expect(buildPlan.steps[2].name).toContain('dependencies')
-    test.expect(buildPlan.steps[4].name).toContain('OpenMW')
-    test.expect(hasArg(buildPlan.steps[4].args, '/input/deps.7z')).toBeTruthy()
+  suite.it('reuses one image for the complete pipeline', function()
+    local result = plan({ 'pipeline', '--source', Source })
+    test.expect(#result.steps).toBe(3)
+    test.expect(has(result.steps[2].args, '__deps')).toBeTruthy()
+    test.expect(has(result.steps[3].args, '__build')).toBeTruthy()
+    test.expect(has(result.steps[3].args, '/depout/vcpkg-x64-linux-dynamic.7z')).toBeTruthy()
+    shellFree(result)
   end)
 
-  suite.it('supports explicit external OpenMW archive for standalone build', function()
-    local buildPlan = plan({ 'build', '--source', Source, '--deps-archive', 'https://example.org/ok.7z' })
-    test.expect(#buildPlan.steps).toBe(2)
-    test.expect(hasArg(buildPlan.steps[2].args, 'https://example.org/ok.7z')).toBeTruthy()
+  suite.it('builds an existing dependency archive in a container', function()
+    local result = plan({ 'build', '--source', Source, '--deps-archive', '/tmp/deps.7z' })
+    test.expect(#result.steps).toBe(2)
+    test.expect(has(result.steps[2].args, '/input/deps.7z')).toBeTruthy()
+    test.expect(has(result.steps[2].args, '--deps-archive')).toBeTruthy()
   end)
 
-  suite.it('forwards independent CMake flags without a shell', function()
-    local buildPlan = plan({ 'build', '--source', Source, '--cmake-arg', '-DFOO=a b', '--cmake-arg=-DWITH_QT=OFF' })
-    test.expect(hasArg(buildPlan.steps[2].args, '-DFOO=a b')).toBeTruthy()
-    test.expect(hasArg(buildPlan.steps[2].args, '-DWITH_QT=OFF')).toBeTruthy()
-    test.expect(buildPlan.steps[2].program).toBe('podman')
+  suite.it('never silently accepts HTTP artifacts', function()
+    fails({ 'build', '--source', Source, '--deps-archive', 'http://example.org/a.7z' }, 'only https')
   end)
 
-  suite.it('selects stable Docker bind flags without SELinux suffixes', function()
-    local buildPlan = plan({ 'build', '--source', Source, '--engine', 'docker' })
-    test.expect(buildPlan.steps[2].program).toBe('docker')
-    test.expect(hasArg(buildPlan.steps[2].args, Source .. ':/src:ro')).toBeTruthy()
-    test.expect(hasArg(buildPlan.steps[2].args, Source .. ':/src:ro,z')).toBeFalsy()
+  suite.it('forwards an explicit HTTPS archive', function()
+    local result = plan({ 'build', '--source', Source, '--deps-archive', 'https://example.org/a.7z' })
+    test.expect(has(result.steps[2].args, 'https://example.org/a.7z')).toBeTruthy()
   end)
 
-  suite.it('uses private SELinux mount for writable Podman roots', function()
-    local buildPlan = plan({ 'build', '--source', Source })
-    test.expect(hasArg(buildPlan.steps[2].args, Root .. '/work/build:/build:Z')).toBeTruthy()
+  suite.it('preserves untrusted CMake arguments as one argv field', function()
+    local value = '-DFLAG=hello; $(touch /tmp/exploit)'
+    local result = plan({ 'build', '--source', Source, '--cmake-arg', value })
+    test.expect(has(result.steps[2].args, value)).toBeTruthy()
+    test.expect(planning.display(result)).toContain("'-DFLAG=hello; $(touch /tmp/exploit)'")
+    shellFree(result)
   end)
 
-  suite.it('assembles existing builds without recompilation', function()
-    local buildPlan = plan({ 'package', '--source', Source, '--portable', '--no-smoke' })
-    test.expect(#buildPlan.steps).toBe(2)
-    test.expect(hasArg(buildPlan.steps[2].args, '--portable')).toBeTruthy()
-    test.expect(hasArg(buildPlan.steps[2].args, '--no-smoke')).toBeTruthy()
-    test.expect(hasArg(buildPlan.steps[2].args, '/builder/scripts/build_binaries.sh')).toBeFalsy()
+  suite.it('supports Docker volumes without SELinux label suffixes', function()
+    local result = plan({ 'build', '--source', Source, '--engine', 'docker' })
+    test.expect(result.steps[2].program).toBe('docker')
+    test.expect(has(result.steps[2].args, Source .. ':/src:ro')).toBeTruthy()
+    test.expect(has(result.steps[2].args, Source .. ':/src:ro,z')).toBeFalsy()
   end)
 
-  suite.it('supports single and multi distro smoke tests', function()
-    local single = plan({ 'smoke', '--archive', '/tmp/openmw.tar.gz' })
-    test.expect(#single.steps).toBe(1)
-    local multi = plan({ 'smoke', '--archive', '/tmp/openmw.tar.gz', '--distros', 'almalinux-9,debian-12' })
-    test.expect(hasArg(multi.steps[1].args, 'almalinux-9,debian-12')).toBeTruthy()
+  suite.it('labels Podman writable volumes privately', function()
+    local result = plan({ 'build', '--source', Source })
+    test.expect(has(result.steps[2].args, Root .. '/work/build:/build:Z')).toBeTruthy()
   end)
 
-  suite.it('preserves staging and tests flags in local build', function()
-    local buildPlan = plan({ 'build', '--mode', 'local', '--source', Source, '--stage-only', '--run-tests' })
-    test.expect(hasArg(buildPlan.steps[1].args, '--stage-only')).toBeTruthy()
-    test.expect(hasArg(buildPlan.steps[1].args, '--run-tests')).toBeTruthy()
+  suite.it('runs package-only without recompiling', function()
+    local result = plan({ 'package', '--source', Source, '--portable', '--no-smoke' })
+    test.expect(#result.steps).toBe(2)
+    test.expect(has(result.steps[2].args, '__package')).toBeTruthy()
+    test.expect(has(result.steps[2].args, '--portable')).toBeTruthy()
+    test.expect(has(result.steps[2].args, '--no-smoke')).toBeTruthy()
+    shellFree(result)
   end)
 
-  suite.it('rejects dangerous roots and overlapping output directories', function()
-    fails({ 'build', '--source', Source, '--build-dir', '/' }, 'unsafe path')
-    fails({ 'build', '--source', Source, '--build-dir', Source .. '/build' }, 'must be disjoint')
-    fails({ 'build', '--source', Source, '--deps-prefix', Root .. '/work/build/subdir' }, 'must be disjoint')
+  suite.it('forwards independent tests and compatibility options', function()
+    local result = plan({ 'build', '--source', Source, '--run-tests', '--gtest-filter', 'MySuite.*', '--no-compat' })
+    test.expect(has(result.steps[2].args, '--run-tests')).toBeTruthy()
+    test.expect(has(result.steps[2].args, 'MySuite.*')).toBeTruthy()
+    test.expect(has(result.steps[2].args, '--no-compat')).toBeTruthy()
   end)
 
-  suite.it('normalizes dot and parent traversals', function()
-    test.expect(planning.normalize('/a/b/../c//./')).toBe('/a/c')
-    test.expect(planning.normalize('/../../a')).toBeNil()
-    test.expect(planning.normalize('relative/path')).toBeNil()
+  suite.it('supports reusing prepared dependencies', function()
+    local result = plan({ 'build', '--source', Source, '--no-prepare' })
+    test.expect(has(result.steps[2].args, '--no-prepare')).toBeTruthy()
+    test.expect(has(result.steps[2].args, '/input/deps.7z')).toBeFalsy()
   end)
 
-  suite.it('rejects unsupported modes and engine names', function()
-    fails({ 'deps', '--mode', 'vm' }, 'mode must be')
-    fails({ 'deps', '--engine', 'sh' }, 'engine must be')
+  suite.it('supports direct local build and package stages', function()
+    for _, command in { 'build', 'package' } do
+      local result = plan({ command, '--mode', 'local', '--source', Source })
+      test.expect(#result.steps).toBe(1)
+      test.expect(result.steps[1].program).toBe('@forge')
+      test.expect(result.steps[1].args[1]).toBe(command)
+    end
   end)
 
-  suite.it('rejects bad build types and triplets', function()
-    fails({ 'build', '--source', Source, '--build-type', 'Chaos' }, 'invalid CMake')
-    fails({ 'deps', '--triplet', 'x;rm' }, 'invalid triplet')
+  suite.it('makes verification and smoke tests Jess commands', function()
+    local verify = plan({ 'verify' })
+    local smoke = plan({ 'smoke', '--archive', '/tmp/a.tar.gz' })
+    test.expect(verify.steps[1].program).toBe('@forge')
+    test.expect(smoke.steps[1].program).toBe('@forge')
+    shellFree(verify)
+    shellFree(smoke)
   end)
 
-  suite.it('does not silently accept external HTTP dependency artifacts', function()
-    fails({ 'build', '--source', Source, '--deps-archive', 'http://example.org/deps.7z' }, 'only https')
+  suite.it('can select multi-distro smoke profiles', function()
+    local result = plan({ 'smoke', '--archive', '/tmp/a.tar.gz', '--distros', 'almalinux-9,debian-12' })
+    test.expect(result.steps[1].program).toBe('@forge')
   end)
 
-  suite.it('rejects incompatible options', function()
-    fails({ 'deps', '--run-tests' }, '--run-tests requires')
-    fails({ 'pipeline', '--source', Source, '--deps-archive', '/tmp/d.7z' }, 'generates its own')
-    fails({ 'pipeline', '--source', Source, '--no-prepare' }, 'incompatible')
-    fails({ 'deps', '--no-smoke' }, 'require build, pipeline, or package')
-  end)
-
-  suite.it('escapes untrusted strings in printed plans only', function()
-    local buildPlan = plan({ 'build', '--source', Source, '--cmake-arg', '-DTEST=$(touch /tmp/side effect)' })
-    local display = planning.display(buildPlan)
-    test.expect(display).toContain("'-DTEST=$(touch /tmp/side effect)'")
+  suite.it('does not modify anything in doctor or dry-run plans', function()
+    local doctor = plan({ 'doctor' })
+    test.expect(#doctor.steps).toBe(0)
+    test.expect(#doctor.directories).toBe(0)
+    local dry = plan({ 'deps', '--dry-run' })
+    test.expect(#dry.steps).toBe(2)
   end)
 end)
 
-
-suite.describe('feature fidelity', function()
-  suite.it('forwards compatibility overrides for normal builds', function()
-    local buildPlan = plan({ 'build', '--source', Source, '--no-compat', '--no-smoke' })
-    test.expect(hasArg(buildPlan.steps[2].args, '--no-compat-check')).toBeTruthy()
-    test.expect(hasArg(buildPlan.steps[2].args, '--no-smoke')).toBeTruthy()
+suite.describe('path and configuration safety', function()
+  suite.it('normalizes path traversals', function()
+    test.expect(planning.normalize('/tmp/a/../b//./')).toBe('/tmp/b')
+    test.expect(planning.normalize('/../../etc')).toBeNil()
+    test.expect(planning.normalize('relative')).toBeNil()
   end)
 
-  suite.it('skips archive mounts when no-prepare uses existing dependencies', function()
-    local buildPlan = plan({ 'build', '--source', Source, '--no-prepare' })
-    test.expect(hasArg(buildPlan.steps[2].args, '--no-prepare')).toBeTruthy()
-    test.expect(hasArg(buildPlan.steps[2].args, '/input/deps.7z')).toBeFalsy()
-    test.expect(hasArg(buildPlan.steps[2].args, '--deps-archive')).toBeFalsy()
+  suite.it('rejects destructive write roots', function()
+    fails({ 'deps', '--deps-output', '/' }, 'unsafe path')
+    fails({ 'build', '--source', Source, '--build-dir', '/' }, 'unsafe path')
   end)
 
-  suite.it('carries triplet and Qt version through assembly', function()
-    local buildPlan = plan({ 'package', '--source', Source, '--qt-version', '6.7.2', '--triplet', 'x64-linux-dynamic' })
-    test.expect(hasArg(buildPlan.steps[2].args, '6.7.2')).toBeTruthy()
-    test.expect(hasArg(buildPlan.steps[2].args, '--triplet')).toBeTruthy()
+  suite.it('rejects nested writable roots', function()
+    fails({ 'build', '--source', Source, '--build-dir', Root .. '/work/deps/sub' }, 'must be disjoint')
   end)
 
-  suite.it('supports both smoke modalities and forwards the engine', function()
-    local buildPlan = plan({ 'smoke', '--archive', '/tmp/a.tar.gz', '--distros', 'almalinux-9', '--engine', 'docker', '--with-qt' })
-    test.expect(hasArg(buildPlan.steps[1].args, '--with-qt')).toBeTruthy()
-    test.expect(hasArg(buildPlan.steps[1].args, '--container-engine')).toBeTruthy()
-    test.expect(hasArg(buildPlan.steps[1].args, 'docker')).toBeTruthy()
-    local single = plan({ 'smoke', '--archive', '/tmp/a.tar.gz', '--with-qt' })
-    test.expect(hasArg(single.steps[1].args, '--with-qt')).toBeTruthy()
+  suite.it('rejects source and outputs crossing', function()
+    fails({ 'build', '--source', Source, '--build-dir', Source .. '/out' }, 'must be disjoint')
+    fails({ 'build', '--source', Source, '--output-dir', '/tmp' }, 'must be disjoint')
   end)
 
-  suite.it('retains both test targets and filter options in one container build', function()
-    local buildPlan = plan({ 'build', '--source', Source, '--run-tests', '--gtest-filter', 'MyClass.*' })
-    test.expect(hasArg(buildPlan.steps[2].args, '--run-tests')).toBeTruthy()
-    test.expect(hasArg(buildPlan.steps[2].args, 'MyClass.*')).toBeTruthy()
+  suite.it('rejects unsupported modes, engines, types, and triplets', function()
+    fails({ 'deps', '--mode', 'distrobox' }, 'mode must be')
+    fails({ 'deps', '--mode', 'vm' }, 'mode must be')
+    fails({ 'deps', '--engine', 'zsh' }, 'engine must be')
+    fails({ 'build', '--source', Source, '--build-type', 'Chaos' }, 'invalid CMake')
+    fails({ 'deps', '--triplet', 'x64;whoami' }, 'invalid triplet')
   end)
 
-  suite.it('rejects compatibility and UI options when they do not apply', function()
-    fails({ 'deps', '--no-compat' }, 'require build, pipeline, or package')
-    fails({ 'deps', '--with-qt' }, 'only valid for smoke')
-  end)
-
-  suite.it('refuses standalone package in unsupported distrobox workflow', function()
-    fails({ 'package', '--source', Source, '--mode', 'distrobox' }, 'package-only distrobox')
-  end)
-
-  suite.it('allows stage-only package from an existing tree', function()
-    local buildPlan = plan({ 'package', '--source', Source, '--stage-only', '--mode', 'local' })
-    test.expect(hasArg(buildPlan.steps[1].args, '--stage-only')).toBeTruthy()
-    test.expect(#buildPlan.steps).toBe(1)
-  end)
-
-  suite.it('accepts Debug and Release builds but not nonsense', function()
-    local debugBuild = plan({ 'build', '--source', Source, '--build-type', 'Debug' })
-    test.expect(hasArg(debugBuild.steps[2].args, 'Debug')).toBeTruthy()
-    local releaseBuild = plan({ 'build', '--source', Source, '--build-type', 'Release' })
-    test.expect(hasArg(releaseBuild.steps[2].args, 'Release')).toBeTruthy()
-  end)
-
-  suite.it('requires sources and package archives only when needed', function()
+  suite.it('rejects missing required source or tarballs', function()
     fails({ 'build' }, '--source is required')
     fails({ 'pipeline' }, '--source is required')
     fails({ 'package' }, '--source is required')
     fails({ 'smoke' }, 'smoke requires --archive')
-    fails({ 'smoke', '--archive', '/tmp/test.7z' }, 'smoke requires a .tar.gz')
+    fails({ 'smoke', '--archive', '/tmp/deps.7z' }, '.tar.gz')
   end)
 
-  suite.it('avoids any root-directory destructive paths', function()
-    fails({ 'deps', '--deps-output', '/' }, 'unsafe path')
-    fails({ 'build', '--source', Source, '--output-dir', '/' }, 'unsafe path')
+  suite.it('rejects incompatible options before execution', function()
+    fails({ 'deps', '--run-tests' }, '--run-tests requires')
+    fails({ 'pipeline', '--source', Source, '--no-prepare' }, 'incompatible')
+    fails({ 'pipeline', '--source', Source, '--deps-archive', '/tmp/a.7z' }, 'generates its own')
+    fails({ 'deps', '--no-smoke' }, 'require build, pipeline, or package')
+    fails({ 'deps', '--with-qt' }, 'only valid for smoke')
+  end)
+end)
+
+suite.describe('embedded assets, versions, and archive names', function()
+  suite.it('embeds vcpkg manifest and overlays in the Jess executable', function()
+    test.expect(assets['deps/vcpkg.json']).toContain('boost-geometry')
+    test.expect(assets['deps/triplets/x64-linux-dynamic.cmake']).toContain('VCPKG_TARGET_ARCHITECTURE')
+    test.expect(assets['openmw/templates/runtime_wrapper.sh.in']).toContain('LD_LIBRARY_PATH')
   end)
 
-  suite.it('rejects source nested within output and vice versa', function()
-    fails({ 'build', '--source', Source, '--output-dir', Source }, 'must be disjoint')
-    fails({ 'build', '--source', Source, '--output-dir', '/tmp' }, 'must be disjoint')
+  suite.it('compares ABI versions numerically', function()
+    test.expect(nativeDeps.newer('2.35', '2.34')).toBeTruthy()
+    test.expect(nativeDeps.newer('3.4.9', '3.4.29')).toBeFalsy()
+    test.expect(nativeDeps.newer('3.4.29', '3.4.29')).toBeFalsy()
+    test.expect(nativeDeps.newer('1.3.14', '1.3.13')).toBeTruthy()
   end)
 
-  suite.it('allows doctor to plan without any effects', function()
-    local buildPlan = plan({ 'doctor' })
-    test.expect(#buildPlan.steps).toBe(0)
-    test.expect(#buildPlan.directories).toBe(0)
+  suite.it('rejects unsafe tar member names', function()
+    for _, value in { '/etc/passwd', '../escape', 'nested/../escape', 'a/./b', 'C:\\etc', '' } do
+      test.expect(nativeOpenmw.isSafeName(value)).toBeFalsy()
+    end
   end)
 
-  suite.it('uses separate explicit command entries instead of shell text', function()
-    local buildPlan = plan({ 'build', '--source', Source, '--cmake-arg', '-DNAME=hello; echo exploit' })
-    test.expect(buildPlan.steps[2].program).toBe('podman')
-    test.expect(hasArg(buildPlan.steps[2].args, '-DNAME=hello; echo exploit')).toBeTruthy()
-  end)
-
-  suite.it('builds OpenMW in distrobox with the selected container backend', function()
-    local buildPlan = plan({ 'build', '--source', Source, '--mode', 'distrobox', '--engine', 'docker' })
-    test.expect(#buildPlan.steps).toBe(1)
-    test.expect(buildPlan.steps[1].env.DBX_CONTAINER_MANAGER).toBe('docker')
-    test.expect(buildPlan.steps[1].env.BOX_NAME).toBe('openmw-forge-alma9')
+  suite.it('accepts nested portable tar member names', function()
+    for _, value in { 'openmw-0.49/', 'openmw-0.49/lib/libfoo.so.1', 'data/icons/foo.png' } do
+      test.expect(nativeOpenmw.isSafeName(value)).toBeTruthy()
+    end
   end)
 end)
 

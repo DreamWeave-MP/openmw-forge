@@ -13,10 +13,16 @@ default_target = "forge"
 "@forge/plan" = "src/plan.jsl"
 "@forge/execute" = "src/execute.jsl"
 "@forge/config" = "src/config.jsl"
+"@forge/native-util" = "src/native_util.jsl"
+"@forge/native-assets" = "src/native_assets.jsl"
+"@forge/assets" = "src/assets.jsl"
+"@forge/native" = "src/native.jsl"
+"@forge/native-deps" = "src/native_deps.jsl"
+"@forge/native-openmw" = "src/native_openmw.jsl"
 
 [[layer]]
 id = "openmw.forge"
-exports = ["@forge/args", "@forge/plan", "@forge/execute", "@forge/config"]
+exports = ["@forge/args", "@forge/plan", "@forge/execute", "@forge/config", "@forge/native-util", "@forge/native-assets", "@forge/assets", "@forge/native", "@forge/native-deps", "@forge/native-openmw"]
 
 [targets.forge]
 kind = "command"

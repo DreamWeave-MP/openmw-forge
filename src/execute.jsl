@@ -3,6 +3,7 @@ local fs = require '@dream/fs'
 local process = require '@dream/process'
 local planning = require '@forge/plan'
 local argsModule = require '@forge/args'
+local native = require '@forge/native'
 
 type Options = argsModule.Options
 type Plan = planning.Plan
@@ -15,16 +16,8 @@ local function required(path: string): (boolean, string?)
 end
 
 local function preflight(options: Options): (boolean, string?)
-  for _, path in {
-    options.root .. '/vendor/deps/scripts/build-all.sh',
-    options.root .. '/vendor/openmw/scripts/build_binaries.sh',
-    options.root .. '/vendor/openmw/docker/Dockerfile.tarball',
-  } do
-    local ok, message = required(path)
-    if not ok then
-      return false, message
-    end
-  end
+  -- Build assets are embedded in the standalone Jess executable.
+  -- Source checkouts are no longer needed for the build tool itself.
 
   if options.command == 'build' or options.command == 'package' or options.command == 'pipeline' then
     local ok, message = required(options.source .. '/CMakeLists.txt')
@@ -110,13 +103,7 @@ local function execute(plan: Plan, options: Options): (boolean, string?)
   end
 
   if options.command == 'doctor' then
-    local programs = { 'bash', 'git' }
-    if options.mode == 'container' then
-      table.insert(programs, options.engine)
-    elseif options.mode == 'distrobox' then
-      table.insert(programs, 'distrobox')
-      table.insert(programs, options.engine)
-    end
+    local programs = if options.mode == 'container' then { options.engine } else { 'git', 'cmake', 'tar', 'readelf' }
 
     for _, program in programs do
       local result, failure = process.run(program, { '--version' }, { stdout = 'capture', stderr = 'capture' })
@@ -125,13 +112,19 @@ local function execute(plan: Plan, options: Options): (boolean, string?)
       end
       print('PASS ' .. program)
     end
-    print('PASS AlmaLinux 9 profile and checkout assets')
+    print('PASS AlmaLinux 9 profile and embedded assets')
     return true, nil
   end
 
   ok, message = checkDestinations(options)
   if not ok then
     return false, message
+  end
+
+  if #plan.steps > 0 then
+    -- Embedded payload materialization can fail on filesystem access.
+    local success, errorMessage = pcall(native.bootstrap, options)
+    if not success then return false, `embedded asset staging failed: {tostring(errorMessage)}` end
   end
 
   for _, directory in plan.directories do
@@ -143,6 +136,12 @@ local function execute(plan: Plan, options: Options): (boolean, string?)
 
   for index, item in plan.steps do
     print(`[{index}/{#plan.steps}] {item.name}`)
+    if item.program == '@forge' then
+      -- A native build step can fail on toolchain, archive, or filesystem errors.
+      local success, errorMessage = pcall(native.run, item.args[1] or '', options)
+      if not success then return false, `{item.name}: {tostring(errorMessage)}` end
+      continue
+    end
     local result, failure = process.run(item.program, item.args, { cwd = item.cwd, env = item.env })
     if result == nil then
       return false, `{item.name}: failed to start {item.program}: {failure or ''}`

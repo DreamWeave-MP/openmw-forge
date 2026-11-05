@@ -1,0 +1,36 @@
+--!strict
+local fs = require '@dream/fs'
+local util = require '@forge/native-util'
+local embedded = require '@forge/native-assets'
+local dependencies = require '@forge/native-deps'
+local openmw = require '@forge/native-openmw'
+local args = require '@forge/args'
+
+type Options = args.Options
+
+local Dockerfile = [[
+FROM almalinux:9
+# Jess owns orchestration. Only native Linux toolchain programs are invoked.
+RUN dnf install -y epel-release && dnf install -y libstdc++ binutils tar gzip coreutils && dnf clean all
+COPY forge /usr/local/bin/openmw-forge
+COPY deps/ /forge/work/forge-assets/deps/
+COPY openmw/ /forge/work/forge-assets/openmw/
+WORKDIR /forge
+]]
+
+local function bootstrap(options: Options)
+  local dir = embedded.stage(options.root, options.mode == 'container')
+  if options.mode == 'container' then util.write(dir .. '/Dockerfile', Dockerfile) end
+end
+
+local function run(action: string, options: Options)
+  if action == 'deps' then dependencies.run(options)
+  elseif action == 'build' then openmw.build(options)
+  elseif action == 'package' then openmw.package(options)
+  elseif action == 'verify' then dependencies.verify(options)
+  elseif action == 'smoke' then openmw.smoke(options)
+  else error('unknown native action: ' .. action)
+  end
+end
+
+return table.freeze { bootstrap = bootstrap, run = run }

@@ -1,0 +1,18 @@
+--!strict
+local fs = require '@dream/fs'
+local util = require '@forge/native-util'
+local files = require '@forge/assets'
+
+local function stage(root: string, binary: boolean): string
+  local dir = root .. '/work/forge-assets'
+  for path, content in files do
+    util.write(dir .. '/' .. path, content)
+  end
+
+  if binary then
+    if not fs.isFile('/proc/self/exe') then error('standalone executable required for container build') end
+    util.copy('/proc/self/exe', dir .. '/forge')
+  end
+  return dir
+end
+return table.freeze { stage = stage }
