@@ -37,9 +37,9 @@ that revision in the tarball name and `SOURCE.txt` provenance.
 ## Successful release criteria
 
 1. Check out Forge without leaving GitHub credentials in Git config.
-2. Restore bounded `ccache` and vcpkg binary caches where available.
+2. Resolve the digest-pinned GHCR builder image (or a safe first-run local fallback); restore the verified SDK export, Qt and compiler caches.
 3. Run Jess strict/style and source/JPK tests, compile the standalone ELF.
-4. Build vcpkg and OpenMW in AlmaLinux 9, including OpenMW GoogleTests.
+4. Verify/reuse the pinned SDK or build/ABI-qualify it on a cache miss. Save it immediately; reclaim temporary vcpkg buildtrees. Compile OpenMW in AlmaLinux 9 with GoogleTests.
 5. Produce the main `.tar.gz` and matching `-debug.tar.gz`.
 6. Inspect ABI ceilings and execute **packaged launchers and raw ELF binaries**
    in AlmaLinux 9 and Ubuntu 24.04 smoke containers.
@@ -53,6 +53,18 @@ success while unrelated assets remain. GitHub Release assets are independent
 objects, not an atomic multi-asset transaction. Consumers should verify the
 checksums and matching source revision before using a rolling release.
 
+## Offline dry runs for the two scheduled stages
+
+```sh
+jess run --trusted --package . tools/uberbranch.jsl --prepare-deps --dry-run
+jess run --trusted --package . tools/uberbranch.jsl --build-only --dry-run
+```
+
+The split matters: the SDK export can be cached immediately when qualified,
+even if a later upstream OpenMW commit fails to compile. The default local
+`tools/uberbranch.jsl` invocation still executes the combined pipeline. Never
+publish a release on the strength of the dependency stage alone.
+
 ## First-time activation
 
 1. Merge the new workflows onto the Forge repository's **default branch**.
@@ -60,10 +72,12 @@ checksums and matching source revision before using a rolling release.
    repository's `GITHUB_TOKEN` (`contents: write` is granted only to the
    publication job). No personal access token is required for public OpenMW.
 3. Optionally pin `JESS_RELEASE_TAG` under repository variables.
-4. Select Settings → Pages → Source **GitHub Actions** for the documentation.
-5. Trigger **OpenMW das-uberbranch (four-hour build)** manually; check output,
+4. Run **Forge AlmaLinux 9 toolchain image** on the default branch and check that the GHCR package is readable to the scheduled build. This preprovisions DNF/Autoconf once instead of wasting every four-hour run.
+
+5. Select Settings → Pages → Source **GitHub Actions** for the documentation.
+6. Trigger **OpenMW das-uberbranch (four-hour build)** manually; check output,
    cache hit rates, peak disk usage, test results and the final release assets.
-6. Only after that successful qualification rely on the periodic schedule.
+7. Only after that successful qualification rely on the periodic schedule.
 
 Dry-run the selection without touching Git or compiling:
 

@@ -16,12 +16,15 @@ Forge's Jess-native build pipeline separate from StroggForge's Cargo workflows.
 |---|---|---|
 | `forge-ci.yml` | Every push/PR/manual | Jess strict/style and source/JPK tests, standalone ELF compilation and integration fixtures |
 | `forge-ci.yml` docs | After validation | Jess generates documentation pages, Zola builds the site; deploy on default branch |
+| `forge-toolchain.yml` | Builder recipe change / manual | Publish content-tagged AlmaLinux 9 toolchain image to GHCR on the normal hosted runner |
 | `das-uberbranch.yml` | `23 */4 * * *` UTC/manual | AlmaLinux 9 dependency/OpenMW build, GoogleTests, packaging, ABI and distro-launcher smoke tests |
 | `das-uberbranch.yml` publish | Successful scheduled build only | Recheck transferred SHA-256 and source provenance; publish rolling prerelease |
 
 Every checkout uses `actions/checkout@v7` with `persist-credentials: false`.
 The normal build has `contents: read` permissions. Only the isolated release
-publisher receives `contents: write`; only the Pages deployment job receives
+publisher receives `contents: write`; the separate toolchain publisher receives
+`packages: write` for its own GHCR image. The scheduled builder needs only
+`packages: read` for its prequalified toolchain. Only the Pages deployment job receives
 `pages: write` and `id-token: write`. This matters when the configured source
 becomes someone else's fork: its CMake scripts can execute arbitrary processes.
 Never expose a release-capable token inside that build container.
@@ -62,26 +65,47 @@ Set the repository variable `JESS_RELEASE_TAG` to the tested release tag to
 avoid automatically picking up a newer Jess version. The executable built by
 CI embeds Jess and can be downloaded from the workflow artifacts.
 
-## Ephemeral caches and runner resources
+## Hosted image and SDK cache lifecycle
 
-GitHub-hosted runners are discarded after each job. The scheduled workflow
-restores the vcpkg **binary** cache and the OpenMW **ccache** directory using
-`actions/cache@v4` after checkout. Forge mounts the same directories into
-short-lived AlmaLinux containers. A dated cache key limits new snapshots to
-roughly one per day per input set instead of six per day; cache eviction and
-quotas still apply. The vcpkg working tree, installed artifacts and Docker
-images are *not* automatically persistent between different GitHub-hosted
-jobs, and a warm cache is never treated as verified source provenance.
+The toolchain is built from **`vendor/builder/Dockerfile`**. A separate
+workflow publishes its image to `ghcr.io/<owner>/<repo>-builder` when that
+recipe changes on the default branch, or when manually requested. This uses
+ordinary `ubuntu-24.04`; no private machine, privileged runner registration,
+or dedicated hardware is needed. In Settings → Actions enable normal workflow
+permissions; GHCR publication requires package-write permission only in the
+publisher job. If the GHCR package is private, GitHub's provided token must
+have read access in the scheduled job.
 
-The scheduled config uses `jobs = 2`, a conservative baseline for the smaller
-standard GitHub-hosted runner. **A complete vcpkg/Qt/OpenMW build has not yet
-been qualified on GitHub-hosted resource limits.** Monitor disk space, memory,
-cache sizes and run duration on the first manual dispatch. The workflow has a
-330-minute timeout, under GitHub's six-hour hosted-job limit. If a cold build
-cannot fit, reduce working-set size or reuse verified dependency exports
-before considering a larger runner. See [performance](PERFORMANCE.md) and
+On every four-hour release run, `tools/toolchain_image.jsl` computes the recipe
+identity, tries to pull the corresponding image, and exports its immutable OCI
+digest into the build environment. If the image has not been published yet,
+Forge explicitly falls back to the full local container-image build. **The
+first production run may therefore be much slower**. To avoid this, run the
+`Forge AlmaLinux 9 toolchain image` workflow first, then manually dispatch
+`OpenMW das-uberbranch`.
+
+The scheduled workflow restores three bounded caches using **`actions/cache@v6`**:
+qualified SDK export, `ccache`, and vcpkg binary packages (only if the SDK
+misses). It separately restores Qt 6.6.3. The Jess worker verifies a restored
+SDK's input fingerprint, archive SHA-256 and archive members before skipping
+vcpkg. The original source/ref, OpenMW GoogleTests, final tarball, ABI, and
+launcher/distro smoke gates **always** execute.
+
+To preserve disk on the standard hosted runner, the dependency stage saves
+its qualified SDK (and any rebuilt binary packages) **before** the OpenMW
+stage. Then a CI-only Jess cleanup removes temporary vcpkg buildtrees and
+binary packages, after verifying ownership of the vcpkg checkout. It never
+removes outputs or OpenMW source. GitHub's runner disk budget is tight: keep
+an eye on `df -h`, ccache statistics, and the release job duration.
+
+The initial two-job parallelism is conservative. The four-hour builder has a
+330-minute timeout, under the hosted six-hour job limit. **A complete cold
+vcpkg/Qt/OpenMW production build has not yet been qualified on this budget.**
+Caches are best-effort and may expire or be evicted; the build must still
+succeed correctly on a miss. See [performance](PERFORMANCE.md),
+[release readiness](RELEASE-READINESS.md), and
 [troubleshooting](TROUBLESHOOTING.md).
 
-Scheduled GitHub Actions run from the default branch, may be delayed, and may
-not execute exactly on the four-hour boundary. A shared concurrency group
-prevents overlapping releases.
+GitHub schedules run from the default branch, may be delayed or dropped, and
+cannot guarantee an exact four-hour publication interval. The concurrency
+group prevents overlapping release publishers.

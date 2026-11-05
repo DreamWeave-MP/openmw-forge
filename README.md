@@ -89,11 +89,15 @@ when `--repo` is used; the container image includes Git as well.
 The AlmaLinux 9 container image contains the system packages used by both build
 phases; this prevents repeated DNF installs on short-lived worker runs. Host
 volumes persist the vcpkg checkout/downloads, compiled binary cache, and
-OpenMW `ccache` between container invocations. The scheduled workflow restores
-`ccache` and vcpkg binary caches using GitHub Actions cache so they also survive
-ephemeral hosted runner replacement; cached outputs are best-effort, not trusted
-release evidence. Qt and dependency extraction are skipped when the
-expected outputs and content fingerprints are already present. These optimizations reduce redundant work, and new CMake build trees prefer
+OpenMW `ccache` between container invocations. The four-hour GitHub-hosted workflow resolves a separately published
+AlmaLinux 9 GHCR toolchain image to its immutable digest when available,
+restores a complete SHA-256-verified vcpkg SDK export and Qt cache, and reuses
+`ccache` and vcpkg binary packages as appropriate. It saves the verified SDK
+before OpenMW compilation and reclaims temporary vcpkg buildtrees to stay
+inside normal hosted-runner disk limits. Cache misses are safe, not proof of
+release compatibility. Qt and dependency extraction are skipped when the
+expected outputs and content fingerprints are already present; a verified
+SDK export also skips vcpkg install and export on matching inputs. These optimizations reduce redundant work, and new CMake build trees prefer
 Ninja; already configured trees retain their existing generator. **No
 cold-versus-warm production benchmark has yet been performed.**
 

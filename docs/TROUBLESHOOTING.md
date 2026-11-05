@@ -21,11 +21,30 @@ remains the **build ABI** even when the outer host is Ubuntu.
 ## vcpkg or CMake ran out of disk/memory
 
 Read `df -h` printed by CI and check for OOM-killer messages. Set `jobs = 1`
-in `ci/uberbranch-config.jsl` to lower peak compilation memory. Cache only
-compiler objects and vcpkg binary archives—not `buildtrees` or the entire
-vcpkg installation tree. Clean unqualified stale artifacts before reuse.
+in `ci/uberbranch-config.jsl` to lower peak compilation memory. Cache the **verified exported SDK** and compiler/vcpkg binary caches,
+not every `buildtrees` directory or the mutable installed tree. The scheduled
+job saves the SDK before OpenMW compilation, then safely reclaims vcpkg
+checkout/buildtrees. Clean unqualified stale artifacts before reuse.
 The default hosted runner has finite resources and the full build has not yet
 been qualified there; do not silently change to self-hosted machines.
+
+## GHCR toolchain image is unavailable
+
+The scheduled job attempts the digest-pinned image computed from
+`vendor/builder/Dockerfile` and falls back to building the same recipe on
+GitHub-hosted Ubuntu. Publish the separate `Forge AlmaLinux 9 toolchain image`
+workflow from the default branch to avoid repeated DNF/Autoconf work. A fresh
+fork may initially lack GHCR package read permission; check the toolchain
+resolver output and GHCR package visibility. Release verification never skips
+just because the fast image is missing.
+
+## The qualified SDK cache is rejected
+
+Forge checks the builder identity, triplet, vcpkg revision, overlay file
+hashes, archive SHA-256, and safe archive members before reuse. A bad cache
+is a rebuild, not a green cache hit. GitHub cache entries cannot be rewritten
+under the same key, so invalidate the key or allow the stale entry to expire
+if the same corrupted entry keeps returning.
 
 ## `ccache` shows zero hits
 
