@@ -430,9 +430,51 @@ suite.describe('adversarial 7z metadata validation', function()
 
   suite.it('fails closed when 7z metadata hides a symbolic-link target', function()
     local uninspectable = entry('package/installed/x64-linux-dynamic/lib/libfoo.so',
-      'Attributes = A_ lrwxrwxrwx\n')
+      'Attributes = A_ lrwxrwxrwx\nSize = 13\n')
     rejects(uninspectable)
     rejects('invalid listing')
+  end)
+
+  suite.it('accepts a native 7z symlink whose target is stored as entry data', function()
+    local member = 'package/installed/x64-linux-dynamic/debug/lib/libexpat.so'
+    local target = 'libexpat.so.1'
+    local inspected = 0
+    nativeArchive.validate7zListing(entry(member,
+      'Attributes =  lrwxrwxrwx\nSize = ' .. tostring(#target) .. '\n'), function(path: string): string
+      inspected += 1
+      test.expect(path).toBe(member)
+      return target
+    end)
+    test.expect(inspected).toBe(1)
+  end)
+
+  suite.it('rejects unsafe or inconsistent symlink data before extraction', function()
+    local member = 'package/installed/x64-linux-dynamic/lib/libfoo.so'
+    local function withTarget(target: string, size: number?): string
+      return entry(member, 'Attributes = A_ lrwxrwxrwx\nSize = '
+        .. tostring(size or #target) .. '\n')
+    end
+
+    local function rejectTarget(listing: string, target: string)
+      -- An unsafe archived link deliberately throws; the test verifies rejection.
+      local ok = pcall(function()
+        nativeArchive.validate7zListing(listing, function(_path: string): string return target end)
+      end)
+      test.expect(ok).toBeFalsy()
+    end
+    rejectTarget(withTarget('/etc/passwd'), '/etc/passwd')
+    rejectTarget(withTarget('../../../../../escape'), '../../../../../escape')
+    rejectTarget(withTarget('libfoo.so.1', 200), 'libfoo.so.1')
+    rejectTarget(entry(member, 'Attributes = A_ lrwxrwxrwx\nSize = 99999\n'), 'anything')
+  end)
+
+  suite.it('rejects duplicate entries and extraction through archived symlinks', function()
+    rejects('7-Zip listing\n----------\nPath = package/installed/lib/libfoo.so\n'
+      .. 'Path = package/installed/lib/libfoo.so\n')
+    rejects('7-Zip listing\n----------\n'
+      .. 'Path = package/installed/lib/alias\n'
+      .. 'Attributes = A_ lrwxrwxrwx\nSymbolic Link = target\n'
+      .. 'Path = package/installed/lib/alias/malicious.so\nAttributes = A\n')
   end)
 end)
 

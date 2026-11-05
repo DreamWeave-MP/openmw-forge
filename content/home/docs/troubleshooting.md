@@ -81,6 +81,27 @@ is a rebuild, not a green cache hit. GitHub cache entries cannot be rewritten
 under the same key, so invalidate the key or allow the stale entry to expire
 if the same corrupted entry keeps returning.
 
+## SDK export fails with `uninspectable dependency symlink`
+
+Native `.7z` archives normally store a POSIX symbolic link's target as the
+entry's compressed data, **not** as a `Symbolic Link` field in `7z l -slt`.
+Older Forge releases rejected these ordinary entries while validating a
+successfully exported SDK (for example, `debug/lib/libexpat.so`). That did
+not establish that the archive or the compiled libraries were malformed.
+
+Forge now reads the archived target using `7z e -so -spd`, validates its
+declared size and relative path **before extraction**, and refuses archives
+that contain duplicate paths or write beneath an archived symlink. Extracted
+links are also checked for containment. Do not bypass these checks or blindly
+dereference `.so` links: the dependency archive must preserve legitimate
+ELF soname links without allowing an archive to escape its destination.
+
+If the export step has already run, preserve the vcpkg binary cache; the
+150-package dependency compilation did not fail. On a runner with restored
+binary-cache entries, rerunning the updated build should be able to reuse
+matching ABI packages rather than rebuilding every dependency. A qualified
+SDK cache hit is not guaranteed until the export passes verification.
+
 ## `ccache` shows zero hits
 
 A cold build has no hits; inspect the cache statistics after a *second* build.
