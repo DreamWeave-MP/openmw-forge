@@ -55,8 +55,7 @@ local function splitDebug(stage: string, debugRoot: string)
 
   for _, name in walkResult.paths do
     local path = stage .. '/' .. name
-    local first = fs.readAt(path, 0, 4)
-    if first and buffer.readstring(first, 0, 4) == '\127ELF' and not name:find('libicudata%.so') then
+    if abi.isElf(path) and not name:find('libicudata%.so') then
       local link = process.run('objdump', { '-h', path }, { stdout = 'capture', stderr = 'null' })
       if not link or not string.find(link.stdout or '', '.gnu_debuglink', 1, true) then
         local debug = debugRoot .. '/' .. name .. '.debug'

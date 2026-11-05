@@ -4,6 +4,7 @@
 local fs = require '@dream/fs'
 local util = require '@forge/native-util'
 local config = require '@forge/config'
+local abi = require '@forge/native-abi'
 local args = require '@forge/args'
 
 type Options = args.Options
@@ -24,8 +25,7 @@ local CmakeTargets = { 'Core', 'Gui', 'Widgets', 'Network', 'OpenGL', 'OpenGLWid
 
 local function elf(path: string): boolean
   if not fs.isFile(path) then return false end
-  local prefix = fs.readAt(path, 0, 4)
-  return prefix ~= nil and buffer.readstring(prefix, 0, 4) == '\127ELF'
+  return abi.isElf(path)
 end
 
 local function usable(path: string): boolean
