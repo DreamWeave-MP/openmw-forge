@@ -8,7 +8,6 @@ local archiveSafety = require '@forge/native-archive'
 
 type Options = args.Options
 local Revision = '6d332a018c433fad20822ff4b536e4ccdc3413bd'
-local AutoconfSha512 = '3f71d459e2127ef2c98b37f11f5284f0c92318ad8d31c5b6034bed370adfe9f3d0f7a12f87e2efced06c11e2a159de4d4a292b751104e83daf11342f25ba9721'
 
 local function newer(left: string, right: string): boolean
   local leftParts: { number }, rightParts: { number } = {}, {}
@@ -47,7 +46,7 @@ local function setupAutoconf(root: string)
   local archive = temp .. '/autoconf-2.72.tar.gz'
   util.stream('curl', { '--fail', '--location', '--retry', '3', '--output', archive, 'https://ftp.gnu.org/gnu/autoconf/autoconf-2.72.tar.gz' })
   local sha = util.checked('sha512sum', { archive })
-  if string.sub(sha, 1, #AutoconfSha512) ~= AutoconfSha512 then error('Autoconf source SHA-512 mismatch') end
+  if string.sub(sha, 1, #config.autoconfSha512) ~= config.autoconfSha512 then error('Autoconf source SHA-512 mismatch') end
   util.stream('tar', { 'xzf', archive, '-C', temp })
   local source = temp .. '/autoconf-2.72'
   util.stream('./configure', { '--prefix=/usr/local' }, source)

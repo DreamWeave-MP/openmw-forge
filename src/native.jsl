@@ -7,6 +7,7 @@ local openmw = require '@forge/native-openmw'
 local packaging = require '@forge/native-package'
 local smoke = require '@forge/native-smoke'
 local args = require '@forge/args'
+local config = require '@forge/config'
 local source = require '@forge/source'
 
 type Options = args.Options
@@ -23,8 +24,15 @@ RUN dnf install -y git tar gzip p7zip zip unzip curl gcc-toolset-13 cmake ninja-
     kernel-headers python3 python3-pip make binutils patch libstdc++ \
     libxcb xcb-util xcb-util-image xcb-util-keysyms xcb-util-wm \
     xcb-util-renderutil xcb-util-cursor && dnf clean all
-# Native toolchain bootstrap is cached by the image build; dependencies still
-# use their explicitly SHA-512-verified Autoconf 2.72 source when necessary.
+# vcpkg requires Autoconf 2.72. Build it ONCE in the cached image rather than
+# recompiling it in each disposable dependency worker. Verify before extraction.
+RUN curl --fail --location --retry 3 -o /tmp/autoconf-2.72.tar.gz \
+      https://ftp.gnu.org/gnu/autoconf/autoconf-2.72.tar.gz \
+    && echo '@AUTOCONF_SHA512@  /tmp/autoconf-2.72.tar.gz' | sha512sum --check - \
+    && tar xzf /tmp/autoconf-2.72.tar.gz -C /tmp \
+    && cd /tmp/autoconf-2.72 && ./configure --prefix=/usr/local \
+    && make -j2 && make install \
+    && rm -rf /tmp/autoconf-2.72 /tmp/autoconf-2.72.tar.gz
 COPY forge /usr/local/bin/openmw-forge
 COPY deps/ /forge/work/forge-assets/deps/
 COPY openmw/ /forge/work/forge-assets/openmw/
@@ -33,7 +41,10 @@ WORKDIR /forge
 
 local function bootstrap(options: Options)
   local dir = embedded.stage(options.root, options.mode == 'container')
-  if options.mode == 'container' then util.write(dir .. '/Dockerfile', Dockerfile) end
+  if options.mode == 'container' then
+    local recipe = Dockerfile:gsub('@AUTOCONF_SHA512@', config.autoconfSha512)
+    util.write(dir .. '/Dockerfile', recipe)
+  end
 end
 
 local function run(action: string, options: Options)
