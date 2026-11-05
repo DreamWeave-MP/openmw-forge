@@ -245,6 +245,18 @@ check(launched.success, 'compiled executable must run two mock container command
 check(fs.isFile(empty .. '/work/forge-assets/Dockerfile'), 'compiled executable must materialize the image Dockerfile')
 check(util.file(empty .. '/work/forge-assets/Dockerfile'):find('autoconf-2.72', 1, true) ~= nil,
   'builder image must provision Autoconf 2.72 as a cached Docker layer')
+-- AlmaLinux 9 already installs curl-minimal. Installing full curl alongside it
+-- fails DNF transaction resolution and must never recur in the packed ELF.
+local imageRecipe = util.file(empty .. '/work/forge-assets/Dockerfile')
+local packageLine = imageRecipe:match('RUN dnf install %-y git ([^\n]+)') or ''
+local minimalCurl = false
+local conflictingCurl = false
+for package in packageLine:gmatch('%S+') do
+  if package == 'curl-minimal' then minimalCurl = true end
+  if package == 'curl' then conflictingCurl = true end
+end
+check(minimalCurl and not conflictingCurl,
+  'builder image must use curl-minimal, not the conflicting full curl RPM')
 check(fs.isFile(empty .. '/work/forge-assets/deps/vcpkg.json'), 'compiled executable must materialize vcpkg assets')
 local embedded = empty .. '/work/forge-assets/forge'
 check(fs.isFile(embedded), 'container context must carry self-contained compiled binary')

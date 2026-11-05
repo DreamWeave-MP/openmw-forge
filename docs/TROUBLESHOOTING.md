@@ -11,6 +11,20 @@ that the file has been merged, Actions is enabled, and the schedule is not
 disabled after inactivity. GitHub can delay or omit an individual tick. Trigger
 `workflow_dispatch` manually to isolate CI configuration from scheduling.
 
+## Builder image fails with `curl-minimal` / `curl` DNF conflict
+
+AlmaLinux 9 includes `curl-minimal`, which supplies the `curl` executable
+used by Forge. Installing the separate full `curl` RPM alongside it fails DNF
+transaction resolution. The builder Dockerfile and local system-package
+provisioning intentionally request **`curl-minimal`**, not `curl`. Do not
+work around this with `--skip-broken` or `--allowerasing`.
+
+After updating the builder recipe, rerun the **Forge AlmaLinux 9 toolchain
+image** workflow (`gh workflow run forge-toolchain.yml --ref main`). Its image
+tag is derived from the Dockerfile checksum, so changing the recipe produces
+a different image identity. A successful image publication alone does not
+qualify a complete OpenMW release; run the separate release workflow next.
+
 ## Docker or AlmaLinux cannot start
 
 The workflow requires only a standard GitHub-hosted `ubuntu-24.04` runner,
