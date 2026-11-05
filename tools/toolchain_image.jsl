@@ -46,11 +46,11 @@ end
 
 if not pinned then
   print('WARN no published toolchain image; using local AlmaLinux 9 toolchain build (first run/fork)')
-  -- The fallback also needs an image identity: the pinned 9.6 baseline is versioned.
+  -- The fallback also needs an image identity: the pinned 9.5 baseline is versioned.
   -- A pulled base digest distinguishes one cold bootstrap from another.
-  local base = process.run('docker', { 'pull', 'almalinux/9-base:9.6-20251117' }, { stdout = 'capture', stderr = 'capture' })
+  local base = process.run('docker', { 'pull', 'almalinux/9-base:9.5-20250519' }, { stdout = 'capture', stderr = 'capture' })
   if base and base.success then
-    local inspected = process.run('docker', { 'image', 'inspect', '--format', '{{index .RepoDigests 0}}', 'almalinux/9-base:9.6-20251117' }, {
+    local inspected = process.run('docker', { 'image', 'inspect', '--format', '{{index .RepoDigests 0}}', 'almalinux/9-base:9.5-20250519' }, {
       stdout = 'capture', stderr = 'capture',
     })
 
