@@ -25,8 +25,13 @@ end
 -- verified before a cached checkout is reused (collisions fail closed).
 local function key(repo: string): string
   local value = 5381
-  for index = 1, #repo do value = (value * 33 + string.byte(repo, index)) % 4294967296 end
-  return string.format('%08x', value)
+  local second = 2166136261
+  for index = 1, #repo do
+    local byte = string.byte(repo, index)
+    value = (value * 33 + byte) % 4294967296
+    second = (second * 131 + byte) % 4294967296
+  end
+  return string.format('%08x%08x', value, second)
 end
 
 local function path(root: string, repo: string): string
@@ -64,7 +69,9 @@ local function checkout(options: Options)
   util.stream('git', { '-C', target, 'checkout', '--detach', 'FETCH_HEAD' })
   if not fs.isFile(target .. '/CMakeLists.txt') then error('selected repository lacks OpenMW CMakeLists.txt') end
   local revision = util.checked('git', { '-C', target, 'rev-parse', 'HEAD' }):gsub('%s+$', '')
+  util.write(target .. '/.git/forge-revision', revision .. '\n')
+  util.write(target .. '/.git/forge-ref', options.ref .. '\n')
   print('OpenMW revision: ' .. revision)
 end
 
-return table.freeze { checkout = checkout, validRepo = validRepo, validRef = validRef, path = path }
+return table.freeze { checkout = checkout, validRepo = validRepo, validRef = validRef, path = path, key = key }

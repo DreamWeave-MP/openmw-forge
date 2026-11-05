@@ -1,0 +1,133 @@
+--!strict
+-- Validate actual executable invocations, not just archive contents.
+local fs = require '@dream/fs'
+local process = require '@dream/process'
+local util = require '@forge/native-util'
+local archive = require '@forge/native-archive'
+local abi = require '@forge/native-abi'
+local args = require '@forge/args'
+
+type Options = args.Options
+
+local function smokeBinaries(stage: string, withQt: boolean?)
+  local names = {
+    'openmw', 'openmw-iniimporter', 'openmw-essimporter', 'openmw-navmeshtool',
+    'openmw-bulletobjecttool', 'bsatool', 'esmtool', 'niftest',
+  }
+
+  if withQt then
+    for _, name in { 'openmw-launcher', 'openmw-cs', 'openmw-wizard' } do
+      table.insert(names, name)
+    end
+  end
+
+  if not fs.isFile(stage .. '/openmw.x86_64') then error('required OpenMW executable is missing from package') end
+  local ran = 0
+  for _, name in names do
+    local binary = stage .. '/' .. name .. '.x86_64'
+    if not fs.isFile(binary) then continue end
+
+    local env = { LD_LIBRARY_PATH = stage .. '/lib', QT_PLUGIN_PATH = stage .. '/plugins' }
+      local result, failure = process.run(binary, { '--help' }, { cwd = stage, env = env, stdout = 'capture', stderr = 'capture' })
+      if not result then error(`smoke could not run {name}: {failure or ''}`) end
+      if not result.success then error(`smoke {name} exited with {tostring(result.code or result.signal)}`) end
+      local output = (result.stdout or '') .. (result.stderr or '')
+      for _, problem in { 'error while loading shared libraries', 'symbol lookup error', 'undefined symbol', 'cannot open shared object' } do
+        if output:find(problem, 1, true) then error(`smoke failure in {name}: {output}`) end
+      end
+    ran += 1
+    print('PASS smoke ' .. name)
+  end
+
+  if ran == 0 then error('no smoke binaries were executed') end
+end
+
+local DistroImages: { [string]: { string } } = {
+  ['almalinux-9'] = { 'almalinux:9', 'dnf install -y mesa-libGL' },
+  ['debian-12'] = { 'debian:12', 'apt-get update && apt-get install -y libgl1' },
+  ['debian-13'] = { 'debian:trixie', 'apt-get update && apt-get install -y libgl1' },
+  ['ubuntu-22.04'] = { 'ubuntu:22.04', 'apt-get update && apt-get install -y libgl1' },
+  ['ubuntu-24.04'] = { 'ubuntu:24.04', 'apt-get update && apt-get install -y libgl1' },
+  ['fedora-latest'] = { 'fedora:latest', 'dnf install -y mesa-libGL' },
+  ['archlinux'] = { 'archlinux:latest', 'pacman -Sy --noconfirm --needed libglvnd' },
+  ['opensuse-tumbleweed'] = { 'opensuse/tumbleweed', 'zypper --non-interactive install Mesa-libGL1' },
+  ['voidlinux'] = { 'ghcr.io/void-linux/void-glibc-full:latest', 'xbps-install -Sy libglvnd' },
+}
+
+local function multiSmoke(options: Options, staging: string)
+  local selected: { string } = {}
+  for tag in options.distros:gmatch('[^,]+') do
+    if not DistroImages[tag] then error('unknown smoke distro: ' .. tag) end
+    table.insert(selected, tag)
+  end
+
+  if #selected == 0 then error('--distros needs at least one known distribution') end
+
+  if not fs.isFile(staging .. '/openmw.x86_64') then error('required OpenMW executable is missing from package') end
+
+  for _, tag in selected do
+    local image = DistroImages[tag]
+    local buildDir = options.root .. '/work/forge-smoke-images/' .. tag
+    util.mkdir(buildDir)
+    util.write(buildDir .. '/Dockerfile', `FROM {image[1]}\nRUN {image[2]}\n`)
+    local imageTag = 'openmw-forge-smoke:' .. tag
+    util.stream(options.engine, { 'build', '-t', imageTag, '-f', buildDir .. '/Dockerfile', buildDir })
+    local count = 0
+    local names = if options.withQt then {
+      'openmw', 'openmw-launcher', 'openmw-cs', 'openmw-wizard', 'bsatool', 'esmtool', 'niftest',
+    } else {
+      'openmw', 'openmw-iniimporter', 'openmw-essimporter', 'openmw-navmeshtool',
+      'openmw-bulletobjecttool', 'bsatool', 'esmtool', 'niftest',
+    }
+
+    for _, name in names do
+      if not fs.isFile(staging .. '/' .. name .. '.x86_64') then continue end
+      count += 1
+      local volume = staging .. ':/pkg:ro' .. (if options.engine == 'podman' then ',z' else '')
+      local result, failure = process.run(options.engine, {
+        'run', '--rm', '--network', 'none', '-v', volume, '-w', '/pkg',
+        '-e', 'LD_LIBRARY_PATH=/pkg/lib', '-e', 'QT_PLUGIN_PATH=/pkg/plugins',
+        '-e', 'QT_QPA_PLATFORM=offscreen', imageTag, '/pkg/' .. name .. '.x86_64', '--help',
+      }, { stdout = 'capture', stderr = 'capture' })
+
+      if not result or not result.success then
+        error(`{tag}/{name} failed to execute: {failure or (if result then result.stderr or '' else '')}`)
+      end
+      print(`PASS {tag}: {name}`)
+    end
+
+    if count == 0 then error('no binaries available for distro smoke tests') end
+  end
+end
+
+local function smoke(options: Options)
+  archive.listTar(options.archive)
+  local root = options.root .. '/work/forge-smoke'
+  util.resetManaged(root)
+  util.stream('tar', { 'xzf', options.archive, '-C', root })
+  -- Inspect every link after extraction; never follow a link outside this root.
+  local walk, problem = fs.walk(root, { include = 'all', sort = true })
+  if not walk then error(problem or 'cannot inspect extracted archive') end
+
+  for index, name in walk.paths do
+    if walk.kinds[index] ~= 'symlink' then continue end
+
+    local target = root .. '/' .. name
+      local resolved = fs.canonicalize(target)
+      if not resolved or (resolved ~= root and resolved:sub(1, #root + 1) ~= root .. '/') then
+        error('archive has escaping or dangling symbolic link: ' .. name)
+      end
+  end
+  local first = archive.listTar(options.archive)[1]
+  local top = first:match('^[^/]+') or ''
+  if not archive.isSafeName(top) then error('unsafe archive root') end
+  local staging = root .. '/' .. top
+  if not fs.isDir(staging) then error('archive does not have a single package root') end
+  abi.scanAbi(staging)
+  if options.distros == '' then smokeBinaries(staging, options.withQt)
+  else multiSmoke(options, staging) end
+  print('PASS tarball smoke ' .. options.archive)
+end
+
+
+return table.freeze { smoke = smoke, smokeBinaries = smokeBinaries }

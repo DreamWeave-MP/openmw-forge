@@ -195,6 +195,10 @@ local function build(options: Options): (Plan?, string?)
     if not sourceModule.validRepo(options.repo) then return nil, 'invalid --repo; use HTTPS or SSH URL' end
     if not sourceModule.validRef(options.ref) then return nil, 'invalid --ref' end
     options.source = sourceModule.path(options.root, options.repo)
+    -- Reuse CMake outputs for a given fork/ref without cross-fork cache mixing.
+    if options.build == options.root .. '/work/build' then
+      options.build = options.root .. '/work/build-' .. sourceModule.key(options.repo .. '#' .. options.ref)
+    end
   elseif options.ref ~= 'HEAD' then
     return nil, '--ref requires --repo; a local --source checkout is never modified'
   end

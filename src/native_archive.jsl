@@ -1,0 +1,142 @@
+--!strict
+-- Refuse unsafe archive members before invoking unpackers.
+local util = require '@forge/native-util'
+local fs = require '@dream/fs'
+
+local function isSafeName(name: string): boolean
+  if name == '' or name:sub(1, 1) == '/' or name:find('\\', 1, true)
+    or name:match('^[%a]:') or name:find('\0', 1, true) then return false end
+
+  for component in name:gmatch('[^/]+') do
+    if component == '..' or component == '.' then return false end
+  end
+  return true
+end
+
+local function listTar(archive: string): { string }
+  local contents = util.checked('tar', { '-tf', archive })
+  local paths: { string } = {}
+  for line in contents:gmatch('[^\r\n]+') do
+    if not isSafeName(line) then error('unsafe tar path: ' .. line) end
+    table.insert(paths, line)
+  end
+
+  -- GNU tar's verbose listing exposes links before any extraction. Refuse links
+  -- with absolute/parent targets instead of discovering an escape afterward.
+  local verbose = util.checked('tar', { '-tvf', archive })
+  local index = 0
+  for line in verbose:gmatch('[^\r\n]+') do
+    index += 1
+    local kind = line:sub(1, 1)
+    if kind == 'l' or kind == 'h' then
+      local link = line:match(' %-%> (.+)$') or line:match(' link to (.+)$')
+      if not link or not isSafeName(link) then
+        error(`unsafe link entry {paths[index] or tostring(index)}`)
+      end
+    elseif kind ~= 'd' and kind ~= '-' then
+      error(`unsupported tar entry type: {kind}`)
+    end
+  end
+
+  if index ~= #paths then error('tar listing length mismatch') end
+  if #paths == 0 then error('archive contains no files') end
+  return paths
+end
+
+-- Conservative pre-extraction validation of 7z's structured listing.
+-- Validate advertised link targets and refuse links without inspectable targets.
+local function safeLinkTarget(path: string, target: string): boolean
+  if target == '' or target:sub(1, 1) == '/' or target:find('\\', 1, true) then return false end
+  if target:match('^[%a]:') or target:find('\0', 1, true) then return false end
+  local components: { string } = {}
+  for piece in path:gmatch('[^/]+') do table.insert(components, piece) end
+  table.remove(components)
+  for piece in target:gmatch('[^/]+') do
+    if piece == '..' then
+      if #components == 0 then return false end
+      table.remove(components)
+    elseif piece ~= '.' then
+      table.insert(components, piece)
+    end
+  end
+  return #components > 0
+end
+
+local function validate7zListing(listing: string)
+  local separator = listing:find('%-%-%-%-%-%-%-%-%-')
+  if not separator then error('7zip listing missing archive entries') end
+  local payload = listing:sub(separator)
+  local found = false
+  local count = 0
+  local entry: { [string]: string } = {}
+
+  local function validate()
+    local path = entry.Path
+    if not path then return end
+    count += 1
+    if not isSafeName(path) or path:match('^[%a]:') or path:find('\0', 1, true) then
+      error('unsafe dependency archive entry: ' .. path)
+    end
+
+    if path:find('installed/', 1, true) then found = true end
+    local attributesEntry: { [string]: string } = entry
+    local link = attributesEntry['Symbolic Link'] or attributesEntry['Link'] or attributesEntry['Target']
+    if link and not safeLinkTarget(path, link) then
+      error('unsafe dependency archive link: ' .. path)
+    end
+    -- POSIX symlink type is encoded in the Unix mode bits in 7z's attributes.
+    -- If the exporter hides the target, we cannot prove safe extraction.
+    local attributes = attributesEntry['Attributes'] or ''
+    if attributes:match(' [l]') and not link then
+      error('uninspectable dependency symlink: ' .. path)
+    end
+  end
+
+  for line in (payload .. '\n'):gmatch('[^\r\n]+') do
+    local name, value = line:match('^([%a ]+) = (.*)$')
+    if name == 'Path' then
+      validate()
+      entry = { Path = value }
+    elseif name then
+      entry[name] = value
+    end
+  end
+  validate()
+  if count == 0 then error('dependency archive has no entries') end
+  if not found then error('dependency archive lacks installed triplet tree') end
+end
+
+local function validateArchiveEntries(program: string, path: string)
+  validate7zListing(util.checked(program, { 'l', '-slt', path }))
+end
+
+local function validateExtractedLinks(root: string)
+  local entries, failure = fs.walk(root, { include = 'all', sort = true })
+  if not entries then error('failed to inspect extracted archive: ' .. (failure or '')) end
+  local canonical = fs.canonicalize(root)
+  if not canonical then error('cannot resolve extracted root') end
+
+  for index, relative in entries.paths do
+    if entries.kinds[index] ~= 'symlink' then continue end
+    local link = root .. '/' .. relative
+    local resolved = fs.canonicalize(link)
+    if not resolved or (resolved ~= canonical and resolved:sub(1, #canonical + 1) ~= canonical .. '/') then
+      error('escaping or dangling archive link: ' .. relative)
+    end
+  end
+end
+
+local function requireSafeArchive(archive: string)
+  if string.match(archive, '%.tar%.xz$') then
+    listTar(archive)
+  else
+    validateArchiveEntries(util.tool { '7zz', '7z', '7za' }, archive)
+  end
+end
+
+
+return table.freeze {
+  isSafeName = isSafeName, listTar = listTar, requireSafeArchive = requireSafeArchive,
+  validate7zListing = validate7zListing, validateArchiveEntries = validateArchiveEntries,
+  validateExtractedLinks = validateExtractedLinks,
+}

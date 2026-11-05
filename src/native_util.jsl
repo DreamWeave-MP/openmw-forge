@@ -106,6 +106,25 @@ local function prepareBuildRoot(path: string, clean: boolean)
   end
 end
 
+-- Generated scratch trees are replaceable only when Forge created them.
+local GeneratedMarker = '.openmw-forge-managed'
+local function managed(path: string): boolean
+  local stat = fs.lstat(path)
+  if not stat or stat.kind ~= 'dir' then return false end
+  local marker = path .. '/' .. GeneratedMarker
+  return fs.isFile(marker) and file(marker) == 'openmw-forge-managed-v1\n'
+end
+
+local function resetManaged(path: string)
+  local stat = fs.lstat(path)
+  if stat then
+    if not managed(path) then error('refusing to replace unowned generated directory: ' .. path) end
+    remove(path)
+  end
+  mkdir(path)
+  write(path .. '/' .. GeneratedMarker, 'openmw-forge-managed-v1\n')
+end
+
 local function atomicArchive(program: string, argv: { string }, output: string)
   local temporary = output .. '.forge-incomplete'
   remove(temporary)
@@ -133,4 +152,5 @@ return table.freeze {
   checked = checked, stream = stream, mkdir = mkdir, remove = remove,
   write = write, copy = copy, tree = tree, list = list, file = file, tool = tool,
   prepareBuildRoot = prepareBuildRoot, atomicArchive = atomicArchive,
+  resetManaged = resetManaged, managed = managed,
 }

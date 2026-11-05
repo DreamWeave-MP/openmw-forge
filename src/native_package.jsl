@@ -1,0 +1,178 @@
+--!strict
+-- Assemble and atomically publish a portable OpenMW distribution.
+local fs = require '@dream/fs'
+local process = require '@dream/process'
+local util = require '@forge/native-util'
+local assets = require '@forge/assets'
+local abi = require '@forge/native-abi'
+local smoke = require '@forge/native-smoke'
+local args = require '@forge/args'
+
+type Options = args.Options
+
+local function binaryVersion(source: string): string
+  local cmake = util.file(source .. '/CMakeLists.txt')
+  local parts: { string } = {}
+  for _, key in { 'MAJOR', 'MINOR', 'RELEASE' } do
+    local value = string.match(cmake, 'set%(%s*OPENMW_VERSION_' .. key .. '%s+(%d+)')
+    if not value then error('cannot read OpenMW version ' .. key) end
+    table.insert(parts, value)
+  end
+  return table.concat(parts, '.')
+end
+
+local function addLibraries(source: string, target: string, matcher: (string) -> boolean)
+  if not fs.isDir(source) then return end
+
+  for _, name in util.list(source) do
+    if not matcher(name) then continue end
+
+    local from = source .. '/' .. name
+      local to = target .. '/' .. name
+      if not fs.exists(to) and not fs.lstat(to) then
+        local stat = fs.lstat(from)
+        if stat and stat.kind == 'symlink' then
+          local link, problem = fs.readLink(from)
+          if not link then error(problem or 'cannot read shared library symlink') end
+          local success, why = fs.symlink(link, to)
+          if not success then error(why or 'cannot create library symlink') end
+        elseif stat and stat.kind == 'dir' then util.tree(from, to)
+        elseif stat and stat.kind == 'file' then util.copy(from, to)
+        end
+      end
+  end
+end
+
+local function splitDebug(stage: string, debugRoot: string)
+  local walkResult, problem = fs.walk(stage, { include = 'files', sort = true })
+  if not walkResult then error(problem or 'cannot walk staging') end
+
+  for _, name in walkResult.paths do
+    local path = stage .. '/' .. name
+    local first = fs.readAt(path, 0, 4)
+    if first and buffer.readstring(first, 0, 4) == '\127ELF' and not name:find('libicudata%.so') then
+      local link = process.run('objdump', { '-h', path }, { stdout = 'capture', stderr = 'null' })
+      if not link or not string.find(link.stdout or '', '.gnu_debuglink', 1, true) then
+        local debug = debugRoot .. '/' .. name .. '.debug'
+        util.mkdir(fs.parent(debug) or debugRoot)
+        util.stream('chmod', { 'u+w', path })
+        util.stream('objcopy', { '--only-keep-debug', path, debug })
+        util.stream('strip', { '--strip-debug', '--strip-unneeded', path })
+        util.stream('objcopy', { '--add-gnu-debuglink=' .. debug, path })
+      end
+    end
+  end
+end
+
+local function package(options: Options)
+  local version = binaryVersion(options.source)
+  local provenance = ''
+  local marker = options.source .. '/.git/forge-origin'
+  if fs.isFile(marker) then
+    local revision = util.file(options.source .. '/.git/forge-revision'):gsub('%s+$', '')
+    if not revision:match('^[0-9a-f]+$') or #revision ~= 40 then
+      error('managed OpenMW source is missing verified Git revision')
+    end
+    provenance = '-g' .. revision:sub(1, 12)
+  end
+  local name = 'openmw-' .. version .. provenance .. '-Linux-64Bit' .. (if options.portable then '-portable' else '')
+  local stage = options.build .. '/package-staging/' .. name
+  local debugRoot = options.build .. '/package-staging-debug/' .. name .. '-debug'
+  util.resetManaged(options.build .. '/package-staging')
+  util.resetManaged(options.build .. '/package-staging-debug')
+  util.mkdir(stage .. '/lib')
+  local count = 0
+  for _, app in {
+    'openmw', 'openmw-launcher', 'openmw-cs', 'openmw-wizard',
+    'openmw-iniimporter', 'openmw-essimporter', 'openmw-navmeshtool',
+    'openmw-bulletobjecttool', 'bsatool', 'esmtool', 'niftest',
+  } do
+    if not fs.isFile(options.build .. '/' .. app) then continue end
+
+    count += 1
+      util.copy(options.build .. '/' .. app, stage .. '/' .. app .. '.x86_64')
+      -- Preserve the official OpenMW POSIX launcher, not a Forge orchestration script.
+      -- Install the launcher from the upstream template when building a distribution.
+      util.write(stage .. '/' .. app, assets['openmw/templates/runtime_wrapper.sh.in'])
+    util.stream('chmod', { '+x', stage .. '/' .. app })
+  end
+
+  if not fs.isFile(stage .. '/openmw.x86_64') then error('required OpenMW executable not found in build directory') end
+  local depsLib = options.deps .. '/openmw-deps/installed/' .. options.triplet
+  local lib = depsLib .. (if options.buildType == 'Debug' and fs.isDir(depsLib .. '/debug/lib') then '/debug/lib' else '/lib')
+  addLibraries(lib, stage .. '/lib', function(name: string): boolean
+    return (name:find('.so', 1, true) ~= nil or name:match('^osgPlugins%-') ~= nil)
+      and not name:match('^libasound') and not name:match('^libatopology')
+  end)
+  local qt = options.deps .. '/QT/' .. options.qtVersion .. '/gcc_64'
+  addLibraries(qt .. '/lib', stage .. '/lib', function(name: string): boolean
+    return name:match('^libQt6.+%.so') ~= nil or name:match('^libicu.+%.so') ~= nil
+  end)
+
+  if not fs.isDir(qt .. '/plugins') then error('missing Qt plugins: ' .. qt) end
+  util.tree(qt .. '/plugins', stage .. '/plugins')
+  util.remove(stage .. '/plugins/designer')
+  local system = if fs.isDir('/usr/lib64') then '/usr/lib64' elseif fs.isDir('/usr/lib/x86_64-linux-gnu') then '/usr/lib/x86_64-linux-gnu' else '/usr/lib'
+  addLibraries(system, stage .. '/lib', function(name: string): boolean
+    return name:match('^libxcb%-.*%.so') ~= nil or name:match('^libxkbcommon.*%.so') ~= nil
+  end)
+
+  if not fs.isDir(options.build .. '/resources') then error('missing OpenMW resources directory') end
+  util.tree(options.build .. '/resources', stage .. '/resources')
+  for _, file in { 'defaults.bin', 'defaults-cs.bin', 'gamecontrollerdb.txt' } do
+    if fs.isFile(options.build .. '/' .. file) then util.copy(options.build .. '/' .. file, stage .. '/' .. file) end
+  end
+  local cfg = options.build .. '/openmw.cfg'
+  if fs.isFile(cfg) then
+    local contents = util.file(cfg)
+    if options.portable then
+      contents = contents:gsub('config="%?userconfig%?"', 'config=config')
+      contents = contents:gsub('user%-data="%?userdata%?"', 'user-data=userdata')
+      contents = contents:gsub('data%-local="%?userdata%?data"', 'data-local=userdata/data')
+    end
+    util.write(stage .. '/openmw.cfg', contents)
+  end
+
+  local docs: { [string]: string } = {
+    ['CHANGELOG.md'] = 'CHANGELOG.txt', ['LICENSE'] = 'LICENSE.txt', ['README.md'] = 'README.md',
+  }
+
+  for original, renamed in docs do
+    if fs.isFile(options.source .. '/' .. original) then util.copy(options.source .. '/' .. original, stage .. '/' .. renamed) end
+  end
+
+  for _, path in { 'files/launcher/images/openmw.png', 'files/opencs/openmw-cs.png' } do
+    if fs.isFile(options.source .. '/' .. path) then
+      util.copy(options.source .. '/' .. path, stage .. '/' .. (fs.fileName(path) or path))
+    end
+  end
+  util.write(stage .. '/README.packagecontents.txt', assets['openmw/templates/README.packagecontents.txt'])
+  if provenance ~= '' then
+    util.write(stage .. '/FORGE_BUILD_SOURCE.txt', 'repository=' .. util.file(marker)
+      .. 'ref=' .. util.file(options.source .. '/.git/forge-ref')
+      .. 'revision=' .. util.file(options.source .. '/.git/forge-revision'))
+  end
+
+  if options.stageOnly then print('Staged OpenMW package at ' .. stage) return end
+
+  if options.buildType ~= 'Debug' then
+    util.mkdir(debugRoot)
+    splitDebug(stage, debugRoot)
+  end
+
+  if not options.noCompat then abi.scanAbi(stage) end
+  if not options.noSmoke then smoke.smokeBinaries(stage) end
+  util.mkdir(options.output)
+  local archive = options.output .. '/' .. name .. '.tar.gz'
+  -- Publish the principal artifact last, after symbols have been exported.
+  -- Failed compression must never truncate a previously published archive.
+  if options.buildType ~= 'Debug' then
+    util.atomicArchive('tar', { 'czf', '@OUTPUT@', '-C', options.build .. '/package-staging-debug', name .. '-debug' },
+      options.output .. '/' .. name .. '-debug.tar.gz')
+  end
+  util.atomicArchive('tar', { 'czf', '@OUTPUT@', '-C', options.build .. '/package-staging', name }, archive)
+  print('OpenMW package: ' .. archive)
+end
+
+
+return table.freeze { package = package }

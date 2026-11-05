@@ -4,6 +4,7 @@ local process = require '@dream/process'
 local util = require '@forge/native-util'
 local config = require '@forge/config'
 local args = require '@forge/args'
+local archiveSafety = require '@forge/native-archive'
 
 type Options = args.Options
 local Revision = '6d332a018c433fad20822ff4b536e4ccdc3413bd'
@@ -42,8 +43,7 @@ local function setupAutoconf(root: string)
   local result = process.run('/usr/local/bin/autoconf', { '--version' }, { stdout = 'capture', stderr = 'null' })
   if result and result.success and string.find(result.stdout or '', '2.72', 1, true) then return end
   local temp = root .. '/work/autoconf-build'
-  util.remove(temp)
-  util.mkdir(temp)
+  util.resetManaged(temp)
   local archive = temp .. '/autoconf-2.72.tar.gz'
   util.stream('curl', { '--fail', '--location', '--retry', '3', '--output', archive, 'https://ftp.gnu.org/gnu/autoconf/autoconf-2.72.tar.gz' })
   local sha = util.checked('sha512sum', { archive })
@@ -93,7 +93,9 @@ local function run(options: Options)
   util.stream('git', { 'checkout', '--detach', Revision }, vcpkg)
   util.write(marker, 'openmw-forge-vcpkg-v1\n')
   -- vcpkg owns its bootstrap shell script; Forge never runs a Bash orchestration worker.
-  util.stream('./bootstrap-vcpkg.sh', { '-disableMetrics' }, vcpkg, toolsetEnv())
+  if not fs.isFile(vcpkg .. '/vcpkg') then
+    util.stream('./bootstrap-vcpkg.sh', { '-disableMetrics' }, vcpkg, toolsetEnv())
+  end
   local env = toolsetEnv()
   env.VCPKG_ROOT = vcpkg
   env.VCPKG_MAX_CONCURRENCY = tostring(options.jobs)
@@ -106,17 +108,29 @@ local function run(options: Options)
     '--triplet', options.triplet, '--host-triplet', options.triplet,
   }, root, env)
 
+  -- vcpkg exports to a temporary directory. Validation must pass before the
+  -- previous production artifact can be replaced.
+  local pending = options.depsOutput .. '/.forge-export-pending'
+  util.resetManaged(pending)
   util.stream(vcpkg .. '/vcpkg', {
-    'export', '--x-all-installed', '--7zip', '--output-dir', options.depsOutput,
+    'export', '--x-all-installed', '--7zip', '--output-dir', pending,
     '--output', 'vcpkg-' .. options.triplet,
   }, root, env)
-  util.write(options.depsOutput .. '/vcpkg-' .. options.triplet .. '.build-meta',
+  util.write(pending .. '/vcpkg-' .. options.triplet .. '.build-meta',
     `profile=alma9\ntriplet={options.triplet}\nimage=almalinux:9\nvcpkg_revision={Revision}\nvcpkg_dir={vcpkg}\n`)
-  print('Exported ' .. exportPath(options))
+  local candidate = table.clone(options)
+  candidate.depsOutput = pending
   -- Verify against the installed tree, with no redundant archive extraction.
   local installed = root .. '/vcpkg_installed/' .. options.triplet
   if not fs.isDir(installed) then installed = vcpkg .. '/installed/' .. options.triplet end
-  verify(options, installed)
+  verify(candidate, installed)
+  for _, suffix in { '.7z', '.build-meta' } do
+    local name = 'vcpkg-' .. options.triplet .. suffix
+    local published, failure = fs.rename(pending .. '/' .. name, options.depsOutput .. '/' .. name)
+    if not published then error('failed to publish dependency export: ' .. (failure or name)) end
+  end
+  util.remove(pending)
+  print('Exported verified dependency archive: ' .. exportPath(options))
 end
 
 local function parseMetadata(contents: string): { [string]: string }
@@ -125,23 +139,6 @@ local function parseMetadata(contents: string): { [string]: string }
   return result
 end
 
-local function validateArchiveEntries(program: string, archive: string)
-  local listing = util.checked(program, { 'l', '-slt', archive })
-  local start = string.find(listing, '%-%-%-%-%-%-%-%-%-')
-  if not start then error('7zip listing missing archive entries') end
-  local tail = string.sub(listing, start)
-  local found = false
-  for path in string.gmatch(tail, 'Path = ([^\r\n]+)') do
-    if path:sub(1, 1) == '/' or path:find('\\', 1, true) or
-      path:find('%.%./') or path:find('/%.%.') or path == '..' then
-      error(`unsafe dependency archive entry: {path}`)
-    end
-
-    if path:find('installed/', 1, true) then found = true end
-  end
-
-  if not found then error('dependency archive lacks installed triplet tree') end
-end
 
 verify = function(options: Options, scanOverride: string?)
   local archive = exportPath(options)
@@ -152,12 +149,12 @@ verify = function(options: Options, scanOverride: string?)
     error('dependency metadata profile/triplet/vcpkg pin mismatch')
   end
   local sevenZip = util.tool { '7zz', '7z', '7za' }
-  validateArchiveEntries(sevenZip, archive)
+  archiveSafety.validateArchiveEntries(sevenZip, archive)
   local root = scanOverride or (options.root .. '/work/deps-verify')
   if not scanOverride then
-    util.remove(root)
-    util.mkdir(root)
+    util.resetManaged(root)
     util.stream(sevenZip, { 'x', '-y', '-o' .. root, archive })
+    archiveSafety.validateExtractedLinks(root)
   end
   local scan = root
   if not scanOverride then
@@ -198,4 +195,4 @@ verify = function(options: Options, scanOverride: string?)
   print(`PASS ABI: {count} ELF files, AlmaLinux 9 ceilings`)
 end
 
-return table.freeze { run = run, verify = verify, newer = newer, validateArchiveEntries = validateArchiveEntries }
+return table.freeze { run = run, verify = verify, newer = newer, validateArchiveEntries = archiveSafety.validateArchiveEntries }

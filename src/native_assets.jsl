@@ -13,6 +13,7 @@ local function stage(root: string, binary: boolean): string
   end
 
   local dir = root .. '/work/forge-assets'
+  util.resetManaged(dir)
   for path, content in files do
     util.write(dir .. '/' .. path, content)
   end

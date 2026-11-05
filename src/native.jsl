@@ -4,6 +4,8 @@ local util = require '@forge/native-util'
 local embedded = require '@forge/native-assets'
 local dependencies = require '@forge/native-deps'
 local openmw = require '@forge/native-openmw'
+local packaging = require '@forge/native-package'
+local smoke = require '@forge/native-smoke'
 local args = require '@forge/args'
 local source = require '@forge/source'
 
@@ -38,9 +40,9 @@ local function run(action: string, options: Options)
   if action == 'source' then source.checkout(options)
   elseif action == 'deps' then dependencies.run(options)
   elseif action == 'build' then openmw.build(options)
-  elseif action == 'package' then openmw.package(options)
+  elseif action == 'package' then packaging.package(options)
   elseif action == 'verify' then dependencies.verify(options)
-  elseif action == 'smoke' then openmw.smoke(options)
+  elseif action == 'smoke' then smoke.smoke(options)
   else error('unknown native action: ' .. action)
   end
 end
