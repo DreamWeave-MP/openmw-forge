@@ -6,13 +6,14 @@ The OpenMW source checkout, external build tools, a container engine (Podman or 
 
 ## CI, documentation and the four-hour OpenMW release
 
-Forge provides two independent GitHub Actions workflows using standard
-GitHub-hosted Ubuntu runners, plus a Zola documentation site following
-StroggForge's site-generator conventions. The standard `.github/workflows/forge-ci.yml` checks
-Jess strict/style, source+JPK tests and the standalone Linux ELF, then generates and publishes the Zola documentation site from the canonical
-[`docs/`](docs/index.md) Markdown on the default branch.
+Forge runs on standard GitHub-hosted Ubuntu runners. The regular
+`.github/workflows/forge-ci.yml` validates Jess strict/style, source/JPK tests,
+and the standalone Linux ELF, then invokes StroggForge's **Jess-native**
+`modGlobalBuild.yml@v69` to build and check the documentation directly from
+[`content/home/docs/`](content/home/docs/_index.md). No Zola or Jekyll.
+The site toolchain is pinned independently of Forge's newer Jess runtime.
 The separate `.github/workflows/das-uberbranch.yml` schedules an OpenMW
-**Linux + debug** package every four hours (`23 */4 * * *` UTC), running real
+**Linux package + detached debug symbols** every four hours (`23 */4 * * *` UTC), running real
 AlmaLinux 9/Docker builds, GoogleTests, archive and launcher verification, and
 a cross-distro smoke gate before updating the `das-uberbranch` prerelease.
 
@@ -22,9 +23,9 @@ a cross-distro smoke gate before updating the `das-uberbranch` prerelease.
 `master`. The workflow uses ordinary GitHub-hosted `ubuntu-24.04` runners: no custom
 runner registration or hardware. It runs AlmaLinux 9 inside Docker and publishes
 releases through a separate, narrowly write-permitted job. The checked-in
-configuration defaults to **two build jobs** to fit standard hosted runner memory. For setup, see [CI](docs/CI.md), [scheduled releases](docs/RELEASE.md),
-[CLI examples](docs/CLI.md), [performance](docs/PERFORMANCE.md),
-[troubleshooting](docs/TROUBLESHOOTING.md) and [release qualification](docs/RELEASE-READINESS.md).
+configuration defaults to **two build jobs** to fit standard hosted runner memory. For setup, see [CI](content/home/docs/ci.md), [scheduled releases](content/home/docs/release.md),
+[CLI examples](content/home/docs/cli.md), [performance](content/home/docs/performance.md),
+[troubleshooting](content/home/docs/troubleshooting.md) and [release qualification](content/home/docs/release-readiness.md).
 The heavy production build **has not been executed in this test sandbox**.
 
 ## Quick start: compiled binary
@@ -163,7 +164,7 @@ The upstream vcpkg project itself supplies `bootstrap-vcpkg.sh`, and distributed
 - The Linux build workflows are migrated; Windows/macOS original CI jobs and symbol-server publishing are intentionally out of scope.
 - `jess package check`, Jess style, source+packed unit tests, and a compiled ELF integration suite are automated. The latter uses an independently compiled Jess fake container engine, builds a synthetic package staging tree, and tests archive rejection.
 - **A full production vcpkg+Qt+OpenMW build and cross-distro smoke sweep have not run in the supplied sandbox.** Podman and Docker are absent here. Do not interpret the green tests as proof of binary portability; qualify this against an AlmaLinux 9 build host before publishing releases.
-- Base container image tags and the Qt installer source are not yet pinned by digest; HTTPS dependency archives require SHA-256, and vcpkg is revision-pinned. Real builds are not yet hermetic. See `docs/VALIDATION.md`, `docs/AUDIT.md`, and `docs/RELEASE-READINESS.md`.
+- Base container image tags and the Qt installer source are not yet pinned by digest; HTTPS dependency archives require SHA-256, and vcpkg is revision-pinned. Real builds are not yet hermetic. See `content/home/docs/validation.md`, `content/home/docs/audit.md`, and `content/home/docs/release-readiness.md`.
 
 ## Licensing
 
