@@ -1,0 +1,7 @@
+--!strict
+-- l3i stub for @dream/intern (provided by dream.intern); the runtime module has this shape.
+local module: {
+    -- An empty pool: exact by default, ASCII case-insensitive, or keys normalized by rules.
+    new: (policy: ("exact" | "ascii-nocase" | dream_intern_Rules)?) -> dream_intern_Pool,
+} = (nil :: any)
+return module

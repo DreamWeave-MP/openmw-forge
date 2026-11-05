@@ -1,0 +1,430 @@
+--!strict
+-- @jess/render: what drawing means, over the native half (`jess.gpu`).
+--
+-- Rust lays every program out and binds by binding number; this fills those layouts by name. A
+-- block is a uniform block's bytes, written member by member as the program's layout places them;
+-- vertices are a vertex or instance buffer's bytes, attribute by attribute; elements are a storage
+-- buffer's. Nothing here decides an offset: `program.layout` does, and this only reads it.
+
+--- What a value of a member can be: a number for a scalar, a list of numbers (or a `vector`, for
+--- two or three components) for a vector, a list of numbers in column order for a matrix, a list
+--- for an array, and a table by field name for a struct.
+export type Value = unknown
+
+--- A uniform block's bytes, named by its program's layout.
+export type Block = {
+  --- The bytes, as wide as the block.
+  bytes: buffer,
+  --- How many bytes the block takes.
+  size: number,
+  --- Writes `value` as the member `name` is laid out.
+  set: (self: Block, name: string, value: Value) -> (),
+  --- Writes the bytes to `target` at `offset` (0 by default).
+  upload: (self: Block, target: GpuBuffer, offset: number?) -> (),
+}
+
+--- A vertex or instance buffer's bytes, for `count` vertices or instances.
+export type Vertices = {
+  bytes: buffer,
+  count: number,
+  stride: number,
+  --- Writes `value` as the attribute `name` of vertex `index`, from 1.
+  set: (self: Vertices, index: number, name: string, value: Value) -> (),
+  upload: (self: Vertices, target: GpuBuffer, offset: number?) -> (),
+}
+
+--- A storage buffer's elements, `count` of them.
+export type Elements = {
+  bytes: buffer,
+  count: number,
+  stride: number,
+  --- Writes `value` as element `index`, from 1.
+  set: (self: Elements, index: number, value: Value) -> (),
+  upload: (self: Elements, target: GpuBuffer, offset: number?) -> (),
+}
+
+export type Frequency = 'pass' | 'material' | 'draw'
+
+type Writer = (buffer, number, number) -> ()
+
+--- How one type is written: its kind, and what each kind needs.
+type Shape =
+  { kind: 'scalar', write: Writer }
+  | { kind: 'vector', count: number, write: Writer }
+  | { kind: 'matrix', columns: number, rows: number, columnStride: number }
+  | { kind: 'array', element: Shape, count: number, stride: number }
+  | { kind: 'struct', name: string, fields: { [string]: Field } }
+
+type Field = { offset: number, shape: Shape }
+
+type Structs = { [string]: { name: string, size: number, align: number, fields: { ShaderMemberLayout } } }
+
+local Writers: { [string]: Writer } = {
+  Float = buffer.writef32,
+  Int = buffer.writei32,
+  UInt = buffer.writeu32,
+}
+
+--- The scalar a vector type's last letter names: `Vec3f` holds `Float`s.
+local VectorScalars: { [string]: string } = { ['f'] = 'Float', ['i'] = 'Int', ['u'] = 'UInt' }
+
+local function upload(bytes: buffer, target: GpuBuffer, offset: number?)
+  target:write(offset or 0, bytes)
+end
+
+--- The shape of `type`, a layout's type name; `packed` lays matrix columns end to end, as vertex
+--- attributes are, rather than as uniform and storage blocks align them.
+local function shapeOf(type: string, structs: Structs, packed: boolean, stride: number?): Shape
+  local element, count = string.match(type, '^(.+)%[(%d+)%]$')
+  if element and count then
+    local inner = shapeOf(element, structs, packed, nil)
+    assert(stride, `@jess/render: the array {type} has no stride in its layout`)
+
+    return { kind = 'array', element = inner, count = tonumber(count) :: number, stride = stride }
+  end
+
+  local scalar = Writers[type]
+  if scalar then
+    return { kind = 'scalar', write = scalar }
+  end
+
+  local size, letter = string.match(type, '^Vec(%d)(%a)$')
+  local vectorScalar = letter and VectorScalars[letter]
+  if size and vectorScalar then
+    return { kind = 'vector', count = tonumber(size) :: number, write = Writers[vectorScalar] }
+  end
+
+  local columns = string.match(type, '^Mat(%d)f$')
+  if columns then
+    local rows = tonumber(columns) :: number
+    local width = rows * 4
+    local columnStride = if packed then width elseif rows == 2 then 8 else 16
+
+    return { kind = 'matrix', columns = rows, rows = rows, columnStride = columnStride }
+  end
+
+  local struct = structs[type]
+  assert(struct, `@jess/render: {type} is a type this layout doesn't describe`)
+  local fields: { [string]: Field } = {}
+  for _, field in struct.fields do
+    fields[field.name] = { offset = field.offset, shape = shapeOf(field.type, structs, packed, field.stride) }
+  end
+
+  return { kind = 'struct', name = type, fields = fields }
+end
+
+--- A description of `value` for an error.
+local function shown(value: unknown): string
+  if type(value) == 'table' then
+    return `a table of {#(value :: { unknown })}`
+  end
+
+  return `{typeof(value)} {value}`
+end
+
+local function component(value: unknown, index: number): number?
+  if typeof(value) == 'vector' then
+    local vec = value :: vector
+    local components = { vec.x, vec.y, vec.z }
+
+    return components[index]
+  end
+
+  return (value :: { number })[index]
+end
+
+local function length(value: unknown): number
+  if typeof(value) == 'vector' then
+    return 3
+  end
+
+  return #(value :: { unknown })
+end
+
+--- Writes `value` as `shape` at `offset` of `bytes`; `what` names it for errors.
+local function write(bytes: buffer, offset: number, shape: Shape, value: unknown, what: string)
+  if shape.kind == 'scalar' then
+    assert(type(value) == 'number', `@jess/render: {what} is a number, not {shown(value)}`)
+    shape.write(bytes, offset, value :: number)
+
+    return
+  end
+
+  if shape.kind == 'vector' then
+    local isList = type(value) == 'table' or typeof(value) == 'vector'
+    assert(isList, `@jess/render: {what} is {shape.count} numbers, not {shown(value)}`)
+    local given = length(value)
+    local fits = given == shape.count or typeof(value) == 'vector' and shape.count <= 3
+    assert(fits, `@jess/render: {what} is {shape.count} numbers, not {given}`)
+    for index = 1, shape.count do
+      local number = component(value, index)
+      assert(type(number) == 'number', `@jess/render: {what}[{index}] is a number, not {shown(number)}`)
+      shape.write(bytes, offset + (index - 1) * 4, number)
+    end
+
+    return
+  end
+
+  if shape.kind == 'matrix' then
+    local cells = shape.columns * shape.rows
+    assert(type(value) == 'table', `@jess/render: {what} is {cells} numbers, not {shown(value)}`)
+    local numbers = value :: { number }
+    assert(#numbers == cells, `@jess/render: {what} is {cells} numbers in column order, not {#numbers}`)
+    for column = 0, shape.columns - 1 do
+      for row = 0, shape.rows - 1 do
+        local number = numbers[column * shape.rows + row + 1]
+        assert(type(number) == 'number', `@jess/render: {what} holds numbers, not {shown(number)}`)
+        buffer.writef32(bytes, offset + column * shape.columnStride + row * 4, number)
+      end
+    end
+
+    return
+  end
+
+  if shape.kind == 'array' then
+    assert(type(value) == 'table', `@jess/render: {what} is a list, not {shown(value)}`)
+    local items = value :: { unknown }
+    assert(#items <= shape.count, `@jess/render: {what} holds {shape.count}, not {#items}`)
+    for index, item in items do
+      write(bytes, offset + (index - 1) * shape.stride, shape.element, item, `{what}[{index}]`)
+    end
+
+    return
+  end
+
+  assert(type(value) == 'table', `@jess/render: {what} is a {shape.name}, a table, not {shown(value)}`)
+  for name, item in value :: { [unknown]: unknown } do
+    local field = type(name) == 'string' and shape.fields[name]
+    assert(field, `@jess/render: a {shape.name} has no field {name}`)
+    write(bytes, offset + field.offset, field.shape, item, `{what}.{name}`)
+  end
+end
+
+local function groupOf(layout: ShaderLayout, frequency: Frequency): ShaderGroupLayout
+  if frequency == 'pass' then
+    return layout.pass
+  end
+
+  if frequency == 'material' then
+    return layout.material
+  end
+
+  return layout.draw
+end
+
+local function structsOf(layout: ShaderLayout): Structs
+  local structs: Structs = {}
+  for _, struct in layout.structs do
+    structs[struct.name] = struct
+  end
+
+  return structs
+end
+
+local render = {}
+
+--- The uniform block `frequency` declares in `layout`, all zeros, to be set member by member.
+function render.block(layout: ShaderLayout, frequency: Frequency): Block
+  local group = groupOf(layout, frequency)
+  assert(group.size and group.members, `@jess/render: the program declares no {frequency} uniforms`)
+  local structs = structsOf(layout)
+  local members: { [string]: Field } = {}
+  for _, member in group.members do
+    members[member.name] = {
+      offset = member.offset,
+      shape = shapeOf(member.type, structs, false, member.stride),
+    }
+  end
+
+  local block = {} :: Block
+  block.bytes = buffer.create(group.size)
+  block.size = group.size
+
+  function block.set(self: Block, name: string, value: Value)
+    local member = members[name]
+    assert(member, `@jess/render: the {frequency} block has no member {name}`)
+    write(self.bytes, member.offset, member.shape, value, `{frequency}.{name}`)
+  end
+
+  function block.upload(self: Block, target: GpuBuffer, offset: number?)
+    upload(self.bytes, target, offset)
+  end
+
+  return block
+end
+
+--- `count` vertices of `layout`'s per-vertex attributes, or with `rate` `instance`, instances of
+--- its per-instance ones, all zeros.
+function render.vertices(layout: ShaderLayout, count: number, rate: ('vertex' | 'instance')?): Vertices
+  local buffers = if rate == 'instance' then layout.instance else layout.attributes
+  assert(buffers.stride > 0, `@jess/render: the program has no {rate or 'vertex'} attributes`)
+  local attributes: { [string]: Field } = {}
+  for _, attribute in buffers.attributes do
+    attributes[attribute.name] = { offset = attribute.offset, shape = shapeOf(attribute.type, {}, true, nil) }
+  end
+
+  local vertices = {} :: Vertices
+  vertices.bytes = buffer.create(buffers.stride * count)
+  vertices.count = count
+  vertices.stride = buffers.stride
+
+  function vertices.set(self: Vertices, index: number, name: string, value: Value)
+    local attribute = attributes[name]
+    assert(attribute, `@jess/render: the program has no {rate or 'vertex'} attribute {name}`)
+    local inside = index >= 1 and index <= self.count and index % 1 == 0
+    assert(inside, `@jess/render: vertex {index} isn't one of the {self.count}`)
+    local offset = (index - 1) * self.stride + attribute.offset
+    write(self.bytes, offset, attribute.shape, value, `{name} of vertex {index}`)
+  end
+
+  function vertices.upload(self: Vertices, target: GpuBuffer, offset: number?)
+    upload(self.bytes, target, offset)
+  end
+
+  return vertices
+end
+
+--- `count` elements of the storage buffer `name` that `frequency` declares in `layout`, all zeros.
+function render.elements(layout: ShaderLayout, frequency: Frequency, name: string, count: number): Elements
+  local found: ShaderBindingLayout? = nil
+  for _, binding in groupOf(layout, frequency).bindings do
+    if binding.name == name and binding.kind == 'Storage' then
+      found = binding
+    end
+  end
+
+  assert(found, `@jess/render: the program declares no {frequency} storage buffer {name}`)
+  local element, stride = found.element, found.stride
+  assert(element and stride, `@jess/render: the storage buffer {name} has no element in its layout`)
+  local shape = shapeOf(element, structsOf(layout), false, nil)
+
+  local elements = {} :: Elements
+  elements.bytes = buffer.create(stride * count)
+  elements.count = count
+  elements.stride = stride
+
+  function elements.set(self: Elements, index: number, value: Value)
+    local inside = index >= 1 and index <= self.count and index % 1 == 0
+    assert(inside, `@jess/render: element {index} isn't one of the {self.count}`)
+    write(self.bytes, (index - 1) * self.stride, shape, value, `{name}[{index}]`)
+  end
+
+  function elements.upload(self: Elements, target: GpuBuffer, offset: number?)
+    upload(self.bytes, target, offset)
+  end
+
+  return elements
+end
+
+return table.freeze(render)
+
+--[========[
+@api-document render @jess/render
+
+
+`@jess/render` is what drawing means, in Luau, over [`jess.gpu`](@/docs/api/gpu.md). The kernel lays every [shader program](@/docs/api/shader.md) out and binds by binding number; this fills those layouts by name. Nothing here decides where a member goes: `program.layout` does, and a writer only reads it, so a block written here is always the block the program reads.
+
+## Writers
+
+{{ api_symbol(value="@jess/render.block") }}
+
+{{ api_symbol(value="@jess/render.Block") }}
+
+The uniform block `frequency` declares, as bytes, all zeros. `block:set(name, value)` writes a member where the layout puts it, and `block:upload(gpuBuffer, offset?)` writes the bytes to a buffer. `block.bytes` and `block.size` are the bytes and their length.
+
+{{ api_symbol(value="@jess/render.vertices") }}
+
+{{ api_symbol(value="@jess/render.Vertices") }}
+
+`count` vertices of the program's per-vertex attributes, or instances of its per-instance ones. `vertices:set(index, name, value)` writes vertex `index` (from 1); `stride`, `count`, `bytes`, and `upload` are a block's.
+
+{{ api_symbol(value="@jess/render.elements") }}
+
+{{ api_symbol(value="@jess/render.Elements") }}
+
+`count` elements of the storage buffer `name`. `elements:set(index, value)` writes element `index`, from 1.
+
+`Frequency` is `'pass' | 'material' | 'draw'`. The selected group must declare the named storage buffer; its element layout and stride determine the allocation and writes. An unknown member, an invalid index, or a value that does not fit its layout raises an error.
+
+A value is what its type holds:
+
+| Type | Value |
+| --- | --- |
+| `Float`, `Int`, `UInt` | A number. |
+| `Vec2f` … `Vec4u` | A list of as many numbers, or a `vector` for two or three. |
+| `Mat2f` … `Mat4f` | A list of every number, column by column. Columns are 16 bytes apart in a block (8 for a `Mat2f`) and end to end in a vertex, which the writer knows. |
+| An array, `Light[4]` | A list, no longer than the array. |
+| A struct | A table by field name; fields left out keep what they held. |
+
+A mistake names the member: `@jess/render: pass.cell is 2 numbers, not 1`, `@jess/render: a Light has no field glow`, `@jess/render: the pass block has no member gamma`.
+
+## The camera
+
+
+The standard camera is a convention a program opts into, not something the kernel knows. Its world is right-handed, a camera looks down its own -Z, and clip-space depth runs from 0 at the near plane to 1 at the far one, which is what every backend jess draws through expects. A matrix is 16 numbers, column by column.
+
+The generated signatures use the camera module's `Matrix` type and the render module's `Block`:
+
+{{ api_symbol(value="@jess/render/camera.block") }}
+
+{{ api_symbol(value="@jess/render/camera.identity") }}
+
+{{ api_symbol(value="@jess/render/camera.lookAt") }}
+
+{{ api_symbol(value="@jess/render/camera.multiply") }}
+
+{{ api_symbol(value="@jess/render/camera.orthographic") }}
+
+{{ api_symbol(value="@jess/render/camera.perspective") }}
+
+{{ api_symbol(value="@jess/render/camera.transform") }}
+
+{{ api_symbol(value="@jess/render/camera.with") }}
+
+{{ api_symbol(value="@jess/render/camera.write") }}
+
+| Member | Does |
+| --- | --- |
+| `camera.block` | The pass members a program declares to read the camera: `view`, `projection`, `viewProjection` (projection after view), and `position`, the camera's place in the world. |
+| `camera.with(extra)` | `camera.block` and `extra` together, for a pass that declares more. |
+| `camera.perspective(fovY, aspect, near, far)` | A perspective projection: `fovY` radians from the bottom of the view to its top, a width `aspect` times the height. |
+| `camera.orthographic(left, right, bottom, top, near, far)` | A projection of that box in front of the camera. |
+| `camera.lookAt(eye, target, up)` | The view from `eye` toward `target`, each a `vector`, `up` toward the top of the view. |
+| `camera.multiply(after, before)` | The matrix that applies `before`, then `after`. |
+| `camera.identity()` | The matrix that changes nothing. |
+| `camera.write(block, view, projection, position)` | Sets the camera's four members of a block whose program declares `camera.block`. |
+| `camera.transform(matrix, point)` | Where `matrix` takes `point`, divided by its `w`. |
+
+```luau
+--!strict
+local camera = require '@jess/render/camera'
+local render = require '@jess/render'
+local shader = require '@jess/shader'
+
+local program = shader.program {
+  attributes = { position = shader.vec3 },
+  pass = camera.with { exposure = shader.float },
+  vertex = function(input)
+    local world = shader.vec4(input.attributes.position, 1)
+
+    return { position = input.pass.viewProjection * world }
+  end,
+  fragment = function(input) return shader.vec4(input.pass.exposure) end,
+}
+
+local eye = vector.create(0, 2, 5)
+local view = camera.lookAt(eye, vector.zero, vector.create(0, 1, 0))
+local projection = camera.perspective(math.rad(60), 16 / 9, 0.1, 100)
+
+local pass = render.block(program.layout, 'pass')
+camera.write(pass, view, projection, eye)
+pass:set('exposure', 1.5)
+
+local origin = camera.transform(camera.multiply(projection, view), vector.zero)
+print(pass.size, string.format('%.3f', origin.z))
+-- 224  0.982
+```
+
+`pass:upload(cameraBuffer)` then writes the block into a uniform buffer of `pass.size` bytes, which `pipeline:bind('pass', { [0] = cameraBuffer })` binds. The [windowed application](@/docs/scripting/applications.md#a-window) does exactly that every frame.
+
+]========]

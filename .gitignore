@@ -1,0 +1,8 @@
+.jess/
+work/
+artifacts/
+*.jpk
+*.jsw
+*.7z
+*.tar.xz
+*.tar.gz

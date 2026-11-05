@@ -1,0 +1,158 @@
+--!strict
+local fs = require '@dream/fs'
+local process = require '@dream/process'
+local planning = require '@forge/plan'
+local argsModule = require '@forge/args'
+
+type Options = argsModule.Options
+type Plan = planning.Plan
+
+local function required(path: string): (boolean, string?)
+  if not fs.isFile(path) then
+    return false, 'required file not found: ' .. path
+  end
+  return true, nil
+end
+
+local function preflight(options: Options): (boolean, string?)
+  for _, path in {
+    options.root .. '/vendor/deps/scripts/build-all.sh',
+    options.root .. '/vendor/openmw/scripts/build_binaries.sh',
+    options.root .. '/vendor/openmw/docker/Dockerfile.tarball',
+  } do
+    local ok, message = required(path)
+    if not ok then
+      return false, message
+    end
+  end
+
+  if options.command == 'build' or options.command == 'package' or options.command == 'pipeline' then
+    local ok, message = required(options.source .. '/CMakeLists.txt')
+    if not ok then
+      return false, message
+    end
+  end
+
+  if options.command == 'build' and not options.noPrepare and string.sub(options.archive, 1, 8) ~= 'https://' then
+    local ok, message = required(options.archive)
+    if not ok then
+      return false, message
+    end
+  end
+
+  if options.command == 'smoke' then
+    return required(options.archive)
+  end
+  return true, nil
+end
+
+-- Project a destination through its nearest existing ancestor. This resolves
+-- symlink aliases without creating anything, including for not-yet-made roots.
+local function resolveProjected(path: string): (string?, string?)
+  local candidate = path
+  local suffix: { string } = {}
+  while true do
+    local resolved = fs.canonicalize(candidate)
+    if resolved then
+      if #suffix == 0 then
+        return resolved, nil
+      end
+
+      return resolved .. '/' .. table.concat(suffix, '/'), nil
+    end
+
+    local name = fs.fileName(candidate)
+    local parent = fs.parent(candidate)
+    if not name or not parent then
+      return nil, `cannot resolve ancestor of {path}`
+    end
+
+    table.insert(suffix, 1, name)
+    candidate = parent
+  end
+end
+
+local function checkDestinations(options: Options): (boolean, string?)
+  if options.source == '' then
+    return true, nil
+  end
+
+  local source, message = fs.canonicalize(options.source)
+  if not source then
+    return false, `cannot resolve source path: {message or options.source}`
+  end
+
+  local resolvedRoots: { string } = {}
+  for _, target in { options.build, options.deps, options.output, options.depsOutput } do
+    local resolved, errorMessage = resolveProjected(target)
+    if not resolved then
+      return false, errorMessage
+    end
+
+    if planning.under(resolved, source) or planning.under(source, resolved) then
+      return false, `writable path overlaps OpenMW source: {target}`
+    end
+
+    for _, earlier in resolvedRoots do
+      if planning.under(resolved, earlier) or planning.under(earlier, resolved) then
+        return false, `writable paths overlap through symlinks: {target}`
+      end
+    end
+    table.insert(resolvedRoots, resolved)
+  end
+  return true, nil
+end
+
+local function execute(plan: Plan, options: Options): (boolean, string?)
+  local ok, message = preflight(options)
+  if not ok then
+    return false, message
+  end
+
+  if options.command == 'doctor' then
+    local programs = { 'bash', 'git' }
+    if options.mode == 'container' then
+      table.insert(programs, options.engine)
+    elseif options.mode == 'distrobox' then
+      table.insert(programs, 'distrobox')
+      table.insert(programs, options.engine)
+    end
+
+    for _, program in programs do
+      local result, failure = process.run(program, { '--version' }, { stdout = 'capture', stderr = 'capture' })
+      if result == nil or not result.success then
+        return false, `cannot execute {program}: {failure or 'nonzero exit'}`
+      end
+      print('PASS ' .. program)
+    end
+    print('PASS AlmaLinux 9 profile and checkout assets')
+    return true, nil
+  end
+
+  ok, message = checkDestinations(options)
+  if not ok then
+    return false, message
+  end
+
+  for _, directory in plan.directories do
+    local created, failure = fs.mkdir(directory, { recursive = true })
+    if not created then
+      return false, `cannot prepare {directory}: {failure or ''}`
+    end
+  end
+
+  for index, item in plan.steps do
+    print(`[{index}/{#plan.steps}] {item.name}`)
+    local result, failure = process.run(item.program, item.args, { cwd = item.cwd, env = item.env })
+    if result == nil then
+      return false, `{item.name}: failed to start {item.program}: {failure or ''}`
+    end
+
+    if not result.success then
+      return false, `{item.name}: {item.program} exited with {tostring(result.code or result.signal or 'unknown status')}`
+    end
+  end
+  return true, nil
+end
+
+return table.freeze { execute = execute, preflight = preflight }

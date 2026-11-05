@@ -1,0 +1,19 @@
+--!strict
+-- l3i stub for @dream/process (provided by dream.process); the runtime module has this shape.
+local module: {
+    -- Runs program with args (no shell), waits for it, and returns how it ended; needs the process.spawn capability. stdout and stderr are inherited unless captured or discarded; stdin is empty unless given.
+    run: (program: string, args: { string }?, options: dream_process_RunOptions?) -> (dream_process_Result?, string?, dream_process_ErrorKind?),
+    -- The environment variable name, or nil when it is unset; needs the process.environment capability.
+    env: (name: string) -> string?,
+    -- A folder the OS defines for the user: home, or documents (the Windows Documents known folder, wherever the user moved it; nil elsewhere). Nil when the OS can't name it; needs the process.environment capability.
+    knownFolder: (name: "home" | "documents") -> string?,
+    -- The OS the host was built for, as Rust names it: windows, macos, linux, android, and so on.
+    platform: () -> string,
+    -- Writes data to the host's standard output or error, without the newline print adds; needs the process.stdio capability.
+    write: (stream: "stdout" | "stderr", data: buffer | string) -> (boolean?, string?, dream_process_ErrorKind?),
+    -- Whether the stream is a terminal.
+    isTerminal: (stream: "stdout" | "stderr") -> boolean,
+    -- Blocks the script for seconds, never past the runtime's execution time limit.
+    sleep: (seconds: number) -> (),
+} = (nil :: any)
+return module

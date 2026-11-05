@@ -1,0 +1,13 @@
+--!strict
+-- l3i stub for @jess/jpk (provided by jess.stdlib); the runtime module has this shape.
+local module: {
+    -- Reads an archive's central directory, checked against `budgets`; entries are read when asked for.
+    open: (source: buffer | JessJpkSource, budgets: JessJpkBudgets?) -> JessJpkArchive,
+    -- The canonical archive of `files`: sorted by path, each zstd when smaller and stored otherwise (always stored when it says `store`), every header field fixed.
+    write: (files: { JessJpkFile }) -> buffer,
+    -- Why `path` can't name an entry, or nil when it is a canonical relative path.
+    checkPath: (path: string) -> string?,
+    -- The reader's default budgets.
+    budgets: JessJpkBudgets,
+} = (nil :: any)
+return module

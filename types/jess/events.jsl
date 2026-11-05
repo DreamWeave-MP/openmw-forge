@@ -1,0 +1,3 @@
+--!strict
+-- jess's stub for @jess/events: the runtime module is `jess.events`.
+return jess.events

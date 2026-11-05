@@ -1,0 +1,100 @@
+--!strict
+local fs = require '@dream/fs'
+local process = require '@dream/process'
+local args = require '@forge/args'
+local planning = require '@forge/plan'
+local executor = require '@forge/execute'
+
+local Help = [[
+OpenMW Forge — consolidated AlmaLinux 9 build workspace
+
+Usage: openmw-forge COMMAND [OPTIONS]
+Commands:
+  deps       Build, export and ABI-verify pinned vcpkg dependencies
+  build      Prepare, configure, compile, test (optional) and package OpenMW
+  pipeline   Build dependencies, then OpenMW, from one invocation
+  package    Assemble package from an existing build tree
+  verify     Validate an existing dependency export and ABI
+  smoke      Smoke test an OpenMW .tar.gz archive
+  doctor     Check local prerequisites (no installation)
+  help       Print this help
+
+Common switches:
+  --source PATH             OpenMW checkout (required for build/pipeline/package)
+  --mode container|local|distrobox   Default: container
+  --engine podman|docker    Default: podman
+  --deps-archive FILE|HTTPS_URL   Existing dependency export (build)
+  --deps-output PATH        Dependency export directory
+  --build-dir PATH          CMake build root
+  --deps-prefix PATH        Extracted vcpkg and Qt root
+  --output-dir PATH         OpenMW packaging output directory
+  --jobs N                 Default: 3
+  --triplet NAME            Default: x64-linux-dynamic
+  --build-type TYPE         Default: RelWithDebInfo
+  --qt-version X.Y.Z        Default: 6.6.3
+  --clean --portable --stage-only --run-tests --gtest-filter FILTER
+  --no-qt --no-system-packages --no-prepare --no-ccache
+  --no-compat --no-smoke     Opt out of package validation steps
+  --cmake-arg ARG           Repeatable
+  --distros CSV --with-qt    Smoke test across distrobox distros
+  --keep-box                Reuse distrobox environment
+  --dry-run                 Print exact plan; execute nothing
+
+Only AlmaLinux 9 is a supported build baseline. Work from the repository
+root. Paths may be relative to the current working directory.
+]]
+
+local root, cwdError = fs.cwd()
+if root == nil then
+  error(cwdError or 'cannot read current directory')
+end
+local raw: { string } = { ... }
+local options, parseError = args.parse(raw, root)
+if options == nil then
+  error(parseError or 'invalid arguments')
+end
+
+if options.command == 'help' then
+  print(Help)
+  return
+end
+
+local function absolute(value: string): string
+  if value == '' then
+    return value
+  end
+  local fixed, failure = fs.absolute(value)
+  if not fixed then
+    error(failure or `cannot resolve {value}`)
+  end
+  return fixed
+end
+
+options.source = absolute(options.source)
+options.build = absolute(options.build)
+options.deps = absolute(options.deps)
+options.output = absolute(options.output)
+options.depsOutput = absolute(options.depsOutput)
+if options.archive ~= '' and string.sub(options.archive, 1, 8) ~= 'https://' then
+  local absolute, failure = fs.absolute(options.archive)
+  if absolute == nil then
+    error(failure or 'cannot resolve archive path')
+  end
+  options.archive = absolute
+end
+
+local plan, validationError = planning.build(options)
+if plan == nil then
+  error(validationError or 'invalid build plan')
+end
+
+if options.dryRun then
+  print(`OpenMW Forge | AlmaLinux 9 | {options.mode} | DRY RUN`)
+  print(planning.display(plan))
+  return
+end
+local ok, failure = executor.execute(plan, options)
+if not ok then
+  error(failure or 'build failed')
+end
+print('OpenMW Forge: completed successfully')

@@ -1,0 +1,3 @@
+--!strict
+-- jess's stub for @jess/interfaces: the runtime module is `jess.interfaces`.
+return jess.interfaces

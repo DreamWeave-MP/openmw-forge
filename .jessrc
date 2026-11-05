@@ -1,0 +1,7 @@
+{
+  "languageMode": "strict",
+  "aliases": {
+    "dream": "types/dream",
+    "jess": "types/jess"
+  }
+}

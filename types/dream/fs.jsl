@@ -1,0 +1,73 @@
+--!strict
+-- l3i stub for @dream/fs (provided by dream.fs); the runtime module has this shape.
+local module: {
+    -- The whole file as a new buffer.
+    readFile: (path: string) -> (buffer?, string?, dream_fs_ErrorKind?),
+    -- The whole file as a string.
+    readFileString: (path: string) -> (string?, string?, dream_fs_ErrorKind?),
+    -- length bytes from offset as a new buffer, fewer at the end; an offset past the end is an error.
+    readAt: (path: string, offset: number, length: number) -> (buffer?, string?, dream_fs_ErrorKind?),
+    -- A reader over a memory map of the file.
+    open: (path: string) -> (dream_fs_Reader?, string?, dream_fs_ErrorKind?),
+    -- A retained, unmapped file handle for positional reads; its size reflects the open file.
+    openPositional: (path: string) -> (dream_fs_PositionalReader?, string?, dream_fs_ErrorKind?),
+    -- The metadata of what path names, following symbolic links, or nil when nothing is there.
+    stat: (path: string) -> (dream_fs_Stat?, string?, dream_fs_ErrorKind?),
+    -- The metadata of path itself: a symbolic link is described, not followed. Nil when nothing is there.
+    lstat: (path: string) -> (dream_fs_Stat?, string?, dream_fs_ErrorKind?),
+    -- Whether something is there, following symbolic links.
+    exists: (path: string) -> (boolean?, string?, dream_fs_ErrorKind?),
+    -- Whether path names a regular file, following symbolic links; false when nothing is there or it can't be read.
+    isFile: (path: string) -> boolean,
+    -- Whether path names a directory, following symbolic links; false when nothing is there or it can't be read.
+    isDir: (path: string) -> boolean,
+    -- The names in a directory, sorted by their bytes.
+    list: (path: string) -> ({ string }?, string?, dream_fs_ErrorKind?),
+    -- Everything under root, depth first, as parallel arrays: paths relative to root, kinds, and with metadata = true sizes and modification times.
+    walk: (root: string, options: dream_fs_WalkOptions?) -> (dream_fs_Walk?, string?, dream_fs_ErrorKind?),
+    -- The absolute path with every symbolic link, '.' and '..' resolved; the file must exist.
+    canonicalize: (path: string) -> (string?, string?, dream_fs_ErrorKind?),
+    -- path made absolute against the working directory, without touching the disk or resolving links.
+    absolute: (path: string) -> (string?, string?, dream_fs_ErrorKind?),
+    -- What a symbolic link points at, as written in the link; nil when nothing is there.
+    readLink: (path: string) -> (string?, string?, dream_fs_ErrorKind?),
+    -- Whether a and b are the same file (hard links and symbolic links to it included); false when either is missing.
+    sameFile: (a: string, b: string) -> (boolean?, string?, dream_fs_ErrorKind?),
+    -- The working directory.
+    cwd: () -> (string?, string?, dream_fs_ErrorKind?),
+    -- The parts joined with the platform's separator; a part that is absolute (or, on Windows, has a prefix) replaces what came before, as Rust's Path::join does. Touches no disk.
+    join: (...string) -> string,
+    -- path without its last component ('' for a bare name), or nil for a root or an empty path. Touches no disk.
+    parent: (path: string) -> string?,
+    -- The last component of path, or nil when it ends in '..' or is a root. Touches no disk.
+    fileName: (path: string) -> string?,
+    -- The file name's extension after its last '.', without the dot; nil for none or a name that only starts with a dot. Touches no disk.
+    extension: (path: string) -> string?,
+    -- Whether name is exactly one plain path component: no separator, no root or prefix, not '.' or '..'. Touches no disk.
+    isFileName: (name: string) -> boolean,
+    -- Writes data to path, truncating it, and returns the count. offset writes in place without truncating; append adds at the end; create = false refuses a file that does not exist and exclusive = true one that does. atomic writes a temporary beside path and renames it over path, so a reader sees the old file or the new one, never part of either, keeping the old file's permissions. createParents makes missing parent directories first.
+    writeFile: (path: string, data: buffer | string, options: { offset: number?, append: boolean?, create: boolean?, exclusive: boolean?, atomic: boolean?, createParents: boolean? }?) -> (number?, string?, dream_fs_ErrorKind?),
+    -- Exclusively creates and writes a file, then synchronizes the file and its parent directory. Windows moves a flushed temporary into place with write-through instead, and refuses a volume that isn't local NTFS or ReFS.
+    createDurable: (path: string, data: buffer | string) -> (number?, string?, dream_fs_ErrorKind?),
+    -- A writer over path, truncated unless append or truncate = false; created unless create = false. exclusive = true refuses a file that exists; writeThrough = true asks the OS to write through its cache.
+    openWrite: (path: string, options: { append: boolean?, truncate: boolean?, create: boolean?, exclusive: boolean?, writeThrough: boolean? }?) -> (dream_fs_Writer?, string?, dream_fs_ErrorKind?),
+    -- Synchronizes a directory's entries; does not synchronize file contents. Windows refuses a volume that isn't local NTFS or ReFS.
+    syncDirectory: (path: string) -> (boolean?, string?, dream_fs_ErrorKind?),
+    -- Atomically renames source over destination on one filesystem; synchronize the file and directory separately for durability. Windows moves with write-through, refuses a volume that isn't local NTFS or ReFS, and may refuse a destination another handle holds open.
+    replace: (source: string, destination: string) -> (boolean?, string?, dream_fs_ErrorKind?),
+    -- Creates a directory; recursive creates its missing parents and accepts one that exists.
+    mkdir: (path: string, options: { recursive: boolean? }?) -> (boolean?, string?, dream_fs_ErrorKind?),
+    -- Removes a file, a symbolic link (never what it points at), or an empty directory; recursive removes a directory with everything in it.
+    remove: (path: string, options: { recursive: boolean? }?) -> (boolean?, string?, dream_fs_ErrorKind?),
+    -- Moves a file or directory, replacing a file at to.
+    rename: (from: string, to: string) -> (boolean?, string?, dream_fs_ErrorKind?),
+    -- Copies a file's contents and permissions; returns the byte count.
+    copy: (from: string, to: string) -> (number?, string?, dream_fs_ErrorKind?),
+    -- Creates link as another name for the file source.
+    hardLink: (source: string, link: string) -> (boolean?, string?, dream_fs_ErrorKind?),
+    -- Takes the operating system's lock on path, creating the file, without waiting: exclusive, or shared with shared = true. Held until unlock, the handle is collected, the runtime shuts down, or the process ends, so it never outlives its holder. A lock held elsewhere answers nil, the message and wouldBlock. Advisory on Unix: it excludes other locks, not reads or writes.
+    lock: (path: string, options: { shared: boolean?, createParents: boolean? }?) -> (dream_fs_Lock?, string?, dream_fs_ErrorKind?),
+    -- Creates link as a symbolic link to target, stored as written. directory marks a link to a directory, which Windows needs.
+    symlink: (target: string, link: string, options: { directory: boolean? }?) -> (boolean?, string?, dream_fs_ErrorKind?),
+} = (nil :: any)
+return module

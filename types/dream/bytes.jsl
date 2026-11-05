@@ -1,0 +1,133 @@
+--!strict
+-- l3i stub for @dream/bytes (provided by dream.bytes); the runtime module has this shape.
+local module: {
+    -- The receiver whose integer methods lower to native code under jit.
+    math: () -> dream_bytes_Math,
+    -- The first offset of needle at or after start, or nil.
+    find: (haystack: buffer | string, needle: buffer | string, start: number?) -> number?,
+    -- The last offset of needle that ends at or before endOffset, or nil.
+    rfind: (haystack: buffer | string, needle: buffer | string, endOffset: number?) -> number?,
+    -- Non-overlapping occurrences of needle.
+    count: (haystack: buffer | string, needle: buffer | string) -> number,
+    equals: (a: buffer | string, b: buffer | string) -> boolean,
+    -- -1, 0 or 1, comparing length bytes of each from its offset.
+    compare: (a: buffer | string, aOffset: number, b: buffer | string, bOffset: number, length: number) -> number,
+    startsWith: (haystack: buffer | string, prefix: buffer | string, offset: number?) -> boolean,
+    -- text normalized by rules (the table intern.new takes, or bytes.rules compiled from one): nocase lowers A..Z, replace maps single bytes, then runs of collapse are made one and trimStart and trimEnd removed from the ends; text itself when nothing changes.
+    translate: (text: string, rules: (dream_bytes_RulesTable | dream_bytes_Rules)?) -> string,
+    -- rules compiled once, for translate in a loop.
+    rules: (rules: dream_bytes_RulesTable) -> dream_bytes_Rules,
+    -- text without leading and trailing whitespace (Unicode White_Space when it is UTF-8, ASCII otherwise), or without any of the bytes in characters; text itself when nothing goes.
+    trim: (text: string, characters: string?) -> string,
+    -- As trim, at the start only.
+    trimStart: (text: string, characters: string?) -> string,
+    -- As trim, at the end only.
+    trimEnd: (text: string, characters: string?) -> string,
+    -- The fewest digits that read back as value at width (f64 by default), as an integer digit string with its sign and the power of ten scaling it; nil for a NaN or an infinity.
+    shortest: (value: number, width: ("f64" | "f32")?) -> (string?, number?),
+    -- value rounded to the nearest single-precision float, as a 32-bit field would hold it.
+    toF32: (value: number) -> number,
+    -- A new buffer holding length bytes from offset.
+    slice: (source: buffer | string, offset: number, length: number) -> buffer,
+    toHex: (data: buffer | string) -> string,
+    -- Bytes from hex digits; whitespace between them is ignored.
+    fromHex: (text: string) -> buffer,
+    -- Standard padded base64 of length bytes from offset; the whole source by default.
+    toBase64: (source: buffer | string, offset: number?, length: number?) -> string,
+    -- The bytes standard padded base64 holds; anything else is an error.
+    fromBase64: (text: buffer | string) -> buffer,
+    -- The text up to the first NUL and the offset after the terminator, or after the field when fieldLength is given.
+    readCString: (source: buffer | string, offset: number, fieldLength: number?) -> (string, number),
+    -- The text and a NUL, padded with NUL to fieldLength when given; returns the offset after the field.
+    writeCString: (target: buffer, offset: number, text: string, fieldLength: number?) -> number,
+    -- Unsigned LEB128: the value and the offset after it.
+    readVarint: (source: buffer | string, offset: number) -> (integer, number),
+    -- Signed LEB128: the value and the offset after it.
+    readSignedVarint: (source: buffer | string, offset: number) -> (integer, number),
+    -- Unsigned LEB128 of the value's 64 bits; returns the offset after it.
+    writeVarint: (target: buffer, offset: number, value: integer | number) -> number,
+    -- Signed LEB128; returns the offset after it.
+    writeSignedVarint: (target: buffer, offset: number, value: integer | number) -> number,
+    readu16be: (source: buffer | string, offset: number) -> number,
+    readi16be: (source: buffer | string, offset: number) -> number,
+    readu24: (source: buffer | string, offset: number) -> number,
+    readi24: (source: buffer | string, offset: number) -> number,
+    readu24be: (source: buffer | string, offset: number) -> number,
+    readi24be: (source: buffer | string, offset: number) -> number,
+    readu32be: (source: buffer | string, offset: number) -> number,
+    readi32be: (source: buffer | string, offset: number) -> number,
+    readf32be: (source: buffer | string, offset: number) -> number,
+    readf64be: (source: buffer | string, offset: number) -> number,
+    readi64be: (source: buffer | string, offset: number) -> integer,
+    readf16: (source: buffer | string, offset: number) -> number,
+    readf16be: (source: buffer | string, offset: number) -> number,
+    writeu16be: (target: buffer, offset: number, value: number) -> (),
+    writei16be: (target: buffer, offset: number, value: number) -> (),
+    writeu24: (target: buffer, offset: number, value: number) -> (),
+    writei24: (target: buffer, offset: number, value: number) -> (),
+    writeu24be: (target: buffer, offset: number, value: number) -> (),
+    writei24be: (target: buffer, offset: number, value: number) -> (),
+    writeu32be: (target: buffer, offset: number, value: number) -> (),
+    writei32be: (target: buffer, offset: number, value: number) -> (),
+    writef32be: (target: buffer, offset: number, value: number) -> (),
+    writef64be: (target: buffer, offset: number, value: number) -> (),
+    writei64be: (target: buffer, offset: number, value: integer) -> (),
+    writef16: (target: buffer, offset: number, value: number) -> (),
+    writef16be: (target: buffer, offset: number, value: number) -> (),
+    -- DEFLATE decoding: format zlib (default), raw or gzip; maxSize caps the output.
+    inflate: (source: buffer | string, options: dream_bytes_DecompressOptions?) -> buffer,
+    -- DEFLATE encoding: format zlib (default), raw or gzip; level 0 to 10, default 6.
+    deflate: (source: buffer | string, options: { format: string?, level: number? }?) -> buffer,
+    -- An LZ4 block; the format does not record its size, so the caller supplies it, capped by maxSize.
+    lz4Decompress: (source: buffer | string, decompressedSize: number, options: dream_bytes_DecompressLimit?) -> buffer,
+    -- An LZ4 block, without a size prefix.
+    lz4Compress: (source: buffer | string) -> buffer,
+    lz4FrameDecompress: (source: buffer | string, options: dream_bytes_DecompressLimit?) -> buffer,
+    lz4FrameCompress: (source: buffer | string) -> buffer,
+    zstdDecompress: (source: buffer | string, options: dream_bytes_DecompressLimit?) -> buffer,
+    -- A Zstandard frame with a content checksum; level 1, the one ruzstd implements, is the only level.
+    zstdCompress: (source: buffer | string, options: { level: number? }?) -> buffer,
+    -- LZMA (.lzma, default) or XZ (format = 'xz') decoding.
+    lzmaDecompress: (source: buffer | string, options: dream_bytes_DecompressOptions?) -> buffer,
+    -- crc32, adler32, fnv1a32, fnv1a64, xxh32, xxh64, xxh3, md5, sha1, sha256 or blake3, fed in pieces.
+    hasher: (algorithm: string) -> dream_bytes_Hasher,
+    -- CRC-32 (IEEE, as zip and PNG use it); seed continues an earlier value.
+    crc32: (data: buffer | string, seed: number?) -> number,
+    adler32: (data: buffer | string) -> number,
+    fnv1a32: (data: buffer | string) -> number,
+    fnv1a64: (data: buffer | string) -> integer,
+    xxh32: (data: buffer | string, seed: number?) -> number,
+    xxh64: (data: buffer | string, seed: integer?) -> integer,
+    -- xxHash3, 64 bits.
+    xxh3: (data: buffer | string) -> integer,
+    md5: (data: buffer | string) -> string,
+    sha1: (data: buffer | string) -> string,
+    sha256: (data: buffer | string) -> string,
+    blake3: (data: buffer | string) -> string,
+    -- The raw digest bytes of any algorithm bytes.hasher accepts; checksums are big-endian.
+    digest: (data: buffer | string, algorithm: string) -> buffer,
+    -- count bytes (at most 65536) from the operating system's CSPRNG, for keys, nonces and masks.
+    random: (count: number) -> buffer,
+    -- The raw HMAC of data under key; algorithm is sha1, sha256, sha384 or sha512.
+    hmac: (data: buffer | string, key: buffer | string, algorithm: string) -> buffer,
+    -- Whether tag is the raw HMAC of data under key, compared in constant time.
+    hmacVerify: (data: buffer | string, key: buffer | string, algorithm: string, tag: buffer | string) -> boolean,
+    -- The raw PKCS#1 v1.5 RSA signature of data (RS256, RS384 or RS512 for algorithm sha256, sha384 or sha512) under an RSA private key of at least 2048 bits, PKCS#8 or PKCS#1, PEM or DER.
+    rsaSign: (data: buffer | string, privateKey: buffer | string, algorithm: string) -> buffer,
+    -- The raw ECDSA signature of data, r then s fixed-width (ES256 for algorithm sha256 under a P-256 key, ES384 for sha384 under a P-384 key), from a PKCS#8 or SEC1 key, PEM or DER. Randomized: every call signs afresh.
+    ecdsaSign: (data: buffer | string, privateKey: buffer | string, algorithm: string) -> buffer,
+    -- Text in the named encoding as a string; malformed input becomes U+FFFD unless strict.
+    decode: (source: buffer | string, encoding: string, options: { strict: boolean? }?) -> string,
+    -- A string in the named encoding; a character the encoding lacks is an error.
+    encode: (text: string, encoding: string) -> buffer,
+    -- The canonical name a label resolves to, or an error for an unknown label.
+    encodingName: (label: string) -> string,
+    isUtf8: (data: buffer | string) -> boolean,
+    -- A pattern compiled once, to match over bytes: one range, or many ranges of one buffer in one call.
+    regex: (pattern: string, options: dream_bytes_RegexOptions?) -> dream_bytes_Regex,
+    -- text with every character a pattern treats specially escaped, so it matches literally.
+    regexEscape: (text: string) -> string,
+    -- Frames the tag-length-payload chunks in [offset, finish): a buffer of u32 start/end pairs, their count, and why and where the walk stopped early, if it did. `inner` checks each payload's chunks.
+    frame: (source: buffer | string, layout: { header: number, lengthAt: number, lengthSize: number?, bigEndian: boolean?, inner: { header: number, lengthAt: number, lengthSize: number?, bigEndian: boolean? }? }, offset: number?, finish: number?) -> (buffer, number, string?, number?),
+} = (nil :: any)
+return module

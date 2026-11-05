@@ -1,0 +1,9 @@
+--!strict
+-- l3i stub for @dream/luau (provided by dream.luau); the runtime module has this shape.
+local module: {
+    -- Parses source (dialect defaults to l3i; luau selects strict stock syntax). Comprehensions and intrinsic sum reductions remain source nodes, including recovery holes. declarations allows definition-file syntax; tokens adds original 12-byte token records. Syntax errors are data; invalid options raise.
+    parse: (source: string | buffer, options: dream_luau_ParseOptions?) -> dream_luau_ParseResult,
+    -- The token kinds in parse's tokens buffer, by name.
+    tokenKinds: dream_luau_TokenKinds,
+} = (nil :: any)
+return module

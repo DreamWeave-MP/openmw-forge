@@ -1,0 +1,3 @@
+--!strict
+-- jess's stub for @jess/shader: the runtime module is `jess.shader`.
+return jess.shader

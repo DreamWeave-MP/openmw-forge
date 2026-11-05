@@ -1,0 +1,12 @@
+--!strict
+-- Canonical Linux baseline. No implicit fallback to a legacy AlmaLinux 8 archive.
+local Config = table.freeze {
+  image = 'almalinux:9',
+  profile = 'alma9',
+  triplet = 'x64-linux-dynamic',
+  buildType = 'RelWithDebInfo',
+  qtVersion = '6.6.3',
+  defaultJobs = 3,
+}
+
+return Config

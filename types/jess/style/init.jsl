@@ -1,0 +1,297 @@
+--!strict
+--[[
+@jess/style: jess's Luau style checker, over Luau's own parser (@dream/luau).
+
+  check(source, options?)       every finding in a source, sorted by position
+  checkFile(path, options?)     the same for a file; `.md` files are checked block by block
+  files(paths)                  the .jsl and .lua files under each path, sorted; folders named
+                                target and dot-folders are skipped
+  markdownBlocks(text)          a Markdown page's ```luau blocks, with the line each starts on
+  format(finding, path?)        one finding as `path:line:column: severity[rule]: message`
+  run(paths, options?)          checks every file under paths, prints each finding, and returns
+                                the number of errors and of warnings
+  checkPackage(root, payload?)  every finding under a package's folder as formatted lines, its
+                                payload (src/) held to `payload` (strict, no `any`, by default)
+  rules                         every rule by id: { severity, summary }
+
+Options are { profile, directives, noAny, declarations, only, fragment }; see rules.jsl.
+]]
+local Fs = require '@dream/fs'
+local check = require '@self/check'
+local rules = require '@self/rules'
+local analysis = require '@jess/analysis'
+
+export type Finding = rules.Finding
+export type Options = rules.Options
+export type Block = { line: number, source: string }
+
+local function markdownBlocks(text: string): { Block }
+  local blocks: { Block } = {}
+  local current: { string }? = nil
+  local start, number = 0, 0
+
+  for line in string.gmatch(text, '([^\n]*)\n?') do
+    number += 1
+    local trimmed = string.match(line, '^%s*(.-)%s*$') or ''
+
+    if not current then
+      if trimmed == '```luau' then
+        current, start = {}, number
+      end
+
+      continue
+    end
+
+    if trimmed == '```' then
+      table.insert(blocks, { line = start, source = table.concat(current, '\n') .. '\n' })
+      current = nil
+      continue
+    end
+
+    table.insert(current, line)
+  end
+
+  return blocks
+end
+
+local function checkFile(path: string, options: Options?): { Finding }
+  local text, problem = Fs.readFileString(path)
+  if not text then error(`{path}: {problem}`, 0) end
+
+  if string.sub(path, -3) ~= '.md' then return check(text, options) end
+
+  local findings: { Finding } = {}
+  local excerpt: Options = if options then table.clone(options) else {}
+  excerpt.fragment = true
+
+  for _, block in markdownBlocks(text) do
+    for _, finding in check(block.source, excerpt) do
+      finding.line += block.line
+      finding.endLine += block.line
+      table.insert(findings, finding)
+    end
+  end
+
+  return findings
+end
+
+local function files(paths: { string }): { string }
+  local found: { string } = {}
+
+  local function visit(path: string)
+    if not Fs.isDir(path) then
+      table.insert(found, path)
+      return
+    end
+
+    local names, problem = Fs.list(path)
+    if not names then error(`{path}: {problem}`, 0) end
+
+    for _, name in names do
+      local child = `{path}/{name}`
+
+      if Fs.isDir(child) then
+        if name ~= 'target' and string.sub(name, 1, 1) ~= '.' then visit(child) end
+      elseif string.find(name, '%.jsl$') or string.find(name, '%.lua$') then
+        table.insert(found, child)
+      end
+    end
+  end
+
+  for _, path in paths do
+    visit((string.gsub(path, '/+$', '')))
+  end
+
+  table.sort(found)
+  return found
+end
+
+local function format(finding: Finding, path: string?): string
+  local where = `{finding.line}:{finding.column}`
+  local prefix = if path then `{path}:{where}` else where
+
+  return `{prefix}: {finding.severity}[{finding.rule}]: {finding.message}`
+end
+
+local function run(paths: { string }, options: Options?): (number, number)
+  local errors, warnings = 0, 0
+
+  for _, path in files(paths) do
+    for _, finding in checkFile(path, options) do
+      print(format(finding, path))
+
+      if finding.severity == 'error' then
+        errors += 1
+      else
+        warnings += 1
+      end
+    end
+  end
+
+  return errors, warnings
+end
+
+--- What a package's payload is held to unless it says otherwise: strict, and never `any`.
+local Payload: Options = { directives = { 'strict' }, noAny = true }
+
+--- Every finding under the package folder `root`, each formatted with its path, for a package's
+--- own style test: `expect(table.concat(style.checkPackage(root), '\n')).toBe ''`. Files in the
+--- payload, `<root>/src/`, are held to `payload` as well as the style every file follows.
+local function checkPackage(root: string, payload: Options?): { string }
+  local folder = `{string.gsub(root, '/+$', '')}/src/`
+  local findings: { string } = {}
+
+  for _, path in files { root } do
+    local options = if string.sub(path, 1, #folder) == folder then payload or Payload else nil
+
+    for _, finding in checkFile(path, options) do
+      table.insert(findings, format(finding, path))
+    end
+  end
+
+  return findings
+end
+
+return table.freeze {
+  analysis = analysis,
+  analyze = analysis.analyze,
+  workspace = analysis.workspace,
+  check = check,
+  checkFile = checkFile,
+  checkPackage = checkPackage,
+  files = files,
+  format = format,
+  markdownBlocks = markdownBlocks,
+  rules = rules.Rules,
+  run = run,
+}
+
+--[========[
+@api-document style @jess/style
+
+
+The [Luau style](@/docs/contributing/luau-style.md) as a checker. It's an export of jess's [built-in package](@/docs/scripting/packages.md#the-built-in-package), `jpk/builtin`, layer `jess.style`, which the binary carries, so every script can `require` it.
+
+```sh
+jess run check-style.jsl src jpk/builtin
+```
+
+```luau
+--!strict
+-- check-style.jsl: the findings in one source, as data.
+local style = require '@jess/style'
+local findings = style.check 'local Total = 0\nTotal += 1\nprint("total", Total)\n'
+
+for _, finding in findings do
+  print(style.format(finding, 'example.jsl'))
+end
+```
+
+```text
+example.jsl:1:7: error[naming.case]: 'Total' is reassigned, so it isn't a constant: name it in camelCase
+example.jsl:3:7: error[quotes.double]: single quotes: double quotes are for a string that holds a single quote
+```
+
+It parses with [`@dream/luau`](@/docs/api/l3i.md), so a file that doesn't parse gets `syntax` findings at Luau's own error positions, and the rest of the tree, which the parser recovers, is still checked.
+
+### style.check
+
+{{ api_symbol(value="@jess/style.check") }}
+
+
+Every finding in `text`, sorted by position; `given` supplies the options below.
+
+| Finding field | Is |
+| --- | --- |
+| `rule` | The rule's id, such as `pcall.comment`; `style.rules` has them all. |
+| `severity` | `'error'` or `'warning'`. |
+| `message` | What's wrong and what the style wants instead. |
+| `line`, `column`, `endLine`, `endColumn` | The span, 1-based, the end column inclusive, columns in bytes. |
+
+| Option | Does |
+| --- | --- |
+| `profile` | `'jess'`, the default, or `'lua'` for plain Lua sources: no `hoisting` rule, PascalCase allowed for module-level and member-alias locals, LuaLS `---@param` types read for `truthiness`. |
+| `directives` | Hot comments the file must start with, such as `{ 'strict', 'native' }`. |
+| `noAny` | Report every `any` type (`types.any`). |
+| `declarations` | `true` parses definition-file syntax (`declare`, `declare extern type`), `false` doesn't; left out, a source that only parses with it is taken for a definitions file. |
+| `only` | Only these rules, by id. An unknown id is an error. |
+| `fragment` | The source is an excerpt, such as a block on a docs page: no local is taken for a module constant, since what the rest of the module does with it isn't there to see. |
+
+### style.checkFile
+
+{{ api_symbol(value="@jess/style.checkFile") }}
+
+
+`style.check` on a file. A `.md` file is checked one ```` ```luau ```` block at a time, as a fragment, with each finding's lines counted from the top of the page.
+This operation needs `filesystem.read`.
+
+### style.files
+
+{{ api_symbol(value="@jess/style.files") }}
+
+
+The `.jsl` and `.lua` files under each directory, sorted. A path that is not a directory is kept whatever its extension, including a nonexistent path; a later `checkFile` then reports a read failure. Folders named `target` and dot-folders are skipped while walking.
+Discovering or reading files needs `filesystem.read`; `run` and `checkPackage` use the same filesystem operations.
+
+### style.run
+
+{{ api_symbol(value="@jess/style.run") }}
+
+
+Checks every file `style.files(paths)` finds, prints each finding with `style.format`, and returns how many errors and how many warnings there were.
+
+### style.checkPackage
+
+{{ api_symbol(value="@jess/style.checkPackage") }}
+
+
+Every finding under the package folder `root`, each formatted with `style.format` and its path: what a package's own style test checks. Files in the payload, `<root>/src/`, are also held to `payload`, by default `--!strict` and no `any`; tests, benches, and tools follow the style alone.
+
+```luau
+--!strict
+local style = require '@jess/style'
+local test = require '@jess/test'
+
+local suite = test.new()
+
+suite.it('passes @jess/style', function()
+  local root = string.match(debug.info(1, 's'), '^[@=]?(.*)/tests/[^/]*$') or '.'
+  test.expect(table.concat(style.checkPackage(root), '\n')).toBe ''
+end)
+
+return suite
+```
+
+### style.format
+
+{{ api_symbol(value="@jess/style.format") }}
+
+
+One finding on one line: `path:line:column: severity[rule]: message`, or without the path.
+
+### style.markdownBlocks
+
+{{ api_symbol(value="@jess/style.markdownBlocks") }}
+
+
+A Markdown page's ```` ```luau ```` blocks, each with the line its opening fence is on. `Block` is `{ line: number, source: string }`.
+
+### style.rules
+
+{{ api_symbol(value="@jess/style.rules") }}
+
+
+Every rule by id, frozen. [Luau Style](@/docs/contributing/luau-style.md#the-checker) has the table.
+
+### style.analysis, style.analyze, style.workspace
+
+{{ api_symbol(value="@jess/style.analysis") }}
+
+{{ api_symbol(value="@jess/style.analyze") }}
+
+{{ api_symbol(value="@jess/style.workspace") }}
+
+
+The same values as [`@jess/analysis`](@/docs/api/analysis.md) exports, re-exported so a style tool that also wants the dependency analysis needs one `require`.
+
+]========]

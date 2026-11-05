@@ -1,0 +1,9 @@
+--!strict
+-- l3i stub for @jess/test (provided by jess.stdlib); the runtime module has this shape.
+local module: {
+    -- An empty suite to register cases on and run.
+    new: () -> JessTestSuite,
+    -- An assertion on `actual`: `toBe`, `toEqual`, `toBeTruthy`, `toBeFalsy`, `toBeNil`, `toContain`, `toThrow`.
+    expect: (actual: unknown) -> JessTestExpectation,
+} = (nil :: any)
+return module

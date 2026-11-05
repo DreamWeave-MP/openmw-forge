@@ -1,0 +1,13 @@
+--!strict
+-- l3i stub for @dream/tls (provided by dream.tls); the runtime module has this shape.
+local module: {
+    -- Builds client settings once: the platform's trust store (platform = true, the default) with any extra roots, or only the given roots (platform = false). The platform store alone is loaded once per runtime; build a config once and reuse it. A runtime keeps at most the host's maximum of configurations alive (32 by default); past it, limitReached.
+    clientConfig: (options: dream_tls_ClientConfigOptions?) -> (dream_tls_ClientConfig?, string?, dream_tls_ErrorKind?),
+    -- Builds server settings once from a PEM or DER chain and its private key, checking that they match. New configs serve new sessions; sessions keep the config they started with.
+    serverConfig: (options: dream_tls_ServerConfigOptions) -> (dream_tls_ServerConfig?, string?, dream_tls_ErrorKind?),
+    -- Takes a connected, unwatched TCP stream for a client session verifying serverName (a DNS name or an IP address, independent of the address connected to). Without config, the platform trust store, loaded once per runtime.
+    client: (stream: dream_tcp_Stream, options: dream_tls_ClientOptions) -> (dream_tls_Stream?, string?, dream_tls_ErrorKind?),
+    -- Takes an accepted, unwatched TCP stream for a server session under config.
+    server: (stream: dream_tcp_Stream, config: dream_tls_ServerConfig, options: dream_tls_ServerOptions?) -> (dream_tls_Stream?, string?, dream_tls_ErrorKind?),
+} = (nil :: any)
+return module

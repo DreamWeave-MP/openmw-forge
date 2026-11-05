@@ -1,0 +1,3 @@
+--!strict
+-- jess's stub for @jess/bench: the runtime module is `jess.bench`.
+return jess.bench

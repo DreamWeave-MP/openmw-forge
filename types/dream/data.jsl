@@ -1,0 +1,59 @@
+--!strict
+-- l3i stub for @dream/data (provided by dream.data); the runtime module has this shape.
+local module: {
+    -- The receiver for a kind or layout named at run time (one of the typed receivers); prefer data.u8() and friends, whose static type lets jit lower the calls.
+    kind: (kind: dream_data_Layout) -> dream_data_Kind,
+    -- The elements (those satisfying the comparison, when given) added in order into a Luau number; 0 when none.
+    sum: (buffer: buffer, kind: dream_data_Layout, offset: number, count: number, comparison: dream_data_Comparison?, threshold: number?) -> number,
+    -- The first least element (among those satisfying the comparison, when given) by Luau <, or nil when none; a leading NaN stays.
+    min: (buffer: buffer, kind: dream_data_Layout, offset: number, count: number, comparison: dream_data_Comparison?, threshold: number?) -> number?,
+    -- The first greatest element (among those satisfying the comparison, when given) by Luau >, or nil when none.
+    max: (buffer: buffer, kind: dream_data_Layout, offset: number, count: number, comparison: dream_data_Comparison?, threshold: number?) -> number?,
+    -- Whether any element satisfies the comparison; stops at the first.
+    any: (buffer: buffer, kind: dream_data_Layout, offset: number, count: number, comparison: dream_data_Comparison, threshold: number) -> boolean,
+    -- Whether every element satisfies the comparison; stops at the first that does not.
+    all: (buffer: buffer, kind: dream_data_Layout, offset: number, count: number, comparison: dream_data_Comparison, threshold: number) -> boolean,
+    -- The zero-based position of the first least element, or nil.
+    argmin: (buffer: buffer, kind: dream_data_Layout, offset: number, count: number) -> number?,
+    -- The zero-based position of the first greatest element, or nil.
+    argmax: (buffer: buffer, kind: dream_data_Layout, offset: number, count: number) -> number?,
+    -- How many elements satisfy the comparison against threshold.
+    countWhere: (buffer: buffer, kind: dream_data_Layout, offset: number, count: number, comparison: dream_data_Comparison, threshold: number) -> number,
+    -- The positions whose element satisfies the comparison; written into `into` when given.
+    select: (buffer: buffer, kind: dream_data_Layout, offset: number, count: number, comparison: dream_data_Comparison, threshold: number, into: dream_data_Selection?) -> dream_data_Selection,
+    -- An empty selection over len positions, for reuse as `into`.
+    selection: (len: number) -> dream_data_Selection,
+    -- destination[i] = source[indices[i]] for every u32 index (all of the indices buffer by default); the count written. The source may be a strided field; the destination column is contiguous. Every index is checked before anything is written.
+    gather: (source: buffer, kind: dream_data_Layout,sourceOffset: number, sourceCount: number, indices: buffer, destination: buffer, destinationOffset: number, indexCount: number?) -> number,
+    -- destination[indices[i]] = source[i] for every source element; the count written. The source column is contiguous; the destination may be a strided field. Every index is checked against destinationCount before anything is written.
+    scatter: (source: buffer, kind: dream_data_Layout,sourceOffset: number, sourceCount: number, indices: buffer, destination: buffer, destinationOffset: number, destinationCount: number) -> number,
+    -- Every element set to value, a number, written as every data-plane write is: an integer kind truncates toward zero and wraps to the width (NaN is zero, beyond 2^63 saturates first), f32 rounds.
+    fill: (buffer: buffer, kind: dream_data_Layout, offset: number, count: number, value: number) -> (),
+    -- out[i] = left[i] + right[i], element by element; out may be either input.
+    add: (left: buffer, kind: dream_data_Layout,leftOffset: number, right: buffer, rightOffset: number, out: buffer, outOffset: number, count: number) -> (),
+    -- out[i] = source[i] * factor; out may be the source.
+    scale: (buffer: buffer, kind: dream_data_Layout, offset: number, count: number, factor: number, out: buffer, outOffset: number) -> (),
+    -- out[i] = math.clamp(source[i], low, high); NaN passes through; out may be the source.
+    clamp: (buffer: buffer, kind: dream_data_Layout, offset: number, count: number, low: number, high: number, out: buffer, outOffset: number) -> (),
+    -- The u32 permutation that orders the keys ascending, stable for equal keys, NaN last; the count written. With scratch (count * 4 bytes, not overlapping keys or out) nothing is allocated.
+    argsort: (buffer: buffer, kind: dream_data_Layout, offset: number, count: number, out: buffer, outOffset: number?, scratch: buffer?) -> number,
+    -- The u32 index vector with every position satisfying the comparison first, then the rest, each part in original order; how many satisfied it.
+    partition: (buffer: buffer, kind: dream_data_Layout, offset: number, count: number, comparison: dream_data_Comparison, threshold: number, out: buffer, outOffset: number?) -> number,
+    -- The u8 receiver, contiguous or at the given byte stride; annotate the local with its type so jit lowers its calls.
+    u8: (stride: number?) -> dream_data_Kind_u8,
+    -- The i8 receiver, contiguous or at the given byte stride; annotate the local with its type so jit lowers its calls.
+    i8: (stride: number?) -> dream_data_Kind_i8,
+    -- The u16 receiver, contiguous or at the given byte stride; annotate the local with its type so jit lowers its calls.
+    u16: (stride: number?) -> dream_data_Kind_u16,
+    -- The i16 receiver, contiguous or at the given byte stride; annotate the local with its type so jit lowers its calls.
+    i16: (stride: number?) -> dream_data_Kind_i16,
+    -- The u32 receiver, contiguous or at the given byte stride; annotate the local with its type so jit lowers its calls.
+    u32: (stride: number?) -> dream_data_Kind_u32,
+    -- The i32 receiver, contiguous or at the given byte stride; annotate the local with its type so jit lowers its calls.
+    i32: (stride: number?) -> dream_data_Kind_i32,
+    -- The f32 receiver, contiguous or at the given byte stride; annotate the local with its type so jit lowers its calls.
+    f32: (stride: number?) -> dream_data_Kind_f32,
+    -- The f64 receiver, contiguous or at the given byte stride; annotate the local with its type so jit lowers its calls.
+    f64: (stride: number?) -> dream_data_Kind_f64,
+} = (nil :: any)
+return module

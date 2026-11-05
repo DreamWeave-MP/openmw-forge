@@ -1,0 +1,3 @@
+--!strict
+-- jess's stub for @jess/json: the built-in package's module, copied beside it at jess/data/json.jsl.
+return require('./data/json')

@@ -1,0 +1,3 @@
+--!strict
+-- jess's stub for @jess/application: the runtime module is `jess.application`.
+return jess.application

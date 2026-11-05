@@ -1,0 +1,9 @@
+--!strict
+-- l3i stub for @dream/dns (provided by dream.dns); the runtime module has this shape.
+local module: {
+    -- Starts resolving host for port and returns the request at once; needs network.dns.resolve. timeoutMs defaults to 5000, maxAddresses to 16.
+    resolve: (host: string, port: number, options: dream_dns_ResolveOptions?) -> (dream_dns_Request?, string?, dream_dns_ErrorKind?),
+    MAX_TIMEOUT_MS: number,
+    MAX_ADDRESSES: number,
+} = (nil :: any)
+return module

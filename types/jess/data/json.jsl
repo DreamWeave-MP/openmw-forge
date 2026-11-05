@@ -1,0 +1,519 @@
+--!strict
+--!native
+-- RFC 8259 JSON. The scanner is deliberately small: bytes are classified in the hot loop and
+-- strings jump between escapes/control bytes with string.find, following the strategy that makes
+-- dkjson fast without accepting dkjson's JavaScript comments or loose escapes.
+local Common = require './common'
+local Values = require './value'
+
+export type Options = {
+  maxDepth: number?,
+}
+
+export type Value = unknown
+
+local Null = Common.null
+local source = ''
+local length = 0
+local at = 1
+local maxDepth = 512
+
+local Escape: { [number]: string } = {
+  [34] = '"',
+  [47] = '/',
+  [92] = '\\',
+  [98] = '\b',
+  [102] = '\f',
+  [110] = '\n',
+  [114] = '\r',
+  [116] = '\t',
+}
+
+local function fail(message: string): never
+  Common.fail('json', source, at, message)
+  error('unreachable', 0)
+end
+
+local function skipWhitespace()
+  while at <= length do
+    local byte = string.byte(source, at)
+    if byte ~= 32 and byte ~= 9 and byte ~= 10 and byte ~= 13 then return end
+
+    at += 1
+  end
+end
+
+local function parseUnicode(): string
+  local high = Common.hex(source, at + 2, 4)
+  if not high then fail('invalid Unicode escape') end
+  local highValue = high :: number
+
+  at += 6
+  if highValue >= 0xD800 and highValue <= 0xDBFF then
+    if string.byte(source, at) ~= 92 or string.byte(source, at + 1) ~= 117 then
+      fail('high surrogate is not followed by a low surrogate')
+    end
+
+    local low = Common.hex(source, at + 2, 4)
+    if not low or low < 0xDC00 or low > 0xDFFF then fail('invalid low surrogate') end
+    local lowValue = low :: number
+
+    at += 6
+    return utf8.char(0x10000 + (highValue - 0xD800) * 0x400 + lowValue - 0xDC00)
+  end
+
+  if highValue >= 0xDC00 and highValue <= 0xDFFF then fail('unexpected low surrogate') end
+
+  return utf8.char(highValue)
+end
+
+local function parseString(): string
+  local start = at + 1
+  local scan = start
+  local parts: { string }? = nil
+
+  while true do
+    local found = string.find(source, '[%z\1-\31"\\]', scan)
+    if not found then
+      at = length + 1
+      fail('unterminated string')
+    end
+
+    local foundAt = found :: number
+    local byte = string.byte(source, foundAt)
+    if byte == 34 then
+      at = foundAt + 1
+      if not parts then return string.sub(source, start, foundAt - 1) end
+      local output = parts :: { string }
+
+      if foundAt > scan then table.insert(output, string.sub(source, scan, foundAt - 1)) end
+
+      return table.concat(output)
+    end
+
+    if byte ~= 92 then
+      at = foundAt
+      fail('unescaped control character in string')
+    end
+
+    if not parts then parts = {} end
+    local output = parts :: { string }
+    if foundAt > scan then table.insert(output, string.sub(source, scan, foundAt - 1)) end
+
+    at = foundAt
+    local escaped = string.byte(source, at + 1)
+    if escaped == 117 then
+      table.insert(output, parseUnicode())
+    else
+      local replacement = escaped and Escape[escaped]
+      if not replacement then fail('invalid escape sequence') end
+
+      table.insert(output, replacement :: string)
+      at += 2
+    end
+    scan = at
+  end
+end
+
+local function parseNumber(): number
+  local start = at
+  local byte = string.byte(source, at)
+
+  if byte == 45 then
+    at += 1
+    byte = string.byte(source, at)
+  end
+
+  if byte == 48 then
+    at += 1
+    local nextByte = string.byte(source, at)
+    if nextByte and nextByte >= 48 and nextByte <= 57 then fail('leading zero in number') end
+  elseif byte and byte >= 49 and byte <= 57 then
+    repeat
+      at += 1
+      byte = string.byte(source, at)
+    until not byte or byte < 48 or byte > 57
+  else
+    fail('expected a digit')
+  end
+
+  if string.byte(source, at) == 46 then
+    at += 1
+    byte = string.byte(source, at)
+    if not byte or byte < 48 or byte > 57 then fail('fraction has no digits') end
+
+    repeat
+      at += 1
+      byte = string.byte(source, at)
+    until not byte or byte < 48 or byte > 57
+  end
+
+  byte = string.byte(source, at)
+  if byte == 69 or byte == 101 then
+    at += 1
+    byte = string.byte(source, at)
+    if byte == 43 or byte == 45 then
+      at += 1
+      byte = string.byte(source, at)
+    end
+
+    if not byte or byte < 48 or byte > 57 then fail('exponent has no digits') end
+
+    repeat
+      at += 1
+      byte = string.byte(source, at)
+    until not byte or byte < 48 or byte > 57
+  end
+
+  local number = tonumber(string.sub(source, start, at - 1))
+  if not number or math.abs(number) == math.huge then fail('number cannot be represented') end
+
+  return number :: number
+end
+
+local parseValue: (number) -> Value
+
+local function parseArray(depth: number): { Value }
+  at += 1
+  skipWhitespace()
+  local values: { Value } = {}
+  if string.byte(source, at) == 93 then
+    at += 1
+    return values
+  end
+
+  local count = 0
+  while true do
+    count += 1
+    values[count] = parseValue(depth + 1)
+    skipWhitespace()
+
+    local byte = string.byte(source, at)
+    if byte == 93 then
+      at += 1
+      return values
+    end
+
+    if byte ~= 44 then fail("expected ',' or ']' after array value") end
+
+    at += 1
+    skipWhitespace()
+    if string.byte(source, at) == 93 then fail('trailing comma in array') end
+  end
+end
+
+local function parseObject(depth: number): { [string]: Value }
+  at += 1
+  skipWhitespace()
+  local values: { [string]: Value } = {}
+  if string.byte(source, at) == 125 then
+    at += 1
+    return values
+  end
+
+  while true do
+    if string.byte(source, at) ~= 34 then fail('object key is not a string') end
+
+    local key = parseString()
+    skipWhitespace()
+    if string.byte(source, at) ~= 58 then fail("expected ':' after object key") end
+
+    at += 1
+    skipWhitespace()
+    values[key] = parseValue(depth + 1)
+    skipWhitespace()
+
+    local byte = string.byte(source, at)
+    if byte == 125 then
+      at += 1
+      return values
+    end
+
+    if byte ~= 44 then fail("expected ',' or '}' after object value") end
+
+    at += 1
+    skipWhitespace()
+    if string.byte(source, at) == 125 then fail('trailing comma in object') end
+  end
+end
+
+parseValue = function(depth: number): Value
+  if depth > maxDepth then fail(`nesting exceeds maxDepth ({maxDepth})`) end
+
+  skipWhitespace()
+  local byte = string.byte(source, at)
+  if byte == 34 then return parseString() end
+  if byte == 91 then return parseArray(depth) end
+  if byte == 123 then return parseObject(depth) end
+  if byte == 45 or (byte and byte >= 48 and byte <= 57) then return parseNumber() end
+
+  if string.sub(source, at, at + 3) == 'true' then
+    at += 4
+    return true
+  end
+
+  if string.sub(source, at, at + 4) == 'false' then
+    at += 5
+    return false
+  end
+
+  if string.sub(source, at, at + 3) == 'null' then
+    at += 4
+    return Null
+  end
+
+  fail('expected a JSON value')
+  error('unreachable', 0)
+end
+
+local function decode(text: string, options: Options?): Value
+  Common.validateUtf8('json', text)
+  source, length, at = text, #text, 1
+  maxDepth = if options and options.maxDepth then options.maxDepth else 512
+  if maxDepth < 1 or maxDepth % 1 ~= 0 then error('json: maxDepth must be a positive integer', 2) end
+
+  -- RFC 8259 says emitters MUST NOT add a BOM but parsers MAY ignore one for interoperability.
+  if string.sub(source, 1, 3) == '\239\187\191' then at = 4 end
+
+  local value = parseValue(0)
+  skipWhitespace()
+  if at <= length then fail('trailing data after JSON value') end
+
+  return value
+end
+
+--- A value built with `@jess/data/value` as JSON: compact, on one line, as serde_json writes it.
+local function encode(value: Values.Value): string return Values.encode(value, 'json') end
+
+-- Plain tables -------------------------------------------------------------------------------------
+
+--- How `encodeTable` writes: `indent` spaces per level over lines (one line without it), and with
+--- `latin1` every byte outside printable ASCII escaped as the Latin-1 code point it is.
+export type TableOptions = { indent: number?, latin1: boolean? }
+
+local TableEscape: { [string]: string } = {
+  ['"'] = '\\"',
+  ['\\'] = '\\\\',
+  ['\b'] = '\\b',
+  ['\f'] = '\\f',
+  ['\n'] = '\\n',
+  ['\r'] = '\\r',
+  ['\t'] = '\\t',
+}
+
+local function tableString(value: string, latin1: boolean): string
+  local escapable = if latin1 then '[%z\1-\31\\"\127-\255]' else '[%z\1-\31\\"]'
+  local escaped = string.gsub(value, escapable, function(character: string): string
+    local known = TableEscape[character]
+    if known then return known end
+
+    return string.format('\\u%04x', string.byte(character))
+  end)
+  return `"{escaped}"`
+end
+
+--- The length of `value` when its keys are exactly 1 to some n, else nil.
+local function denseLength(value: { [unknown]: unknown }): number?
+  local count, highest = 0, 0
+  for key in value do
+    if type(key) ~= 'number' or key < 1 or key % 1 ~= 0 then return nil end
+
+    count += 1
+    highest = math.max(highest, key)
+  end
+
+  if count ~= highest then return nil end
+
+  return highest
+end
+
+local function tableValue(value: unknown, options: TableOptions, depth: number): string
+  local kind = type(value)
+  if kind == 'string' then return tableString(value :: string, options.latin1 == true) end
+
+  if kind == 'number' then
+    local number = value :: number
+    if number ~= number or number == math.huge or number == -math.huge then
+      error('json: a number that is NaN or infinite has no JSON', 0)
+    end
+
+    return tostring(number)
+  end
+
+  if kind == 'boolean' then return tostring(value) end
+  if value == nil or value == Null then return 'null' end
+
+  if kind ~= 'table' then return error(`json: a {kind} has no JSON`, 0) end
+
+  local fields = value :: { [unknown]: unknown }
+  local indent = options.indent
+  local open, close, separator = '', '', ','
+  if indent then
+    open = '\n' .. string.rep(' ', indent * (depth + 1))
+    close = '\n' .. string.rep(' ', indent * depth)
+    separator = ',' .. open
+  end
+
+  local count = denseLength(fields)
+  if count then
+    if count == 0 then return '[]' end
+
+    local parts = table.create(count)
+    for index = 1, count do
+      parts[index] = tableValue(fields[index], options, depth + 1)
+    end
+
+    return `[{open}{table.concat(parts, separator)}{close}]`
+  end
+
+  local keys: { string } = {}
+  for key in fields do
+    if type(key) ~= 'string' then error('json: a table needs string keys or dense array indexes', 0) end
+
+    table.insert(keys, key)
+  end
+
+  if #keys == 0 then return '{}' end
+
+  table.sort(keys)
+  local colon = if indent then ': ' else ':'
+  local latin1 = options.latin1 == true
+  local parts = table.create(#keys)
+  for index, key in keys do
+    parts[index] = `{tableString(key, latin1)}{colon}{tableValue(fields[key], options, depth + 1)}`
+  end
+
+  return `\{{open}{table.concat(parts, separator)}{close}}`
+end
+
+--- A plain Luau table as JSON, for tools that write what people read and diff: dense integer keys
+--- an array, string keys an object with its keys sorted, `nil` and the null `null`. A field that
+--- is nil is absent; a hole in an array makes it an object, which then needs string keys.
+local function encodeTable(value: unknown, options: TableOptions?): string
+  return tableValue(value, options or {}, 0)
+end
+
+return table.freeze {
+  null = Null,
+  decode = decode,
+  encode = encode,
+  encodeTable = encodeTable,
+}
+
+--[========[
+@api-document json @jess/json
+
+
+`@jess/json` is the JSON codec, Luau in the built-in package. It reads [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259) and nothing looser: no comments, no trailing commas, no single quotes, no unquoted keys. It needs no capability; getting the text is your business.
+
+There are two writers because there are two reasons to write JSON. `encode` takes a value built with [`@jess/data/value`](@/docs/api/value.md) and writes exactly what a Rust program's serializer would, key order and all. `encodeTable` takes an ordinary Luau table and writes something stable enough to diff. Pick by whether the shape matters more than the convenience.
+
+A JSON `null` decodes to [`jess.null`](@/docs/api/jess.md#jess-null), which `json.null` is another name for, and encodes back from it. It's the one null every codec in jess shares, so a null read from JSON is one `@jess/yaml` writes.
+
+## json.decode
+
+{{ api_symbol(value="@jess/json.decode") }}
+
+
+Parses one JSON text and returns its value.
+
+`Options` is `{ maxDepth: number? }`; the exported `Value` type is `unknown`.
+
+- **Parameters:** `text`, the whole document as UTF-8 (a leading byte-order mark is skipped, as the RFC allows a parser to). `options.maxDepth`: how deep arrays and objects may nest, 512 by default.
+- **Returns:** the value. Objects are tables with string keys, arrays are tables from 1, strings are strings, numbers are finite floating-point numbers, `true` and `false` are booleans, and `null` is `jess.null`. A repeated key keeps the last value. A number outside the finite floating-point range is rejected rather than converted to infinity.
+- **Errors:** `json: <what's wrong> at line <n>, column <n>` for anything the grammar doesn't allow (`json: trailing comma in array at line 1, column 7`), a text that isn't valid UTF-8, a number that cannot be represented as finite (`json: number cannot be represented`), or nesting past `maxDepth` (`json: nesting exceeds maxDepth (1) at line 1, column 3`). `json: maxDepth must be a positive integer` for an option that isn't one.
+
+The result is `unknown`: it is someone else's document. In `--!strict` code, cast it to the shape your program expects and check with `typeof` whatever you can't afford to be wrong about.
+
+```luau
+--!strict
+local json = require '@jess/json'
+
+type Manifest = { id: string, version: string, tags: { string | JessNull } }
+
+local document = json.decode '{"id": "com.example.greeter", "version": "1.0.0", "tags": ["cli", null]}'
+local manifest = document :: Manifest
+print(manifest.id, manifest.version, #manifest.tags, manifest.tags[2] == jess.null)
+```
+
+```text
+com.example.greeter	1.0.0	2	true
+```
+
+## json.encode
+
+{{ api_symbol(value="@jess/json.encode") }}
+
+
+Writes a value built with [`@jess/data/value`](@/docs/api/value.md) as compact JSON on one line, the way `serde_json` writes it: keys in the order the map was given them, a forced float as `1.0`, an absent field as `null`, a variant as a one-key object.
+
+`Values.Value` is the value module's exported `Value` type; in a script that binds it as `value`, spell the type `value.Value`.
+
+- **Parameters:** `value`, from `value.struct`, `value.map`, `value.array`, `value.variant`, `value.float`, or a scalar.
+- **Returns:** the document, with no trailing newline.
+- **Errors:** `data: a bare table is neither a list nor a map: build it with array, map, or struct` for a Luau table that wasn't built with the value module. A Luau table says neither whether it is a list or a map nor what order its keys come in, and a writer that guessed would write a different document from the same data on another day.
+
+```luau
+--!strict
+local json = require '@jess/json'
+local value = require '@jess/data/value'
+
+local record = value.struct {
+  { 'id', 'com.example.greeter' },
+  { 'ratio', value.float(1) },
+  { 'layers', value.array { 'example.greetings' } },
+}
+
+print(json.encode(record))
+```
+
+```text
+{"id":"com.example.greeter","ratio":1.0,"layers":["example.greetings"]}
+```
+
+## json.encodeTable
+
+{{ api_symbol(value="@jess/json.encodeTable") }}
+
+
+Writes a plain Luau table as JSON, for tools that write what people read and diff. The rules are fixed so the output is too: a table whose keys are exactly 1 to some *n* is an array; a table with string keys is an object, its keys sorted; an empty table is `[]`; `nil` and `jess.null` are `null`; a field that is `nil` is absent.
+
+`TableOptions` is `{ indent: number?, latin1: boolean? }`.
+
+- **Parameters:** `value`, a string, number, boolean, `jess.null`, or table of those. `options.indent`: spaces per level, over several lines; without it, one line. `options.latin1`: escape every byte outside printable ASCII as the Latin-1 code point it is, for a reader that can't take UTF-8.
+- **Returns:** the document, with no trailing newline.
+- **Errors:** `json: a number that is NaN or infinite has no JSON`; `json: a <type> has no JSON` for a function, buffer, or other value JSON can't hold; `json: a table needs string keys or dense array indexes` for a table with a hole in its array part, since a hole makes it an object and an object needs string keys.
+
+`latin1` interprets each input byte as a Latin-1 code point; it does not decode UTF-8 first. For example, UTF-8 `é` becomes `\u00c3\u00a9`, not `\u00e9`. Without that option the writer leaves non-ASCII bytes as supplied, so the caller must provide valid UTF-8 if the output is to be a UTF-8 JSON text. The writer recursively visits tables without cycle detection; cyclic input eventually fails with a stack error.
+
+```luau
+--!strict
+local json = require '@jess/json'
+
+print(json.encodeTable({ id = 'com.example.greeter', targets = { 'greet', 'version' } }, { indent = 2 }))
+```
+
+```text
+{
+  "id": "com.example.greeter",
+  "targets": [
+    "greet",
+    "version"
+  ]
+}
+```
+
+## Type mapping
+
+| JSON | Luau |
+| --- | --- |
+| String | `string`, with escapes decoded, `\uXXXX` pairs included |
+| Number | `number`. JSON has one number type and so does the decoder: an integer past 2^53 is read as the nearest float, and a magnitude too large for a finite float is an error. |
+| `true`, `false` | `boolean` |
+| `null` | `jess.null` |
+| Array | A table from 1, with `jess.null` where the array had `null`, so positions hold |
+| Object | A table with string keys |
+
+Related: [`@jess/data/value`](@/docs/api/value.md), [`@jess/yaml`](@/docs/api/yaml.md), [`@jess/data/toml`](@/docs/api/toml.md).
+
+]========]

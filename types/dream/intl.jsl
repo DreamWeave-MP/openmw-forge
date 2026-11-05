@@ -1,0 +1,13 @@
+--!strict
+-- l3i stub for @dream/intl (provided by dream.intl); the runtime module has this shape.
+local module: {
+    -- The locale a BCP 47 tag names; underscores read as hyphens.
+    locale: (tag: string) -> dream_intl_Locale,
+    -- The canonical spelling of a BCP 47 tag, without making a locale.
+    canonicalize: (tag: string) -> string,
+    -- A locale's cardinal (the default) or ordinal plural rules, built once.
+    pluralRules: (locale: string | dream_intl_Locale, type: dream_intl_PluralType?) -> dream_intl_PluralRules,
+    -- A locale's decimal format under options, built once.
+    decimalFormatter: (locale: string | dream_intl_Locale, options: dream_intl_DecimalOptions?) -> dream_intl_DecimalFormatter,
+} = (nil :: any)
+return module

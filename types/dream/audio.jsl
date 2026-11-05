@@ -1,0 +1,11 @@
+--!strict
+-- l3i stub for @dream/audio (provided by dream.audio); the runtime module has this shape.
+local module: {
+    -- The format a file's first bytes say it is, or nil.
+    detect: (data: buffer | string) -> dream_audio_Format?,
+    -- A decoder over a copy of the bytes; the format is detected unless named.
+    decoder: (data: buffer | string, options: dream_audio_DecoderOptions?) -> dream_audio_Decoder,
+    -- The whole stream as one buffer of interleaved f32 frames, at most maxSize bytes (default 1 GiB).
+    decode: (data: buffer | string, options: dream_audio_DecodeOptions?) -> dream_audio_Decoded,
+} = (nil :: any)
+return module

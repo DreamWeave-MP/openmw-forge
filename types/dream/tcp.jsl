@@ -1,0 +1,12 @@
+--!strict
+-- l3i stub for @dream/tcp (provided by dream.tcp); the runtime module has this shape.
+local module: {
+    -- A nonblocking listener bound to address (port 0 picks one); needs network.tcp.listen, and network.tcp.public for a wildcard or non-loopback address.
+    listen: (address: string, options: dream_tcp_ListenOptions?) -> (dream_tcp_Listener?, string?, dream_tcp_ErrorKind?),
+    -- Starts a nonblocking connection; the stream is usually 'connecting' until finishConnect() says otherwise. Needs network.tcp.connect.
+    connect: (address: string, options: dream_tcp_ConnectOptions?) -> (dream_tcp_Stream?, string?, dream_tcp_ErrorKind?),
+    -- A readiness poller: maxEvents per wait (default 256), maxWatches (default 1024), maxWaitMs (default 1000). A runtime holds at most the host's maximum open at once (64 by default).
+    poller: (options: dream_tcp_PollerOptions?) -> dream_tcp_Poller,
+    MAX_WAIT_MS: number,
+} = (nil :: any)
+return module

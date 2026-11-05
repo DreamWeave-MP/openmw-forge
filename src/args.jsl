@@ -1,0 +1,213 @@
+--!strict
+local config = require '@forge/config'
+
+export type Options = {
+  command: string,
+  root: string,
+  mode: string,
+  engine: string,
+  source: string,
+  build: string,
+  deps: string,
+  output: string,
+  depsOutput: string,
+  archive: string,
+  triplet: string,
+  buildType: string,
+  jobs: number,
+  qtVersion: string,
+  distros: string,
+  gtestFilter: string,
+  cmakeArgs: { string },
+  dryRun: boolean,
+  clean: boolean,
+  stageOnly: boolean,
+  portable: boolean,
+  runTests: boolean,
+  noQt: boolean,
+  noSystemPackages: boolean,
+  noCcache: boolean,
+  noPrepare: boolean,
+  noCompat: boolean,
+  noSmoke: boolean,
+  keepBox: boolean,
+  withQt: boolean,
+}
+
+local Commands: { [string]: boolean } = {
+  deps = true,
+  build = true,
+  pipeline = true,
+  package = true,
+  verify = true,
+  smoke = true,
+  doctor = true,
+  help = true,
+}
+
+local Switches: { [string]: string } = {
+  ['--mode'] = 'mode',
+  ['--engine'] = 'engine',
+  ['--source'] = 'source',
+  ['--openmw-source-root'] = 'source',
+  ['--build-dir'] = 'build',
+  ['--deps-prefix'] = 'deps',
+  ['--output-dir'] = 'output',
+  ['--deps-output'] = 'depsOutput',
+  ['--deps-archive'] = 'archive',
+  ['--archive'] = 'archive',
+  ['--triplet'] = 'triplet',
+  ['--build-type'] = 'buildType',
+  ['--qt-version'] = 'qtVersion',
+  ['--distros'] = 'distros',
+  ['--gtest-filter'] = 'gtestFilter',
+}
+
+local Booleans: { [string]: string } = {
+  ['--dry-run'] = 'dryRun',
+  ['--plan'] = 'dryRun',
+  ['--clean'] = 'clean',
+  ['--stage-only'] = 'stageOnly',
+  ['--portable'] = 'portable',
+  ['--run-tests'] = 'runTests',
+  ['--no-qt'] = 'noQt',
+  ['--no-system-packages'] = 'noSystemPackages',
+  ['--no-ccache'] = 'noCcache',
+  ['--no-prepare'] = 'noPrepare',
+  ['--no-compat'] = 'noCompat',
+  ['--no-smoke'] = 'noSmoke',
+  ['--keep-box'] = 'keepBox',
+  ['--with-qt'] = 'withQt',
+}
+
+local function defaults(root: string): Options
+  return {
+    command = 'help',
+    root = root,
+    mode = 'container',
+    engine = 'podman',
+    source = '',
+    build = root .. '/work/build',
+    deps = root .. '/work/deps',
+    output = root .. '/artifacts/openmw',
+    depsOutput = root .. '/artifacts/deps',
+    archive = '',
+    triplet = config.triplet,
+    buildType = config.buildType,
+    qtVersion = config.qtVersion,
+    jobs = config.defaultJobs,
+    distros = '',
+    gtestFilter = '*',
+    cmakeArgs = {},
+    dryRun = false,
+    clean = false,
+    stageOnly = false,
+    portable = false,
+    runTests = false,
+    noQt = false,
+    noSystemPackages = false,
+    noCcache = false,
+    noPrepare = false,
+    noCompat = false,
+    noSmoke = false,
+    keepBox = false,
+    withQt = false,
+  }
+end
+
+local function parse(argv: { string }, root: string): (Options?, string?)
+  local options = defaults(root)
+  local first = argv[1]
+  if first ~= nil and (first == '--help' or first == '-h') then
+    return options, nil
+  end
+
+  if first == nil or not Commands[first] then
+    return nil, `unknown command '{first or ''}'; see help`
+  end
+  options.command = first
+  local position = 2
+  while position <= #argv do
+    local token = argv[position]
+    if token == '-h' or token == '--help' then
+      options.command = 'help'
+      return options, nil
+    end
+    local equal = string.find(token, '=', 1, true)
+    local flag = if equal then string.sub(token, 1, equal - 1) else token
+    local inline = if equal then string.sub(token, equal + 1) else nil
+    local booleanKey = Booleans[flag]
+    local field = Switches[flag]
+    if booleanKey ~= nil then
+      if inline ~= nil then
+        return nil, `flag {flag} does not accept a value`
+      end
+
+      if booleanKey == 'dryRun' then options.dryRun = true
+      elseif booleanKey == 'clean' then options.clean = true
+      elseif booleanKey == 'stageOnly' then options.stageOnly = true
+      elseif booleanKey == 'portable' then options.portable = true
+      elseif booleanKey == 'runTests' then options.runTests = true
+      elseif booleanKey == 'noQt' then options.noQt = true
+      elseif booleanKey == 'noSystemPackages' then options.noSystemPackages = true
+      elseif booleanKey == 'noCcache' then options.noCcache = true
+      elseif booleanKey == 'noPrepare' then options.noPrepare = true
+      elseif booleanKey == 'noCompat' then options.noCompat = true
+      elseif booleanKey == 'noSmoke' then options.noSmoke = true
+      elseif booleanKey == 'keepBox' then options.keepBox = true
+      elseif booleanKey == 'withQt' then options.withQt = true
+      end
+    elseif flag == '--cmake-arg' or flag == '--jobs' then
+      local value = inline
+      if value == nil then
+        position += 1
+        value = argv[position]
+      end
+
+      if value == nil or value == '' then
+        return nil, `missing value for {flag}`
+      end
+
+      if flag == '--jobs' then
+        local jobCount = tonumber(value)
+        if not jobCount or jobCount < 1 or jobCount > 1024 or jobCount % 1 ~= 0 then
+          return nil, '--jobs must be an integer from 1 to 1024'
+        end
+        options.jobs = jobCount
+      else
+        table.insert(options.cmakeArgs, value)
+      end
+    elseif field ~= nil then
+      local value = inline
+      if value == nil then
+        position += 1
+        value = argv[position]
+      end
+
+      if value == nil or value == '' or string.sub(value, 1, 2) == '--' then
+        return nil, `missing value for {flag}`
+      end
+
+      if field == 'mode' then options.mode = value
+      elseif field == 'engine' then options.engine = value
+      elseif field == 'source' then options.source = value
+      elseif field == 'build' then options.build = value
+      elseif field == 'deps' then options.deps = value
+      elseif field == 'output' then options.output = value
+      elseif field == 'depsOutput' then options.depsOutput = value
+      elseif field == 'archive' then options.archive = value
+      elseif field == 'triplet' then options.triplet = value
+      elseif field == 'buildType' then options.buildType = value
+      elseif field == 'qtVersion' then options.qtVersion = value
+      elseif field == 'distros' then options.distros = value
+      elseif field == 'gtestFilter' then options.gtestFilter = value
+      end
+    else
+      return nil, `unknown option '{token}'`
+    end
+    position += 1
+  end
+  return options, nil
+end
+
+return table.freeze { parse = parse, defaults = defaults }

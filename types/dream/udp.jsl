@@ -1,0 +1,13 @@
+--!strict
+-- l3i stub for @dream/udp (provided by dream.udp); the runtime module has this shape.
+local module: {
+    schema: (options: { version: number, maxMessagesPerPacket: number?, channels: { { [string]: any } }, events: { { [string]: any } } }) -> dream_udp_Schema,
+    CONNECT_TOKEN_BYTES: number,
+    MAX_EVENT_PAYLOAD: number,
+    MAX_CHANNELS: number,
+    -- A transport client; needs the network.transport capability at call time.
+    client: (options: { schema: dream_udp_Schema, bind: string? }) -> dream_udp_Client,
+    -- A transport server; needs network.transport. Its private key stays native; use connectToken() to mint client tokens.
+    server: (options: { schema: dream_udp_Schema, address: string, protocolId: integer, maxClients: number? }) -> dream_udp_Server,
+} = (nil :: any)
+return module

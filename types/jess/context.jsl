@@ -1,0 +1,3 @@
+--!strict
+-- jess's stub for @jess/context: the runtime module is `jess.context`.
+return jess.context

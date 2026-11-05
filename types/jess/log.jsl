@@ -1,0 +1,17 @@
+--!strict
+-- l3i stub for @jess/log (provided by jess.stdlib); the runtime module has this shape.
+local module: {
+    -- A logger for `target`, with `fields` in every record it writes.
+    new: (target: string, fields: JessLogFields?) -> JessLogger,
+    -- Logs at `debug` with the target `jess`.
+    debug: (message: string, fields: JessLogFields?) -> (),
+    -- Logs at `info` with the target `jess`.
+    info: (message: string, fields: JessLogFields?) -> (),
+    -- Logs at `warn` with the target `jess`.
+    warn: (message: string, fields: JessLogFields?) -> (),
+    -- Logs at `error` with the target `jess`.
+    error: (message: string, fields: JessLogFields?) -> (),
+    -- Runs `body` and returns what it logged, which the sink never sees; an error in `body` is raised again.
+    capture: (body: () -> ()) -> { JessLogRecord },
+} = (nil :: any)
+return module

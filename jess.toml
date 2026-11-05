@@ -1,0 +1,25 @@
+manifest_version = 1
+
+[package]
+id = "org.openmw.forge"
+version = "0.1.0"
+jess_api = "1"
+include = ["src", "tools", "tests"]
+tests = ["tests/run.jsl"]
+default_target = "forge"
+
+[modules]
+"@forge/args" = "src/args.jsl"
+"@forge/plan" = "src/plan.jsl"
+"@forge/execute" = "src/execute.jsl"
+"@forge/config" = "src/config.jsl"
+
+[[layer]]
+id = "openmw.forge"
+exports = ["@forge/args", "@forge/plan", "@forge/execute", "@forge/config"]
+
+[targets.forge]
+kind = "command"
+command = "openmw-forge"
+entry = "tools/forge.jsl"
+capabilities = ["process.environment", "process.spawn", "filesystem.read", "filesystem.write"]
