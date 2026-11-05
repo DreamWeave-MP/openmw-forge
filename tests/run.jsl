@@ -500,6 +500,38 @@ suite.describe('embedded assets, versions, and archive names', function()
     test.expect(fields.archive_sha256).toBe('def')
   end)
 
+  suite.it('checks ABI imports rather than the ELF version definitions', function()
+    local definedOnly = 'Version definition section .gnu.version_d contains 2 entries:\n'
+      .. '  Name: GLIBC_2.35\n'
+      .. 'Version symbols section .gnu.version contains 2 entries:\n'
+      .. '  GLIBC_2.35\n'
+    local noImport = nativeAbi.incompatibleNeed(definedOnly)
+    test.expect(noImport).toBeNil()
+
+    local required = definedOnly .. 'Version needs section .gnu.version_r contains 1 entry:\n'
+      .. '  File: libc.so.6\n'
+      .. '  Name: GLIBC_2.35  Flags: none  Version: 2\n'
+    local symbol, version, maximum = nativeAbi.incompatibleNeed(required)
+    test.expect(symbol).toBe('GLIBC')
+    test.expect(version).toBe('2.35')
+    test.expect(maximum).toBe('2.34')
+    local current = required:gsub('GLIBC_2.35  Flags', 'GLIBC_2.34  Flags')
+    local currentNeed = nativeAbi.incompatibleNeed(current)
+    test.expect(currentNeed).toBeNil()
+    local libcxx = 'Version needs section .gnu.version_r contains 1 entry:\n'
+      .. '  Name: GLIBCXX_3.4.30  Flags: none  Version: 3\n'
+    local libcxxNeed = nativeAbi.incompatibleNeed(libcxx)
+    test.expect(libcxxNeed).toBe('GLIBCXX')
+  end)
+
+  suite.it('uses the frozen AlmaLinux 9.6 ABI baseline for the builder', function()
+    local dockerfile = assets['builder/Dockerfile']
+    test.expect(dockerfile).toContain('FROM almalinux/9-base:9.6-20251117')
+    test.expect(dockerfile).toContain('vault.almalinux.org/9.6/BaseOS/')
+    test.expect(dockerfile).toContain('vault.almalinux.org/9.6/AppStream/')
+    test.expect(dockerfile).toContain('GLIBC_2.35')
+  end)
+
   suite.it('compares ABI versions numerically', function()
     test.expect(nativeAbi.newer('2.35', '2.34')).toBeTruthy()
     test.expect(nativeAbi.newer('3.4.9', '3.4.29')).toBeFalsy()

@@ -232,3 +232,33 @@ in the initial OpenMW dependency build.
 The package version and checksum contract intentionally targets the pinned
 AlmaLinux 9 x86-64 builder with Python 3.9. Update the wheel set and rerun
 regression checks before changing the builder's Python ABI.
+
+## ABI audit fails after a long SDK export (`GLIBC_2.35` on AlmaLinux 9)
+
+AlmaLinux 9.7 backported selected `GLIBC_2.35` symbols while continuing to
+identify its glibc as 2.34. Builds using a floating `almalinux:9` image can
+therefore produce libraries that cannot load on older EL9 systems. In the
+November 5 incident a restored 150-package SDK took almost 32 minutes to fail
+because the ABI audit ran *after* compressed-archive symlink validation; the
+first mismatch was `debug/lib/libsystemd.so.0.40.0`.
+
+Forge's toolchain builder now starts from the dated official 9.6 base image,
+uses frozen AlmaLinux 9.6 BaseOS/AppStream/CRB/Extras repositories, and fails
+its image build if glibc unexpectedly exports `GLIBC_2.35`. This is a build
+compatibility baseline; the final release smoke still tests current targets.
+The frozen historical build image is not a substitute for an up-to-date
+runtime image or receiving current security fixes.
+
+**After changing this builder recipe, publish the separate**
+`forge-toolchain.yml` **image before retrying** `das-uberbranch.yml`. The
+new image identity intentionally invalidates previous SDK/binary cache keys;
+Forge also separates local vcpkg packages by the ABI baseline so it cannot
+silently reuse old-ABI outputs. A cold dependency rebuild may be necessary.
+
+The ABI audit now runs on the *installed tree before* creating the large 7z
+export. Freshly exported archives use locally inspected symlink targets to
+check listing consistency without separately decompressing the solid archive
+for every `.so` symlink. **Restored or external archives remain untrusted**;
+their symlink targets are still read from the archive before extraction, with
+progress logged every 25 links. A future archive-format improvement could
+remove this cost without weakening validation.

@@ -117,3 +117,25 @@ correctness cost to prevent a source archive hash from hiding a corrupt
 installed file. Measure this cost on hosted runners: if hashing approaches
 extraction time, use an immutable verified unpacked artifact rather than
 weakening the release gate.
+
+## ELF baseline and fresh-export validation
+
+The build container uses the dated official AlmaLinux 9.6 base image **and**
+frozen 9.6 repositories. This matters because 9.7 backported `GLIBC_2.35`
+symbols under a glibc 2.34 version number, creating genuine requirements
+that are not available on earlier EL9 releases. Image immutability and the
+SDK's image-digest cache key prevent silent baseline changes; a change to
+this baseline deliberately costs one cold dependency rebuild.
+
+The `readelf --version-info` audit now checks imported GNU version **needs**,
+not exported version definitions. It runs on the installed vcpkg tree *before*
+7z export, reporting progress every 100 ELF files. This prevents a late ABI
+failure from wasting compression and archive inspection work.
+
+For a **newly created** SDK, Forge validates the archive's member table and
+compares listed symlinks with the already audited local installation. This
+avoids reopening a solid 7z archive separately for each library link. For
+**cached or external archives**, Forge still inspects actual compressed link
+targets before extraction; that slower operation is deliberately kept as a
+security boundary. Do not generalize the fresh-export shortcut to untrusted
+archives or accept an unauthenticated manifest in lieu of archive bytes.
