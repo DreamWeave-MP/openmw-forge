@@ -1,5 +1,13 @@
 FROM almalinux:9
 
+# Package-only runs need the ABI/debug tooling and system XCB libraries.
+# These cannot be borrowed from an earlier ephemeral build container.
+RUN dnf install -y epel-release && dnf install -y \
+    binutils tar gzip findutils coreutils \
+    libxkbcommon-x11 libxcb xcb-util xcb-util-image \
+    xcb-util-keysyms xcb-util-wm xcb-util-renderutil xcb-util-cursor \
+    && dnf clean all
+
 WORKDIR /builder
 
 COPY config/ config/

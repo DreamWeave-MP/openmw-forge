@@ -13,6 +13,7 @@ DEPS_PREFIX="${TARBALL_DEPS_PREFIX:-$BUILDER_ROOT/work/deps}"
 DEPS_ARCHIVE_CACHE_DIR=""
 INSTALL_QT=true
 INSTALL_SYSTEM_PACKAGES=true
+REQUIRE_EXPLICIT_ARCHIVE=false
 QT_VER="${QT_VER}"
 
 usage() {
@@ -34,6 +35,7 @@ Options:
                               Default: ${QT_VER}
     --no-qt                   Skip Qt installation.
     --no-system-packages      Skip dnf package installation.
+    --require-archive         Require --deps-archive; never fall back to legacy release pins.
     --prefix <dir>            Alias for --deps-prefix.
     -h, --help                Show this message.
 EOF
@@ -350,6 +352,7 @@ while [[ $# -gt 0 ]]; do
         --qt-version)         QT_VER="${2:?--qt-version requires a value}"; shift 2 ;;
         --no-qt)              INSTALL_QT=false; shift ;;
         --no-system-packages) INSTALL_SYSTEM_PACKAGES=false; shift ;;
+        --require-archive)   REQUIRE_EXPLICIT_ARCHIVE=true; shift ;;
         -h|--help)            usage 0 ;;
         *)                    echo "error: unknown argument: $1" >&2; usage 1 ;;
     esac
@@ -360,7 +363,12 @@ DEPS_ARCHIVE_CACHE_DIR="${DEPS_PREFIX}/.deps-archive-cache"
 mkdir -p "$DEPS_PREFIX"
 
 ARCHIVE_FILE=""
-if ! acquire_archive_file "$CLI_DEPS_ARCHIVE" "explicit --deps-archive" 1; then
+if [[ "$REQUIRE_EXPLICIT_ARCHIVE" == true ]]; then
+    if ! acquire_archive_file "$CLI_DEPS_ARCHIVE" "explicit --deps-archive" 1; then
+        echo "error: explicit AlmaLinux 9 dependency archive is required; refusing legacy fallback" >&2
+        exit 1
+    fi
+elif ! acquire_archive_file "$CLI_DEPS_ARCHIVE" "explicit --deps-archive" 1; then
     if ! acquire_archive_file "$DEPS_ARCHIVE_ENV" "TARBALL_DEPS_ARCHIVE/DEPS_ARCHIVE" 0; then
         if ! acquire_archive_file "$VCPKG_DEPS_ARCHIVE" "VCPKG_DEPS_ARCHIVE" 0; then
             if ! acquire_archive_file "$DEPS_ARCHIVE_URL" "DEPS_ARCHIVE_URL fallback" 0; then

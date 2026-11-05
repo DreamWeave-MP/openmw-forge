@@ -34,6 +34,9 @@ Options:
     --build-type <value>       Debug, Release, RelWithDebInfo, MinSizeRel, None.
     --clean                    Forward to build_binaries.sh.
     --stage-only               Build and populate package staging only.
+    --run-tests                Build and run both GoogleTest suites.
+    --gtest-filter VALUE       Select GoogleTest cases.
+    --no-prepare               Reuse installed Qt and vcpkg packages.
     --portable                 Forward to assemble_tarball.sh through build_binaries.sh.
     --keep-box                 Reuse existing distrobox instead of recreating.
     --keep-image               Alias for --keep-box.
@@ -67,9 +70,9 @@ while [[ $# -gt 0 ]]; do
         --output-dir)         OUTPUT_DIR="${2:?--output-dir requires a value}"; shift 2 ;;
         --deps-archive)       CLI_DEPS_ARCHIVE="${2:?--deps-archive requires a value}"; shift 2 ;;
         --build-type)         BUILD_TYPE="${2:?--build-type requires a value}"; shift 2 ;;
-        --clean|--stage-only|--portable|--no-system-packages|--no-qt|--no-ccache)
+        --clean|--stage-only|--portable|--no-system-packages|--no-qt|--no-ccache|--run-tests|--no-prepare|--no-compat-check|--no-smoke|--strict-deps)
                               FORWARD_ARGS+=("$1"); shift ;;
-        --qt-version|--triplet|--jobs|--cmake-arg)
+        --qt-version|--triplet|--jobs|--cmake-arg|--gtest-filter)
                               FORWARD_ARGS+=("$1" "${2:?$1 requires a value}"); shift 2 ;;
         --keep-box|--keep-image) KEEP_BOX=true; shift ;;
         -h|--help)            usage 0 ;;

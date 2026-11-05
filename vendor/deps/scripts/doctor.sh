@@ -73,7 +73,7 @@ check_command curl "curl is available"
 if [ -n "$OPENMW_DEPS_7ZIP_CMD" ]; then
     check_ok "7zip command is available ($OPENMW_DEPS_7ZIP_CMD)"
 else
-    check_fail "7zip command is not available (tried: 7z, 7zz, 7za)"
+    echo "[INFO] 7zip unavailable before package installation (checked after install)"
 fi
 
 if [ -d "$OUTPUT_DIR" ]; then

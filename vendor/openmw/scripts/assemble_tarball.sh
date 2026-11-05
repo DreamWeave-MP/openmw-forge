@@ -40,6 +40,7 @@ Options:
     --build-type <value>       Debug, Release, RelWithDebInfo, MinSizeRel, None.
                                If omitted, read from CMakeCache.txt, then RelWithDebInfo.
     --triplet <value>          vcpkg triplet. Default: $VCPKG_TARGET_TRIPLET
+    --qt-version <ver>        Qt installed version. Default: $QT_VER
     --portable                 Store config/user-data/data-local inside tarball dir.
     --stage-only               Populate package staging only; skip debug split,
                                compatibility audit, smoke tests, and tarballs.
@@ -80,6 +81,7 @@ while [[ $# -gt 0 ]]; do
         --output-dir)     OUTPUT_DIR="${2:?--output-dir requires a value}"; shift 2 ;;
         --build-type)     BUILD_TYPE="${2:?--build-type requires a value}"; shift 2 ;;
         --triplet)        VCPKG_TARGET_TRIPLET="${2:?--triplet requires a value}"; shift 2 ;;
+        --qt-version)     QT_VER="${2:?--qt-version requires a value}"; shift 2 ;;
         --portable)       PORTABLE=true; shift ;;
         --stage-only)     STAGE_ONLY=true; shift ;;
         --no-compat-check) RUN_COMPAT=false; shift ;;

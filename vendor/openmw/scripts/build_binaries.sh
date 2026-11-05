@@ -15,6 +15,11 @@ RUN_PREPARE=true
 RUN_ASSEMBLE=false
 STAGE_ONLY=false
 PORTABLE=false
+RUN_COMPAT=true
+RUN_SMOKE=true
+RUN_TESTS=false
+STRICT_DEPS=false
+GTEST_FILTER="${GTEST_FILTER:-*}"
 JOBS="$(nproc)"
 PREPARE_ARGS=()
 CONFIGURE_ARGS=()
@@ -48,7 +53,11 @@ Build options:
     --no-prepare               Skip scripts/prepare_deps.sh.
     --assemble                 Run scripts/assemble_tarball.sh after build.
     --stage-only               Populate package staging only; implies --assemble.
+    --run-tests                Compile and execute OpenMW and components GoogleTest suites.
+    --gtest-filter <value>     Filter GoogleTest cases when --run-tests is set.
     --portable                 Forward portable mode to assembly.
+    --no-compat-check         Skip symbol-version audit during packaging.
+    --no-smoke                Skip packaged binary smoke checks.
     --no-system-packages       Forward to prepare_deps.sh.
     --no-qt                    Forward to prepare_deps.sh.
     --qt-version <ver>         Forward to prepare_deps.sh/configure defaults.
@@ -72,14 +81,21 @@ while [[ $# -gt 0 ]]; do
         --build-type)         BUILD_TYPE="${2:?--build-type requires a value}"; shift 2 ;;
         --jobs)               JOBS="${2:?--jobs requires a value}"; shift 2 ;;
         --no-prepare)         RUN_PREPARE=false; shift ;;
+        --strict-deps)        STRICT_DEPS=true; shift ;;
         --assemble)           RUN_ASSEMBLE=true; shift ;;
         --stage-only)         RUN_ASSEMBLE=true; STAGE_ONLY=true; shift ;;
+        --run-tests)          RUN_TESTS=true; shift ;;
+        --gtest-filter)       GTEST_FILTER="${2:?--gtest-filter requires a value}"; shift 2 ;;
         --portable)           PORTABLE=true; shift ;;
+        --no-compat-check)    RUN_COMPAT=false; shift ;;
+        --no-smoke)           RUN_SMOKE=false; shift ;;
         --no-system-packages|--no-qt)
                               PREPARE_ARGS+=("$1"); shift ;;
         --qt-version)
+                              ASSEMBLE_QT_VERSION="${2:?--qt-version requires a value}"
                               PREPARE_ARGS+=("$1" "${2:?--qt-version requires a value}"); shift 2 ;;
         --triplet|--cmake-arg)
+                              [[ "$1" == '--triplet' ]] && ASSEMBLE_TRIPLET="${2:?--triplet requires a value}"
                               CONFIGURE_ARGS+=("$1" "${2:?$1 requires a value}"); shift 2 ;;
         --no-ccache|--build-tests-only|--build-openmw-only)
                               CONFIGURE_ARGS+=("$1"); shift ;;
@@ -99,6 +115,7 @@ if [[ "$RUN_PREPARE" == true ]]; then
     echo "=== Stage 1: Prepare deps ==="
     prepare_cmd=("$SCRIPT_DIR/prepare_deps.sh" --deps-prefix "$DEPS_PREFIX")
     [[ -n "$CLI_DEPS_ARCHIVE" ]] && prepare_cmd+=(--deps-archive "$CLI_DEPS_ARCHIVE")
+    [[ "$STRICT_DEPS" == true ]] && prepare_cmd+=(--require-archive)
     prepare_cmd+=("${PREPARE_ARGS[@]}")
     "${prepare_cmd[@]}"
 fi
@@ -119,6 +136,10 @@ fi
 export CC="${CC:-gcc}"
 export CXX="${CXX:-g++}"
 
+if [[ "$RUN_TESTS" == true ]]; then
+    CONFIGURE_ARGS+=(--cmake-arg '-DBUILD_OPENMW_TESTS=ON' --cmake-arg '-DBUILD_COMPONENTS_TESTS=ON')
+fi
+
 echo "=== Stage 2: Configure ==="
 "$SCRIPT_DIR/configure_openmw.sh" \
     --openmw-source-root "$OPENMW_SOURCE_ROOT" \
@@ -129,6 +150,26 @@ echo "=== Stage 2: Configure ==="
 
 echo "=== Stage 3: Build ==="
 cmake --build "$OPENMW_BUILD_DIR" -- -j"$JOBS"
+
+if [[ "$RUN_TESTS" == true ]]; then
+    echo "=== Stage 3b: Run OpenMW GoogleTest suites ==="
+    cmake --build "$OPENMW_BUILD_DIR" --target openmw-tests components-tests -- -j"$JOBS"
+    test_triplet="${VCPKG_TARGET_TRIPLET:-x64-linux-dynamic}"
+    for ((i=0; i<${#CONFIGURE_ARGS[@]}; i++)); do
+        if [[ "${CONFIGURE_ARGS[$i]}" == '--triplet' ]]; then
+            test_triplet="${CONFIGURE_ARGS[$((i + 1))]}"
+        fi
+    done
+    test_lib="$DEPS_PREFIX/openmw-deps/installed/$test_triplet/lib"
+    for test_bin in openmw-tests components-tests; do
+        if [[ ! -x "$OPENMW_BUILD_DIR/$test_bin" ]]; then
+            echo "error: missing test executable: $OPENMW_BUILD_DIR/$test_bin" >&2
+            exit 1
+        fi
+        LD_LIBRARY_PATH="$test_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+            "$OPENMW_BUILD_DIR/$test_bin" "--gtest_filter=$GTEST_FILTER"
+    done
+fi
 
 if [[ "$RUN_ASSEMBLE" == true ]]; then
     echo "=== Stage 4: Assemble tarball ==="
@@ -141,7 +182,11 @@ if [[ "$RUN_ASSEMBLE" == true ]]; then
         --build-type "$BUILD_TYPE"
     )
     [[ "$PORTABLE" == true ]] && assemble_cmd+=(--portable)
+    [[ "$RUN_COMPAT" == false ]] && assemble_cmd+=(--no-compat-check)
+    [[ "$RUN_SMOKE" == false ]] && assemble_cmd+=(--no-smoke)
     [[ "$STAGE_ONLY" == true ]] && assemble_cmd+=(--stage-only)
+    [[ -n "${ASSEMBLE_TRIPLET:-}" ]] && assemble_cmd+=(--triplet "$ASSEMBLE_TRIPLET")
+    [[ -n "${ASSEMBLE_QT_VERSION:-}" ]] && assemble_cmd+=(--qt-version "$ASSEMBLE_QT_VERSION")
     "${assemble_cmd[@]}"
 fi
 

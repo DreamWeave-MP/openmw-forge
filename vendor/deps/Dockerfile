@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=almalinux:8
+ARG BASE_IMAGE=almalinux:9
 FROM ${BASE_IMAGE}
 
 COPY . /build
