@@ -8,3 +8,6 @@ artifacts/
 *.tar.gz
 build/
 _site/
+# Generated StroggForge/Zola documentation outputs
+site/content/manual/
+public/

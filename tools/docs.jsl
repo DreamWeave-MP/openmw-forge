@@ -1,0 +1,53 @@
+#!/usr/bin/env -S jess run --trusted --package .
+--!strict
+-- Documentation is authored once in docs/. This generator creates a Zola
+-- view on top of that content, just as StroggForge generates its reference.
+local fs = require '@dream/fs'
+local util = require '@forge/native-util'
+
+local Pages = {
+  { file = 'index.md', title = 'Documentation overview', weight = 1 },
+  { file = 'CLI.md', title = 'CLI reference', weight = 10 },
+  { file = 'CI.md', title = 'CI and Pages', weight = 20 },
+  { file = 'RELEASE.md', title = 'Scheduled releases', weight = 30 },
+  { file = 'RELEASE-READINESS.md', title = 'Release readiness', weight = 40 },
+  { file = 'VALIDATION.md', title = 'Validation and testing', weight = 50 },
+  { file = 'AUDIT.md', title = 'Original repositories audit', weight = 60 },
+  { file = 'PERFORMANCE.md', title = 'Performance and cache design', weight = 70 },
+  { file = 'TROUBLESHOOTING.md', title = 'Troubleshooting', weight = 80 },
+}
+
+local function stem(name: string): string
+  if name == 'index.md' then return '_index.md' end
+  return name:lower()
+end
+
+local function render(name: string, title: string, weight: number, source: string): string
+  local raw = source:gsub('^%-%-%-%s*layout:%s*default%s*%-%-%-%s*', '')
+  -- Original docs use Markdown-relative links. Convert them to Zola's
+  -- compile-time verified internal links instead of brittle site-relative URLs.
+  raw = raw:gsub('%(([%w%-]+)%.md%)', function(link)
+    return '(@/manual/' .. stem(link .. '.md') .. ')'
+  end)
+  local header = if name == 'index.md' then
+    '+++\ntitle = "' .. title .. '"\ntemplate = "section.html"\npage_template = "page.html"\nsort_by = "weight"\n+++\n\n'
+  else
+    '+++\ntitle = "' .. title .. '"\nweight = ' .. tostring(weight) .. '\ndescription = "OpenMW Forge — ' .. title .. '"\n+++\n\n'
+  return header .. raw
+end
+
+local function run()
+  local root = fs.cwd()
+  if not root or not fs.isFile(root .. '/jess.toml') then
+    error('run the documentation generator from the OpenMW Forge repository root')
+  end
+  local generated = root .. '/site/content/manual'
+  util.resetManaged(generated)
+  for _, page in Pages do
+    local content = util.file(root .. '/docs/' .. page.file)
+    util.write(generated .. '/' .. stem(page.file), render(page.file, page.title, page.weight, content))
+  end
+  print(`PASS generated {#Pages} Zola documentation pages from docs/`)
+end
+
+run()
