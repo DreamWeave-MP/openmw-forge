@@ -304,6 +304,16 @@ local unsupportedHeadless = invoke({ 'build', '--no-qt' }, empty)
 check(not unsupportedHeadless.success and (unsupportedHeadless.stderr or ''):find('--no-qt', 1, true) ~= nil,
   'unsupported Qt-less builds must be rejected at argument parsing')
 
+-- The lock coordinator must never create work/locks inside a user-owned
+-- checkout before discovering that the build output overlaps that checkout.
+local unsafeCheckout = scratch .. '/unsafe-source-root'
+util.mkdir(unsafeCheckout)
+util.write(unsafeCheckout .. '/CMakeLists.txt', 'project(OpenMWFixture)\n')
+local unsafeInvocation = invoke({ 'build', '--mode', 'local', '--source', unsafeCheckout }, unsafeCheckout)
+check(not unsafeInvocation.success, 'source-overlap preflight must fail')
+check(not fs.lstat(unsafeCheckout .. '/work'),
+  'source overlap must be rejected without creating even a lock directory inside the checkout')
+
 -- Two invocations targeting one CMake tree must not race a cleanup/package.
 local lockDirectory = empty .. '/work/locks'
 util.mkdir(lockDirectory)
@@ -365,6 +375,12 @@ releaseArtifacts.publish(pairRoot, PairName, build .. '/package-staging',
 local pairMain = pairRoot .. '/' .. PairName .. '.tar.gz'
 local pairDebug = pairRoot .. '/' .. PairName .. '-debug.tar.gz'
 check(fs.isFile(pairMain) and fs.isFile(pairDebug), 'both main and debug archives must be published')
+-- A main-only publication beside an existing debug sidecar must throw; the fixture continues.
+local mainOnlyOk = pcall(releaseArtifacts.publish, pairRoot, PairName, build .. '/package-staging',
+  build .. '/package-staging-debug', false)
+check(not mainOnlyOk, 'a main-only package must not coexist with a stale matching debug archive')
+check(fs.isFile(pairMain) and fs.isFile(pairDebug),
+  'rejected main-only publication must preserve the existing complete release pair')
 local oldMain = util.file(pairMain)
 local oldDebug = util.file(pairDebug)
 local pendingPair = pairRoot .. '/.forge-archive-publication'

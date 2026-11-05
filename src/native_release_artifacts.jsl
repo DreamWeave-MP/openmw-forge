@@ -53,6 +53,12 @@ end
 local function publish(output: string, name: string, stage: string, debugStage: string, includeDebug: boolean)
   util.mkdir(output)
   recover(output)
+  -- A Debug-only build has no detached symbols archive. Never silently
+  -- leave a previous Release build's debug sidecar beside a new main tarball.
+  if not includeDebug and fs.lstat(output .. '/' .. name .. '-debug.tar.gz') then
+    error('refusing to publish a main-only archive beside a stale debug sidecar')
+  end
+
   local pending = output .. '/' .. PendingName
   util.resetManaged(pending)
   local entries: { Entry } = { { name = name .. '.tar.gz', previous = false } }

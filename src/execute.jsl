@@ -232,6 +232,13 @@ local function execute(plan: Plan, options: Options): (boolean, string?)
   local needsBuild = options.command == 'build' or options.command == 'package' or options.command == 'pipeline'
   if not needsBuild then return executeUnlocked(plan, options) end
 
+  -- No lock files, generated directories, or other writes are permitted before
+  -- validating that the work roots cannot overlap a user-owned source checkout.
+  local preflightOk, preflightMessage = preflight(options)
+  if not preflightOk then return false, preflightMessage end
+  local safe, safetyMessage = checkDestinations(options)
+  if not safe then return false, safetyMessage end
+
   local directory = options.root .. '/work/locks'
   util.mkdir(directory)
   local sourceGuard = nil
