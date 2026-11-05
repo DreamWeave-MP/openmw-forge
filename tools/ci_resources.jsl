@@ -33,11 +33,23 @@ local source = root .. '/work/cache/vcpkg'
 local owner = source .. '/.git/forge-owner'
 local stat = fs.lstat(source)
 if stat then
-  if stat.kind ~= 'dir' or not fs.isFile(owner)
-    or util.file(owner) ~= 'openmw-forge-vcpkg-v1\n' then
-    error('refusing to remove unowned vcpkg checkout')
+  -- A cache hit can bypass vcpkg checkout creation altogether. Docker may
+  -- still create its empty bind-mount directory in the CI workspace. Never
+  -- let an unowned directory abort the unrelated OpenMW build; leave it
+  -- untouched and continue reclaiming the known binary cache instead.
+  if stat.kind ~= 'dir' then
+    error('unsafe non-directory vcpkg checkout mount: ' .. source)
   end
-  util.remove(source)
+  local gitDir = fs.lstat(source .. '/.git')
+  local marker = fs.lstat(owner)
+  local owned = gitDir ~= nil and gitDir.kind == 'dir'
+    and marker ~= nil and marker.kind == 'file'
+    and util.file(owner) == 'openmw-forge-vcpkg-v1\n'
+  if owned then
+    util.remove(source)
+  else
+    print('SKIP unowned vcpkg checkout; preserving directory: ' .. source)
+  end
 end
 
 local binaries = root .. '/work/cache/vcpkg-binaries'

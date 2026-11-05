@@ -304,8 +304,9 @@ check(invalidRuntime ~= nil and not invalidRuntime.success and not fs.exists(scr
 
 util.stream(jessBin, { 'workspace', 'pack', '--workspace', mockSource,
   '--output', mockedBin .. '/podman', '--runtime', jessBin })
--- The disk reclamation helper must refuse local invocation and unowned
--- checkout content, then reclaim only its specifically approved CI caches.
+-- The disk reclamation helper must refuse local invocation, preserve unowned
+-- checkout content without blocking a valid cached-SDK OpenMW build, and
+-- reclaim only its explicitly Forge-owned transient checkout state.
 local ciRoot = scratch .. '/ci-workspace'
 local ciVcpkg = ciRoot .. '/work/cache/vcpkg'
 local ciBinaries = ciRoot .. '/work/cache/vcpkg-binaries'
@@ -319,9 +320,33 @@ local localCleanup = process.run(jessBin, cleanupArgs, { cwd = ciRoot, stdout = 
 check(localCleanup ~= nil and not localCleanup.success, 'CI cache cleanup must refuse non-GitHub invocation')
 local foreignCleanup = process.run(jessBin, cleanupArgs, { cwd = ciRoot, env = cleanupEnv,
   stdout = 'capture', stderr = 'capture' })
-check(foreignCleanup ~= nil and not foreignCleanup.success,
-  'CI cache cleanup must not delete unowned vcpkg checkout')
+check(foreignCleanup ~= nil and foreignCleanup.success,
+  'CI cleanup must not abort when a vcpkg mount is unowned')
 check(util.file(ciVcpkg .. '/KEEP') == 'personal data', 'rejected cleanup must preserve unowned files')
+check(not fs.exists(ciBinaries), 'CI cleanup still reclaims binary cache if vcpkg mount is unowned')
+
+-- An empty directory created by Docker for a cache-hit bind mount has no
+-- ownership marker. Preserve it and continue instead of failing at build time.
+util.remove(ciVcpkg)
+util.mkdir(ciVcpkg)
+local emptyCleanup = process.run(jessBin, cleanupArgs, { cwd = ciRoot, env = cleanupEnv,
+  stdout = 'capture', stderr = 'capture' })
+check(emptyCleanup ~= nil and emptyCleanup.success and fs.isDir(ciVcpkg),
+  'empty unowned Docker mount must not abort a cached-SDK build')
+
+-- A forged marker reached via a .git symlink must never authorize deletion.
+local outside = scratch .. '/unowned-git'
+util.mkdir(outside)
+util.write(outside .. '/forge-owner', 'openmw-forge-vcpkg-v1\n')
+local linked, linkedFailure = fs.symlink(outside, ciVcpkg .. '/.git')
+if not linked then error('cannot create marker symlink fixture: ' .. (linkedFailure or 'unknown')) end
+
+local linkedCleanup = process.run(jessBin, cleanupArgs, { cwd = ciRoot, env = cleanupEnv,
+  stdout = 'capture', stderr = 'capture' })
+check(linkedCleanup ~= nil and linkedCleanup.success and fs.lstat(ciVcpkg .. '/.git') ~= nil,
+  'symlinked ownership marker must not authorize cleanup')
+util.remove(ciVcpkg .. '/.git')
+util.mkdir(ciBinaries)
 util.mkdir(ciVcpkg .. '/.git')
 util.write(ciVcpkg .. '/.git/forge-owner', 'openmw-forge-vcpkg-v1\n')
 local permittedCleanup = process.run(jessBin, cleanupArgs, { cwd = ciRoot, env = cleanupEnv,
