@@ -9,12 +9,15 @@ local packaging = require '@forge/native-package'
 
 type Options = args.Options
 
-local function setTools(): { [string]: string }
+local function setTools(options: Options): { [string]: string }
   local path = process.env('PATH') or '/usr/bin:/bin'
   return {
     PATH = '/opt/rh/gcc-toolset-13/root/usr/bin:/usr/local/bin:' .. path,
     CC = '/opt/rh/gcc-toolset-13/root/usr/bin/gcc',
     CXX = '/opt/rh/gcc-toolset-13/root/usr/bin/g++',
+    CCACHE_DIR = process.env('CCACHE_DIR') or (if options.mode == 'local' then options.root .. '/work/cache/ccache' else '/forge/work/ccache'),
+    CCACHE_MAXSIZE = process.env('CCACHE_MAXSIZE') or '1G',
+    CCACHE_COMPRESS = 'true',
   }
 end
 
@@ -68,6 +71,8 @@ local function extractDeps(options: Options)
   local digest = util.checked('sha256sum', { archive }):match('^([0-9a-fA-F]+)')
   if not digest then error('could not fingerprint dependency archive') end
   local final = options.deps .. '/openmw-deps'
+  util.recoverManagedDirectory(final)
+
   local fingerprint = digest:lower() .. ':' .. options.triplet .. '\n'
   if util.managed(final) and fs.isFile(final .. '/.forge-extract-id')
     and util.file(final .. '/.forge-extract-id') == fingerprint
@@ -99,10 +104,13 @@ local function extractDeps(options: Options)
   if not root or not fs.isDir(root .. '/installed/' .. options.triplet .. '/lib') then
     error('dependency export lacks vcpkg.cmake and installed triplet libraries')
   end
-  util.resetManaged(final)
-  -- A copied tree handles archives containing symlinks with shared ancestors.
-  util.tree(root, final)
-  util.write(final .. '/.forge-extract-id', fingerprint)
+  -- Validate and populate the *replacement* before touching a working
+  -- export. Recovery keeps the previous tree if publication is interrupted.
+  local nextTree = options.deps .. '/openmw-deps-next'
+  util.resetManaged(nextTree)
+  util.tree(root, nextTree)
+  util.write(nextTree .. '/.forge-extract-id', fingerprint)
+  util.publishManagedDirectory(nextTree, final)
   util.remove(temp)
 end
 
@@ -147,6 +155,16 @@ local function configure(options: Options)
     '-DCMAKE_BUILD_TYPE=' .. options.buildType,
   }
 
+  -- New build trees prefer Ninja; preserve a previously selected generator
+  -- when an existing CMakeCache.txt is present.
+  if not fs.isFile(options.build .. '/CMakeCache.txt') then
+    local ninja = process.run('ninja', { '--version' }, { stdout = 'null', stderr = 'null' })
+    if ninja and ninja.success then
+      table.insert(flags, '-G')
+      table.insert(flags, 'Ninja')
+    end
+  end
+
   if not options.noCcache then
     table.insert(flags, '-DCMAKE_C_COMPILER_LAUNCHER=ccache')
     table.insert(flags, '-DCMAKE_CXX_COMPILER_LAUNCHER=ccache')
@@ -158,16 +176,16 @@ local function configure(options: Options)
   end
 
   for _, value in options.cmakeArgs do table.insert(flags, value) end
-  util.stream('cmake', flags, nil, setTools())
+  util.stream('cmake', flags, nil, setTools(options))
 end
 
 local function build(options: Options)
   util.prepareBuildRoot(options.build, options.clean)
   if not options.noPrepare then prepare(options) end
   configure(options)
-  util.stream('cmake', { '--build', options.build, '--', '-j' .. tostring(options.jobs) }, nil, setTools())
+  util.stream('cmake', { '--build', options.build, '--parallel', tostring(options.jobs) }, nil, setTools(options))
   if options.runTests then
-    util.stream('cmake', { '--build', options.build, '--target', 'openmw-tests', 'components-tests', '--', '-j' .. tostring(options.jobs) }, nil, setTools())
+    util.stream('cmake', { '--build', options.build, '--target', 'openmw-tests', 'components-tests', '--parallel', tostring(options.jobs) }, nil, setTools(options))
     local env = { LD_LIBRARY_PATH = options.deps .. '/openmw-deps/installed/' .. options.triplet .. '/lib:' .. options.deps .. '/QT/' .. options.qtVersion .. '/gcc_64/lib' }
     for _, name in { 'openmw-tests', 'components-tests' } do
       local binary = options.build .. '/' .. name
@@ -175,6 +193,12 @@ local function build(options: Options)
       util.stream(binary, { '--gtest_filter=' .. options.gtestFilter }, options.build, env)
     end
   end
+
+  if not options.noCcache then
+    -- Report actual reuse rather than claiming hypothetical speedups.
+    util.stream('ccache', { '--show-stats' }, nil, setTools(options))
+  end
+
   packaging.package(options)
 end
 

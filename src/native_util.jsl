@@ -125,6 +125,47 @@ local function resetManaged(path: string)
   write(path .. '/' .. GeneratedMarker, 'openmw-forge-managed-v1\n')
 end
 
+-- A generated directory is published with a rollback-able rename. It is
+-- never acceptable to delete the working copy before validating a successor.
+-- An interrupted publication leaves `<path>-previous`, which the next run
+-- restores when there is no current tree.
+local function recoverManagedDirectory(destination: string)
+  local previous = destination .. '-previous'
+  if not fs.lstat(previous) then return end
+  if not managed(previous) then error('refusing unowned recovery tree: ' .. previous) end
+
+  if not fs.lstat(destination) then
+    local restored, failure = fs.rename(previous, destination)
+    if not restored then error('cannot restore managed tree: ' .. (failure or 'unknown')) end
+  else
+    if not managed(destination) then error('refusing unowned destination tree: ' .. destination) end
+    remove(previous)
+  end
+end
+
+local function publishManagedDirectory(candidate: string, destination: string)
+  if not managed(candidate) then error('refusing unowned staged directory: ' .. candidate) end
+  recoverManagedDirectory(destination)
+  local previous = destination .. '-previous'
+  local hadPrevious = fs.lstat(destination) ~= nil
+  if hadPrevious then
+    if not managed(destination) then error('refusing unowned destination tree: ' .. destination) end
+    local moved, failure = fs.rename(destination, previous)
+    if not moved then error('cannot safeguard previous tree: ' .. (failure or 'unknown')) end
+  end
+
+  local published, failure = fs.rename(candidate, destination)
+  if not published then
+    if hadPrevious then
+      local restored, rollback = fs.rename(previous, destination)
+      if not restored then error('publication and rollback failed: ' .. (failure or '') .. '; ' .. (rollback or '')) end
+    end
+    error('managed directory publication failed: ' .. (failure or 'unknown'))
+  end
+
+  if hadPrevious then remove(previous) end
+end
+
 local function atomicArchive(program: string, argv: { string }, output: string)
   local temporary = output .. '.forge-incomplete'
   remove(temporary)
@@ -153,4 +194,5 @@ return table.freeze {
   write = write, copy = copy, tree = tree, list = list, file = file, tool = tool,
   prepareBuildRoot = prepareBuildRoot, atomicArchive = atomicArchive,
   resetManaged = resetManaged, managed = managed,
+  recoverManagedDirectory = recoverManagedDirectory, publishManagedDirectory = publishManagedDirectory,
 }
