@@ -8,7 +8,30 @@ if type(output) ~= 'string' or output:sub(1, 1) ~= '/' then
   error('usage: tools/release.jsl /absolute/path/to/openmw-forge-linux-x64')
 end
 
-local runtime = process.env('JESS_BIN') or 'jess'
+-- Jess resolves the CLI name on PATH when launching a process, but
+-- `workspace pack --runtime` reads the argument as a filesystem path.
+-- Always pass an absolute executable path to the packer.
+local function runtimePath(): string
+  local configured = process.env('JESS_BIN')
+  if configured and configured ~= '' then
+    if configured:sub(1, 1) ~= '/' or not fs.isFile(configured) then
+      error('JESS_BIN must be the absolute path to an installed Jess executable: ' .. configured)
+    end
+    return configured
+  end
+
+  local result, problem = process.run('which', { 'jess' }, { stdout = 'capture', stderr = 'capture' })
+  if not result or not result.success then
+    error('cannot locate Jess on PATH; set JESS_BIN to the absolute executable path: ' .. (problem or ''))
+  end
+  local resolved = (result.stdout or ''):match('^([^\r\n]+)')
+  if not resolved or resolved:sub(1, 1) ~= '/' or not fs.isFile(resolved) then
+    error('Jess on PATH did not resolve to an executable file: ' .. (resolved or 'missing'))
+  end
+  return resolved
+end
+
+local runtime = runtimePath()
 local root = fs.cwd()
 if not root or not fs.isFile(root .. '/jess.toml') then
   error('run the Jess release script from the OpenMW Forge source root')

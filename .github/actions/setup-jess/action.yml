@@ -27,3 +27,4 @@ runs:
         chmod +x "$RUNNER_TEMP/forge-jess/jess"
         "$RUNNER_TEMP/forge-jess/jess" --version
         echo "$RUNNER_TEMP/forge-jess" >> "$GITHUB_PATH"
+        echo "JESS_BIN=$RUNNER_TEMP/forge-jess/jess" >> "$GITHUB_ENV"
