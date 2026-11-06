@@ -73,12 +73,20 @@ local escaped = linkParent .. '/escape.so'
 local escapedLink, escapedFailure = fs.symlink('../../../../../etc/passwd', escaped)
 if not escapedLink then error('cannot create escape fixture: ' .. (escapedFailure or 'unknown')) end
 -- An escaping extracted symlink is deliberately rejected by the validator.
-local rejectedEscape = pcall(nativeArchive.validateExtractedLinks, linkRoot)
-check(not rejectedEscape, 'post-extraction validation rejects links outside staging root')
+local rejectedEscape, escapeError = pcall(nativeArchive.validateExtractedLinks, linkRoot)
+check(not rejectedEscape and type(escapeError) == 'string'
+  and escapeError:find('escaping or dangling archive link: ', 1, true) ~= nil
+  and escapeError:find('escape.so', 1, true) ~= nil,
+  'post-extraction validation must report the escaping link, not an unrelated exception')
 local chainEscape, chainEscapeFailure = fs.symlink('escape.so', linkParent .. '/escape-chain.so')
 if not chainEscape then error('cannot create escape-chain fixture: ' .. (chainEscapeFailure or 'unknown')) end
-local rejectedChainedEscape = pcall(nativeArchive.validateExtractedLinks, linkRoot)
-check(not rejectedChainedEscape, 'post-extraction validation rejects links escaping through another symlink')
+-- validateExtractedLinks must reject escape-chain.so even though it traverses another link;
+-- this negative security fixture intentionally catches that precise rejection to continue testing.
+local rejectedChainedEscape, chainError = pcall(nativeArchive.validateExtractedLinks, linkRoot)
+check(not rejectedChainedEscape and type(chainError) == 'string'
+  and chainError:find('escaping or dangling archive link: ', 1, true) ~= nil
+  and chainError:find('escape-chain.so', 1, true) ~= nil,
+  'post-extraction validation must reject the chained escape, not an unrelated exception')
 util.remove(linkRoot)
 
 -- vcpkg installs many non-ELF files (including zero/short byte files).
