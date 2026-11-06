@@ -101,15 +101,19 @@ containment, and archive metadata before it publishes the SDK. Never use
 
 Release smoke tests still exercise **both** native executables and packaged
 launchers, including the Qt graphical tools (`openmw-launcher`, `openmw-cs`,
-`openmw-wizard`). Unlike command-line tools, a Qt application may ignore
-`--help` and enter an event loop. Forge now checks those GUI programs for
-**five seconds** with `QT_QPA_PLATFORM=offscreen`. A clean exit passes; a process
+`openmw-wizard`). Forge launches GUI programs **without command-line arguments**:
+OpenMW-CS treats `--help` as a filename and terminates when that file does
+not exist. Unlike command-line tools, graphical applications start their event
+loops rather than consistently supporting a help flag. Forge checks GUI startup
+for **five seconds** with `QT_QPA_PLATFORM=offscreen`. A clean exit passes; a process
 that stays alive through startup with no fatal linker/Qt diagnostics counts as a
 *startup-liveness pass*, then Forge terminates it. Early crashes, loader errors,
-Qt platform failures and OOM kills fail. This does not guarantee complete GUI
+Qt platform failures, reported fatal startup errors, and OOM kills fail.
+A process that displays a non-fatal warning and remains running still counts as
+alive, not fully functional. This check does not guarantee complete GUI
 functionality or a usable display.
 
-Command-line tools retain strict help/exit validation and have a **30-second**
+Command-line tools retain `--help` arguments, strict help/exit validation, and a **30-second**
 execution deadline. In cross-distribution smoke checks, Forge launches
 containers detached, polls their state, collects their logs, and forcibly removes
 each container on completion. These limits do not change the AlmaLinux builder,
