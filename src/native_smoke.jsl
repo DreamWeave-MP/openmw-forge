@@ -48,17 +48,58 @@ local function validateHelpResult(tool: string, label: string, success: boolean,
   return true, nil
 end
 
+-- A Qt GUI may ignore --help and start its event loop. Its ability to
+-- stay alive through a bounded startup window is a liveness check, not a
+-- successful --help response. Do not accept loader/Qt startup diagnostics.
+local GuiTools = { ['openmw-launcher'] = true, ['openmw-cs'] = true, ['openmw-wizard'] = true }
+local GuiWaitSeconds = 5
+local CliWaitSeconds = 30
+
+local function validateGuiResult(label: string, code: number?, timedOut: boolean,
+  stdout: string?, stderr: string?): (boolean, string?)
+  local out = stdout or ''
+  local err = stderr or ''
+  local combined = (out .. err):lower()
+  for _, problem in {
+    'error while loading shared libraries', 'symbol lookup error',
+    'undefined symbol', 'cannot open shared object',
+    'could not load the qt platform plugin',
+    'no qt platform plugin could be initialized',
+    'could not find the qt platform plugin',
+    'could not connect to display',
+    'failed to create context',
+  } do
+    if combined:find(problem, 1, true) then
+      return false, `GUI smoke {label} failed startup: stdout: {out} stderr: {err}`
+    end
+  end
+
+  if timedOut then return true, nil end
+  if code == 0 then return true, nil end
+  return false, `GUI smoke {label} exited with {tostring(code)}: stdout: {out} stderr: {err}`
+end
+
+local function validateBoundedResult(tool: string, label: string, code: number?,
+  timedOut: boolean, stdout: string?, stderr: string?): (boolean, string?)
+  if GuiTools[tool] then return validateGuiResult(label, code, timedOut, stdout, stderr) end
+  if timedOut then return false, `CLI smoke {label} exceeded {CliWaitSeconds}s deadline` end
+  return validateHelpResult(tool, label, code == 0, code, nil, stdout, stderr)
+end
+
 -- Exercise the installed POSIX launchers as users actually invoke them.
 -- Testing only .x86_64 binaries misses broken wrappers, paths and library setup.
 local function runPackageCommand(stage: string, tool: string, name: string, program: string,
   env: { [string]: string })
-  local result, failure = process.run(program, { '--help' }, {
-    cwd = stage, env = env, stdout = 'capture', stderr = 'capture',
-  })
+  -- GNU timeout terminates the full process group; 124 is accepted only for
+  -- known GUI programs that survived a bounded startup without fatal diagnostics.
+  local seconds = if GuiTools[tool] then GuiWaitSeconds else CliWaitSeconds
+  local result, failure = process.run('timeout', {
+    '--signal=TERM', '--kill-after=2s', tostring(seconds) .. 's', program, '--help',
+  }, { cwd = stage, env = env, stdout = 'capture', stderr = 'capture' })
 
   if not result then error(`smoke could not run {name}: {failure or ''}`) end
-  local valid, reason = validateHelpResult(tool, name, result.success,
-    result.code, result.signal, result.stdout, result.stderr)
+  local valid, reason = validateBoundedResult(tool, name, result.code, result.code == 124,
+    result.stdout, result.stderr)
   if not valid then error(reason or `smoke failed: {name}`) end
 end
 
@@ -117,6 +158,97 @@ local function imageDockerfile(tag: string): string
   return `FROM {image[1]}\nRUN {image[2]}\n`
 end
 
+-- Detached containers let Forge poll GUI startup without blocking in
+-- @dream/process.run. A stopped container remains inspectable until cleanup.
+-- No shell, no background subshell, no orphaned GUI after a normal smoke run.
+local function runDistroCommand(engine: string, imageTag: string, volume: string,
+  tag: string, tool: string, entry: string, maxRoundsOverride: number?,
+  testEnvironment: { [string]: string }?)
+  local label = tag .. '/' .. entry
+  local start, why = process.run(engine, {
+    'run', '--detach', '--network', 'none', '-v', volume, '-w', '/pkg',
+    '-e', 'LD_LIBRARY_PATH=/pkg/lib', '-e', 'QT_PLUGIN_PATH=/pkg/plugins',
+    '-e', 'QT_QPA_PLATFORM=offscreen', imageTag, '/pkg/' .. entry, '--help',
+  }, { stdout = 'capture', stderr = 'capture', env = testEnvironment })
+
+  if not start or not start.success then
+    error(`{label} failed to start container: {why or ''} {if start then start.stderr or '' else ''}`)
+  end
+  local cid = (start.stdout or ''):match('^%s*([a-f0-9]+)%s*$')
+  if not cid then error(`{label} returned invalid container ID: {start.stdout or ''}`) end
+
+  local running = false
+  local exitCode: number? = nil
+  local inspectFailure: string? = nil
+  local maxRounds = maxRoundsOverride or (if GuiTools[tool] then 20 else 120)
+  for round = 1, maxRounds do
+    local state, failure = process.run(engine, { 'inspect', '--format',
+      '{{.State.Running}}:{{.State.ExitCode}}:{{.State.OOMKilled}}', cid },
+      { stdout = 'capture', stderr = 'capture', env = testEnvironment })
+
+    if not state or not state.success then
+      inspectFailure = `inspect {label}: {failure or ''} {if state then state.stderr or '' else ''}`
+      break
+    end
+    local isRunning, code, oom = (state.stdout or ''):match('^(%a+):(%d+):(%a+)%s*$')
+    if not isRunning or not code or not oom then
+      inspectFailure = `malformed container status for {label}: {state.stdout or ''}`
+      break
+    end
+    running = isRunning == 'true'
+    exitCode = tonumber(code)
+    if oom == 'true' then
+      inspectFailure = `smoke {label} was killed by out-of-memory`
+      break
+    end
+
+    if not running then break end
+    if round < maxRounds then process.sleep(0.25) end
+  end
+
+  local logs, logFailure = process.run(engine, { 'logs', cid }, {
+    stdout = 'capture', stderr = 'capture', env = testEnvironment,
+  })
+
+  -- Observe the state once more before stopping; a late crash is not liveness.
+  if running and not inspectFailure then
+    local state = process.run(engine, { 'inspect', '--format',
+      '{{.State.Running}}:{{.State.ExitCode}}:{{.State.OOMKilled}}', cid },
+      { stdout = 'capture', stderr = 'capture', env = testEnvironment })
+
+    if not state or not state.success then
+      inspectFailure = `could not verify final container status for {label}`
+    else
+      local isRunning, code, oom = (state.stdout or ''):match('^(%a+):(%d+):(%a+)%s*$')
+      if not isRunning or not code or not oom then
+        inspectFailure = `malformed final container status for {label}`
+      else
+        running = isRunning == 'true'
+        exitCode = tonumber(code)
+        if oom == 'true' then inspectFailure = `smoke {label} was killed by out-of-memory` end
+      end
+    end
+  end
+
+  local removed, removeFailure = process.run(engine, { 'rm', '-f', '-v', cid }, {
+    stdout = 'null', stderr = 'capture', env = testEnvironment,
+  })
+
+  if not removed or not removed.success then
+    error(`failed to remove smoke container {cid} for {label}: {removeFailure or ''} {if removed then removed.stderr or '' else ''}`)
+  end
+
+  if inspectFailure then error(inspectFailure) end
+
+  if not logs or not logs.success then
+    error(`could not read {label} container logs: {logFailure or ''}`)
+  end
+  local timedOut = running
+  local valid, reason = validateBoundedResult(tool, label, exitCode, timedOut,
+    logs.stdout, logs.stderr)
+  if not valid then error(reason or `smoke {label} failed`) end
+end
+
 local function multiSmoke(options: Options, staging: string)
   local selected: { string } = {}
   for tag in options.distros:gmatch('[^,]+') do
@@ -158,16 +290,7 @@ local function multiSmoke(options: Options, staging: string)
       local volume = staging .. ':/pkg:ro' .. (if options.engine == 'podman' then ',z' else '')
       -- Run both entry points; a distro-specific wrapper failure is a release failure.
       for _, entry in { name .. '.x86_64', name } do
-        local result, failure = process.run(options.engine, {
-          'run', '--rm', '--network', 'none', '-v', volume, '-w', '/pkg',
-          '-e', 'LD_LIBRARY_PATH=/pkg/lib', '-e', 'QT_PLUGIN_PATH=/pkg/plugins',
-          '-e', 'QT_QPA_PLATFORM=offscreen', imageTag, '/pkg/' .. entry, '--help',
-        }, { stdout = 'capture', stderr = 'capture' })
-
-        if not result then error(`{tag}/{entry} failed to execute: {failure or ''}`) end
-        local valid, reason = validateHelpResult(name, tag .. '/' .. entry, result.success,
-          result.code, result.signal, result.stdout, result.stderr)
-        if not valid then error(reason or `{tag}/{entry} failed smoke`) end
+        runDistroCommand(options.engine, imageTag, volume, tag, name, entry)
       end
       print(`PASS {tag}: binary + launcher {name}`)
     end
@@ -222,5 +345,6 @@ end
 
 return table.freeze {
   smoke = smoke, smokeBinaries = smokeBinaries, validateHelpResult = validateHelpResult,
-  imageDockerfile = imageDockerfile,
+  validateBoundedResult = validateBoundedResult, imageDockerfile = imageDockerfile,
+  runDistroCommand = runDistroCommand,
 }

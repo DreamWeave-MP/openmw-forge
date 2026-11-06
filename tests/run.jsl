@@ -18,6 +18,37 @@ local uber = require '@forge/uberbranch'
 local uberConfig = require '@forge/uberbranch-config'
 local suite = test.new()
 
+suite.describe('bounded OpenMW GUI smoke startup', function()
+  suite.it('accepts a live GUI only without fatal Qt or loader diagnostics', function()
+    for _, name in { 'openmw-launcher', 'openmw-cs', 'openmw-wizard' } do
+      local alive = nativeSmoke.validateBoundedResult(name, name .. '.x86_64', 0, true, '', '')
+      test.expect(alive).toBeTruthy()
+      local badLoader = nativeSmoke.validateBoundedResult(name, name, 0, true, '',
+        'error while loading shared libraries: libEGL.so.1: cannot open shared object file')
+      test.expect(badLoader).toBeFalsy()
+      local badQt = nativeSmoke.validateBoundedResult(name, name, 0, true, '',
+        'Could not load the Qt platform plugin "offscreen"')
+      test.expect(badQt).toBeFalsy()
+      local crash = nativeSmoke.validateBoundedResult(name, name, 139, false, '', '')
+      test.expect(crash).toBeFalsy()
+      local exited = nativeSmoke.validateBoundedResult(name, name, 0, false, '', '')
+      test.expect(exited).toBeTruthy()
+      local badExit = nativeSmoke.validateBoundedResult(name, name, 1, false, '', '')
+      test.expect(badExit).toBeFalsy()
+    end
+  end)
+
+  suite.it('never accepts a long-running command line tool as a working GUI', function()
+    local stuck = nativeSmoke.validateBoundedResult('openmw', 'openmw', 0, true, '', '')
+    test.expect(stuck).toBeFalsy()
+    local normal = nativeSmoke.validateBoundedResult('openmw', 'openmw', 0, false, '', '')
+    test.expect(normal).toBeTruthy()
+    local toolHelp = nativeSmoke.validateBoundedResult('bsatool', 'bsatool', 1, false,
+      'Inspect and extract files from Bethesda BSA archives', '')
+    test.expect(toolHelp).toBeTruthy()
+  end)
+end)
+
 suite.describe('packaged executable smoke contracts', function()
   suite.it('provides GL and EGL runtime dispatch for graphical distro smoke tests', function()
     for _, tag in { 'almalinux-9', 'fedora-latest' } do
