@@ -19,9 +19,9 @@ and run it from any writable directory. No workspace checkout is needed.
 
 ```sh
 ./forge pipeline --repo https://gitlab.com/OpenMW/openmw.git --ref master \
-  --engine docker --jobs 8 --run-tests --dry-run
+  --engine docker --jobs auto --run-tests --dry-run
 ./forge pipeline --repo https://gitlab.com/OpenMW/openmw.git --ref master \
-  --engine docker --jobs 8 --run-tests
+  --engine docker --jobs auto --run-tests
 ```
 
 The remote checkout lives under `work/sources/`; switching forks and refs

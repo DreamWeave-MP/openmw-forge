@@ -58,9 +58,14 @@ skips.
 
 Standard GitHub-hosted `ubuntu-24.04` runners have limited cores, RAM, and
 **14 GB of nominal SSD**, with different CPU/RAM allocations for public and
-private repositories. `ci/uberbranch-config.jsl` starts with two compiler
-jobs. More jobs are not necessarily faster when C++ compilation starts
-swapping, or when a CMake job fails for lack of memory.
+private repositories. Forge defaults to `jobs = 'auto'` in
+`ci/uberbranch-config.jsl`. Automatic parallelism is resolved with `nproc`
+**inside the AlmaLinux container**, where the compile actually runs, not on
+the outer Ubuntu host. Forge prints the resolved count and uses it for both
+OpenMW and GoogleTest CMake builds (and vcpkg when an SDK rebuild is required).
+An explicit `--jobs N` or scheduled `jobs = N` overrides it. More jobs may
+increase peak GCC memory, trigger the OOM killer, or reduce throughput if the
+runner starts swapping. Prefer measuring CI before imposing a lower fixed cap.
 
 After SDK verification, CI saves the export and binary packages **before**
 OpenMW compilation. `tools/ci_resources.jsl` then refuses to run outside the

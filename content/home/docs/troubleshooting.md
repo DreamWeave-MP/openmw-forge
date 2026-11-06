@@ -55,8 +55,10 @@ remains the **build ABI** even when the outer host is Ubuntu.
 
 ## vcpkg or CMake ran out of disk/memory
 
-Read `df -h` printed by CI and check for OOM-killer messages. Set `jobs = 1`
-in `ci/uberbranch-config.jsl` to lower peak compilation memory. Cache the **verified exported SDK** and compiler/vcpkg binary caches,
+Read `df -h` printed by CI, the `OpenMW CMake parallelism` line, and
+OOM-killer messages. With `jobs = 'auto'`, Forge uses all CPUs visible to the
+AlmaLinux container. If peak compiler memory exhausts the runner, set
+`jobs = 2` or `jobs = 1` in `ci/uberbranch-config.jsl` to reduce parallelism. Cache the **verified exported SDK** and compiler/vcpkg binary caches,
 not every `buildtrees` directory or the mutable installed tree. The scheduled
 job saves the SDK before OpenMW compilation, then safely reclaims vcpkg
 checkout/buildtrees. Clean unqualified stale artifacts before reuse.

@@ -23,7 +23,9 @@ a cross-distro smoke gate before updating the `das-uberbranch` prerelease.
 `master`. The workflow uses ordinary GitHub-hosted `ubuntu-24.04` runners: no custom
 runner registration or hardware. It runs AlmaLinux 9 inside Docker and publishes
 releases through a separate, narrowly write-permitted job. The checked-in
-configuration defaults to **two build jobs** to fit standard hosted runner memory. For setup, see [CI](content/home/docs/ci.md), [scheduled releases](content/home/docs/release.md),
+configuration defaults to **`--jobs auto`**, resolving the CPUs available inside the
+AlmaLinux build container at execution time. Use `--jobs N` or set `jobs = N`
+in `ci/uberbranch-config.jsl` to limit concurrency if peak GCC memory demands it. For setup, see [CI](content/home/docs/ci.md), [scheduled releases](content/home/docs/release.md),
 [CLI examples](content/home/docs/cli.md), [performance](content/home/docs/performance.md),
 [troubleshooting](content/home/docs/troubleshooting.md) and [release qualification](content/home/docs/release-readiness.md).
 The heavy production build **has not been executed in this test sandbox**.
@@ -158,7 +160,7 @@ multi-file release. A failed release must not be interpreted as qualified.
 | `smoke` | Validate an OpenMW `.tar.gz`, then run ELF smoke checks (optionally on a distro matrix) |
 | `help` | Print complete usage and switches |
 
-Important options: `--source`, `--repo`, `--ref`, `--deps-sha256`, `--deps-archive` (local absolute `.7z`/`.tar.xz` or HTTPS), `--deps-output`, `--build-dir`, `--deps-prefix`, `--output-dir`, `--jobs`, `--qt-version`, `--build-type`, `--triplet`, `--clean`, `--portable`, `--stage-only`, `--no-prepare`, `--no-ccache`, `--run-tests`, `--gtest-filter`, `--no-compat`, `--no-smoke`, repeatable `--cmake-arg`, `--distros`, `--with-qt`, and `--dry-run`. **Qt is required** for the current OpenMW distribution profile; unsupported `--no-qt` is rejected instead of silently producing an incomplete build.
+Important options: `--source`, `--repo`, `--ref`, `--deps-sha256`, `--deps-archive` (local absolute `.7z`/`.tar.xz` or HTTPS), `--deps-output`, `--build-dir`, `--deps-prefix`, `--output-dir`, `--jobs auto|N`, `--qt-version`, `--build-type`, `--triplet`, `--clean`, `--portable`, `--stage-only`, `--no-prepare`, `--no-ccache`, `--run-tests`, `--gtest-filter`, `--no-compat`, `--no-smoke`, repeatable `--cmake-arg`, `--distros`, `--with-qt`, and `--dry-run`. **Qt is required** for the current OpenMW distribution profile; unsupported `--no-qt` is rejected instead of silently producing an incomplete build.
 
 The ABI ceilings match AlmaLinux 9: `GLIBC_2.34`, `GLIBCXX_3.4.29`, `CXXABI_1.3.13`. Dependencies and OpenMW are built with the pinned `x64-linux-dynamic` triplet. An explicit dependency download does not silently fall back to an old artifact.
 

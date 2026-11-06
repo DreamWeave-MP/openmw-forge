@@ -25,9 +25,14 @@ return table.freeze {
   repository = 'https://gitlab.com/OpenMW/openmw.git',
   ref = 'master',
   releaseTag = 'das-uberbranch',
-  jobs = 2,
+  jobs = 'auto', -- all CPUs available inside the build container
 }
 ```
+
+`jobs = 'auto'` is the default. Forge runs `nproc` inside its AlmaLinux
+container to pick the current runner's available CPUs, and passes that count
+explicitly to both CMake build invocations and vcpkg. To cap memory pressure,
+set `jobs` to an integer from 1 to 1024 instead; explicit counts always win.
 
 The initial source is official OpenMW `master`. To build a fork, change only
 `repository` and `ref` to the desired HTTPS/SSH clone URL and branch, tag, or
