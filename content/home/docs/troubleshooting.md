@@ -147,6 +147,15 @@ force concurrent execution**. A crashed process releases its kernel locks.
 
 ## Packaging or publication was interrupted
 
+If every CMake build step and both OpenMW GoogleTest suites pass but the
+package smoke step reports `smoke bsatool.x86_64 exited with 1:`, the binary
+may be healthy. `bsatool`, `esmtool`, and `niftest` deliberately return status
+**1** for `--help` while printing their usage to stdout. Forge checks the
+specific tool's help banner and only accepts that documented nonzero status;
+an arbitrary exit 1, missing library, or broken launcher remains a failure.
+The same contract applies to distro-container smoke tests. Keep this test in
+Jess, rather than patching upstream OpenMW's command-line behavior.
+
 Main and debug archives are **compressed before either previous archive is
 replaced**. A main-only (Debug) build is rejected if it would leave an old
 matching `-debug.tar.gz` beside the new archive. A local managed recovery journal records the files that must be

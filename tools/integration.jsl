@@ -660,6 +660,41 @@ util.stream('tar', { 'czf', valid, '-C', build .. '/package-staging', 'openmw-0.
 local accepted = invoke({ 'smoke', '--archive', valid }, empty)
 check(accepted.success, 'valid synthetic ELF tarball must pass the native smoke CLI: ' .. (accepted.stderr or ''))
 
+-- OpenMW's bsatool, esmtool and niftest return exit 1 for --help even when
+-- functioning correctly. The packaged binaries and their launchers must be
+-- accepted only if the correct tool-specific help banner was printed.
+local LegacyHelp = {
+  { 'bsatool', 'Inspect and extract files from Bethesda BSA archives' },
+  { 'esmtool', 'Inspect and extract from Morrowind ES files' },
+  { 'niftest', 'Ensure that OpenMW can use the provided NIF' },
+}
+
+for _, fixture in LegacyHelp do
+  local tool, banner = fixture[1], fixture[2]
+  util.write(stage .. '/' .. tool .. '.x86_64', '#!/bin/sh\nprintf "%s\\n" "' .. banner .. '"\nexit 1\n')
+  util.write(stage .. '/' .. tool,
+    '#!/bin/sh\nexec "$(dirname "$0")/' .. tool .. '.x86_64" "$@"\n')
+  util.stream('chmod', { '+x', stage .. '/' .. tool .. '.x86_64', stage .. '/' .. tool })
+end
+local toolHelpArchive = scratch .. '/tool-help.tar.gz'
+util.stream('tar', { 'czf', toolHelpArchive, '-C', build .. '/package-staging', 'openmw-0.49.0-Linux-64Bit' })
+local toolHelp = invoke({ 'smoke', '--archive', toolHelpArchive }, empty)
+check(toolHelp.success, 'legitimate exit-one tool help and wrappers must pass smoke: ' .. (toolHelp.stderr or ''))
+check((toolHelp.stdout or ''):find('PASS smoke binary + launcher niftest', 1, true) ~= nil,
+  'bsatool, esmtool and niftest must all complete their binary and launcher checks')
+
+-- An arbitrary exit 1 must never be mistaken for valid help, even for bsatool.
+util.write(stage .. '/bsatool.x86_64', '#!/bin/sh\nexit 1\n')
+local bogusHelpArchive = scratch .. '/bogus-tool-help.tar.gz'
+util.stream('tar', { 'czf', bogusHelpArchive, '-C', build .. '/package-staging', 'openmw-0.49.0-Linux-64Bit' })
+local bogusHelp = invoke({ 'smoke', '--archive', bogusHelpArchive }, empty)
+check(not bogusHelp.success and (bogusHelp.stderr or ''):find('smoke bsatool.x86_64 exited with 1', 1, true) ~= nil,
+  'smoke must reject exit 1 without the tool-specific help response')
+for _, fixture in LegacyHelp do
+  util.remove(stage .. '/' .. fixture[1] .. '.x86_64')
+  util.remove(stage .. '/' .. fixture[1])
+end
+
 -- Smoke runs unpack into a shared managed root; a second process must wait
 -- rather than deleting the first run's extracted package or Dockerfiles.
 local smokeGuard, smokeError = fs.lock(empty .. '/work/.forge-smoke.lock')

@@ -8,6 +8,7 @@ local nativeOpenmw = require '@forge/native-openmw'
 local nativeQt = require '@forge/native-qt'
 local nativeArchive = require '@forge/native-archive'
 local nativeAbi = require '@forge/native-abi'
+local nativeSmoke = require '@forge/native-smoke'
 local sdkCache = require '@forge/native-sdk-cache'
 local nativeDeps = require '@forge/native-deps'
 local vcpkgPython = require '@forge/native-vcpkg-python'
@@ -16,6 +17,41 @@ local source = require '@forge/source'
 local uber = require '@forge/uberbranch'
 local uberConfig = require '@forge/uberbranch-config'
 local suite = test.new()
+
+suite.describe('packaged executable smoke contracts', function()
+  suite.it('accepts only the documented exit-one OpenMW help responses', function()
+    for _, fixture in {
+      { 'bsatool', 'Inspect and extract files from Bethesda BSA archives' },
+      { 'esmtool', 'Inspect and extract from Morrowind ES files' },
+      { 'niftest', 'Ensure that OpenMW can use the provided NIF' },
+    } do
+      local tool = fixture[1]
+      local banner = fixture[2]
+      local accepted = nativeSmoke.validateHelpResult(tool, tool .. '.x86_64', false, 1, nil,
+        banner .. '\nAllowed options\n', '')
+      test.expect(accepted).toBeTruthy()
+      local noBanner = nativeSmoke.validateHelpResult(tool, tool, false, 1, nil, '', '')
+      test.expect(noBanner).toBeFalsy()
+      local wrongStatus = nativeSmoke.validateHelpResult(tool, tool, false, 2, nil, banner, '')
+      test.expect(wrongStatus).toBeFalsy()
+      local noisyFailure = nativeSmoke.validateHelpResult(tool, tool, false, 1, nil, banner,
+        'cannot open shared object')
+      test.expect(noisyFailure).toBeFalsy()
+    end
+  end)
+
+  suite.it('still rejects unrelated failures and successful loader errors', function()
+    local normal = nativeSmoke.validateHelpResult('openmw', 'openmw', true, 0, nil, 'OpenMW help', '')
+    test.expect(normal).toBeTruthy()
+    local failed = nativeSmoke.validateHelpResult('openmw', 'openmw', false, 1, nil, 'help', '')
+    test.expect(failed).toBeFalsy()
+    local loader = nativeSmoke.validateHelpResult('openmw', 'openmw', true, 0, nil, '',
+      'symbol lookup error')
+    test.expect(loader).toBeFalsy()
+    local bogus = nativeSmoke.validateHelpResult('bsatool', 'bsatool', true, 0, nil, '', '')
+    test.expect(bogus).toBeFalsy()
+  end)
+end)
 
 local Root = '/tmp/forge-root'
 local Source = '/tmp/openmw-source'
