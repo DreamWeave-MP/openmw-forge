@@ -429,6 +429,39 @@ suite.describe('adversarial 7z metadata validation', function()
       .. 'Path = ' .. path .. '\n' .. (extra or '')
   end
 
+  suite.it('uses a contained-link-compatible 7z policy without disabling all safety', function()
+    local argv = nativeArchive.extractionArgs('/isolated/staging', '/cache/sdk.7z')
+    test.expect(#argv).toBe(5)
+    test.expect(argv[1]).toBe('x')
+    test.expect(argv[2]).toBe('-y')
+    test.expect(argv[3]).toBe('-snld10')
+    test.expect(argv[4]).toBe('-o/isolated/staging')
+    test.expect(argv[5]).toBe('/cache/sdk.7z')
+    test.expect(table.concat(argv, ' '):find('-snld20', 1, true) == nil).toBeTruthy()
+  end)
+
+  suite.it('accepts chained library links and parent-relative in-tree service links', function()
+    local prefix = 'package/installed/x64-linux-dynamic/lib/'
+    local listing = '7-Zip listing\n----------\n'
+      .. 'Path = ' .. prefix .. 'libfoo.so.1.2\nAttributes = A\n'
+      .. 'Path = ' .. prefix .. 'libfoo.so.1\nAttributes =  lrwxrwxrwx\nSize = 13\n'
+      .. 'Path = ' .. prefix .. 'libfoo.so\nAttributes =  lrwxrwxrwx\nSize = 11\n'
+      .. 'Path = ' .. prefix .. 'systemd/system/dbus.socket\nAttributes = A\n'
+      .. 'Path = ' .. prefix .. 'systemd/system/sockets.target.wants/dbus.socket\n'
+      .. 'Attributes =  lrwxrwxrwx\nSize = 14\n'
+    local targets: { [string]: string } = {
+      [prefix .. 'libfoo.so.1'] = 'libfoo.so.1.2',
+      [prefix .. 'libfoo.so'] = 'libfoo.so.1',
+      [prefix .. 'systemd/system/sockets.target.wants/dbus.socket'] = '../dbus.socket',
+    }
+    nativeArchive.validate7zListing(listing, nil, true)
+    nativeArchive.validate7zListing(listing, function(path: string): string
+      local target = targets[path]
+      if not target then error('unexpected fixture link: ' .. path) end
+      return target
+    end)
+  end)
+
   suite.it('accepts normal dependency archive members and internal relative symlinks', function()
     nativeArchive.validate7zListing(entry('package/installed/x64-linux-dynamic/lib/libfoo.so.1',
       'Attributes = A_ lrwxrwxrwx\nSymbolic Link = libfoo.so.1.2\n'))

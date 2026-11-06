@@ -85,6 +85,16 @@ resolved full Git SHA. Dry runs display the requested ref without connecting to
 Git or writing anything. Git must be installed on the machine running Forge
 when `--repo` is used; the container image includes Git as well.
 
+### Cached SDK extraction and link validation
+
+The cached `vcpkg-*.7z` SDK is SHA-256 checked, then metadata-preflighted
+before a single extraction into an isolated Forge-owned staging directory.
+Versioned `.so` symlinks often form chains; the extractor uses 7-Zip's
+`-snld10` policy so those legitimate internal links and parent-relative
+systemd links are not rejected. Forge still validates extracted link targets,
+containment, and archive metadata before it publishes the SDK. Never use
+`-snld20` or restore the old one-process-per-symlink decompression loop.
+
 ## Persistent caches and safe cleanup
 
 The AlmaLinux 9 container image contains the system packages used by both build

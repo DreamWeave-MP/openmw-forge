@@ -140,9 +140,12 @@ not exported version definitions. It runs on the installed vcpkg tree *before*
 failure from wasting compression and archive inspection work.
 
 For a **newly created** SDK, Forge validates the archive's member table and
-compares listed symlinks with the already audited local installation. This
-avoids reopening a solid 7z archive separately for each library link. For
-**cached or external archives**, Forge still inspects actual compressed link
-targets before extraction; that slower operation is deliberately kept as a
-security boundary. Do not generalize the fresh-export shortcut to untrusted
-archives or accept an unauthenticated manifest in lieu of archive bytes.
+compares listed symlinks with the already audited local installation. For
+**cached or external archives**, Forge hashes and preflights the archive,
+extracts it **once** into an isolated, empty managed directory using the
+contained-link-compatible 7-Zip `-snld10` policy, and validates every actual
+symlink target and its final containment before use. No per-link solid-archive
+extraction is necessary. Unsafe paths, duplicate entries, hard links, and
+archive members written through symlink ancestors are rejected **before**
+extraction. Keep those checks and the post-extraction verification intact;
+`-snld20` is not a safe alternative.

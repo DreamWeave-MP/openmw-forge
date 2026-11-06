@@ -49,12 +49,36 @@ end)
 nativeArchive.validateExtractedLinks(linkRoot)
 check(true, 'archived symlink targets are verified from isolated extracted files')
 
+-- CI's 7-Zip 26.04 rejects these ordinary aliases under its default setting:
+-- libfixture.so.alias -> libfixture.so -> libfixture.so.1. The chosen
+-- extraction level must permit the chain without dropping containment checks.
+local chainLink, chainFailure = fs.symlink('libfixture.so', linkParent .. '/libfixture.so.alias')
+if not chainLink then error('cannot create chained link fixture: ' .. (chainFailure or 'unknown')) end
+nativeArchive.validateExtractedLinks(linkRoot)
+check(true, 'post-extraction validation permits internal symlink chains')
+local extractArgs = nativeArchive.extractionArgs(scratch .. '/isolated', scratch .. '/SDK.7z')
+check(extractArgs[3] == '-snld10' and extractArgs[4] == '-o' .. scratch .. '/isolated',
+  '7-Zip extraction must permit safe chains without the insecure -snld20 mode')
+
+-- Parent-relative symlinks are common in the systemd subtree of the SDK.
+local sockets = linkParent .. '/systemd/system'
+util.mkdir(sockets .. '/sockets.target.wants')
+util.write(sockets .. '/dbus.socket', 'fixture')
+local systemdLink, systemdFailure = fs.symlink('../dbus.socket', sockets .. '/sockets.target.wants/dbus.socket')
+if not systemdLink then error('cannot create systemd fixture: ' .. (systemdFailure or 'unknown')) end
+nativeArchive.validateExtractedLinks(linkRoot)
+check(true, 'post-extraction validation permits contained parent-relative links')
+
 local escaped = linkParent .. '/escape.so'
 local escapedLink, escapedFailure = fs.symlink('../../../../../etc/passwd', escaped)
 if not escapedLink then error('cannot create escape fixture: ' .. (escapedFailure or 'unknown')) end
 -- An escaping extracted symlink is deliberately rejected by the validator.
 local rejectedEscape = pcall(nativeArchive.validateExtractedLinks, linkRoot)
 check(not rejectedEscape, 'post-extraction validation rejects links outside staging root')
+local chainEscape, chainEscapeFailure = fs.symlink('escape.so', linkParent .. '/escape-chain.so')
+if not chainEscape then error('cannot create escape-chain fixture: ' .. (chainEscapeFailure or 'unknown')) end
+local rejectedChainedEscape = pcall(nativeArchive.validateExtractedLinks, linkRoot)
+check(not rejectedChainedEscape, 'post-extraction validation rejects links escaping through another symlink')
 util.remove(linkRoot)
 
 -- vcpkg installs many non-ELF files (including zero/short byte files).

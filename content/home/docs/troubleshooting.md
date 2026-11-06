@@ -89,12 +89,21 @@ Older Forge releases rejected these ordinary entries while validating a
 successfully exported SDK (for example, `debug/lib/libexpat.so`). That did
 not establish that the archive or the compiled libraries were malformed.
 
-Forge now reads the archived target using `7z e -so -spd`, validates its
-declared size and relative path **before extraction**, and refuses archives
-that contain duplicate paths or write beneath an archived symlink. Extracted
-links are also checked for containment. Do not bypass these checks or blindly
-dereference `.so` links: the dependency archive must preserve legitimate
-ELF soname links without allowing an archive to escape its destination.
+Forge now validates the cached archive's metadata and link sizes **before**
+any extraction. It rejects duplicate paths, path traversal, hard links, and
+any archived path that would write beneath an archived symlink. A single full
+7z extraction into a fresh Forge-owned staging tree is followed by checks of
+every actual symlink target against the archive metadata, including target
+length and tree containment, before the SDK is published or used. This avoids
+one separate solid-archive decompression per link.
+
+7-Zip 26.04's default security policy rejects normal versioned ELF link chains
+(`libfoo.so` -> `libfoo.so.1` -> real library) and parent-relative systemd
+socket links with `Dangerous link via another link was ignored`. Forge uses
+**`-snld10`**, which permits these in-tree links while preserving 7-Zip's path
+checks. Do **not** replace it with `-snld20`: that bypasses all 7-Zip symlink
+safety, and Forge's post-extraction checks are no substitute for safe writes
+during extraction. Keep the metadata preflight and isolated staging mandatory.
 
 If the export step has already run, preserve the vcpkg binary cache; the
 150-package dependency compilation did not fail. On a runner with restored
@@ -267,9 +276,10 @@ Forge also separates local vcpkg packages by the ABI baseline so it cannot
 silently reuse old-ABI outputs. A cold dependency rebuild may be necessary.
 
 The ABI audit now runs on the *installed tree before* creating the large 7z
-export. Freshly exported archives use locally inspected symlink targets to
-check listing consistency without separately decompressing the solid archive
-for every `.so` symlink. **Restored or external archives remain untrusted**;
-their symlink targets are still read from the archive before extraction, with
-progress logged every 25 links. A future archive-format improvement could
-remove this cost without weakening validation.
+export. Freshly exported archives compare metadata against the locally audited
+symlink targets without reopening the solid archive for every link. **Restored
+or external archives remain untrusted**: Forge verifies the archive digest
+and metadata first, performs a single isolated extraction, then checks the
+actual extracted links before using or publishing the SDK. This avoids the
+former several-hundred-process decompression loop without weakening the ABI
+audit or allowing unvalidated archive members to escape staging.
