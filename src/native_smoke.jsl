@@ -97,17 +97,25 @@ local function smokeBinaries(stage: string, withQt: boolean?)
   if ran == 0 then error('no smoke binaries were executed') end
 end
 
+-- Qt GUI tools require GL and EGL at runtime. mesa-libGL alone does not
+-- install the EGL dispatch library on AlmaLinux or Fedora.
 local DistroImages: { [string]: { string } } = {
-  ['almalinux-9'] = { 'almalinux:9', 'dnf install -y mesa-libGL' },
-  ['debian-12'] = { 'debian:12', 'apt-get update && apt-get install -y libgl1' },
-  ['debian-13'] = { 'debian:trixie', 'apt-get update && apt-get install -y libgl1' },
-  ['ubuntu-22.04'] = { 'ubuntu:22.04', 'apt-get update && apt-get install -y libgl1' },
-  ['ubuntu-24.04'] = { 'ubuntu:24.04', 'apt-get update && apt-get install -y libgl1' },
-  ['fedora-latest'] = { 'fedora:latest', 'dnf install -y mesa-libGL' },
+  ['almalinux-9'] = { 'almalinux:9', 'dnf install -y mesa-libGL libglvnd-egl' },
+  ['debian-12'] = { 'debian:12', 'apt-get update && apt-get install -y libgl1 libegl1' },
+  ['debian-13'] = { 'debian:trixie', 'apt-get update && apt-get install -y libgl1 libegl1' },
+  ['ubuntu-22.04'] = { 'ubuntu:22.04', 'apt-get update && apt-get install -y libgl1 libegl1' },
+  ['ubuntu-24.04'] = { 'ubuntu:24.04', 'apt-get update && apt-get install -y libgl1 libegl1' },
+  ['fedora-latest'] = { 'fedora:latest', 'dnf install -y mesa-libGL libglvnd-egl' },
   ['archlinux'] = { 'archlinux:latest', 'pacman -Sy --noconfirm --needed libglvnd' },
-  ['opensuse-tumbleweed'] = { 'opensuse/tumbleweed', 'zypper --non-interactive install Mesa-libGL1' },
+  ['opensuse-tumbleweed'] = { 'opensuse/tumbleweed', 'zypper --non-interactive install Mesa-libGL1 Mesa-libEGL1' },
   ['voidlinux'] = { 'ghcr.io/void-linux/void-glibc-full:latest', 'xbps-install -Sy libglvnd' },
 }
+
+local function imageDockerfile(tag: string): string
+  local image = DistroImages[tag]
+  if not image then error('unknown smoke distro: ' .. tag) end
+  return `FROM {image[1]}\nRUN {image[2]}\n`
+end
 
 local function multiSmoke(options: Options, staging: string)
   local selected: { string } = {}
@@ -126,10 +134,9 @@ local function multiSmoke(options: Options, staging: string)
   end
 
   for _, tag in selected do
-    local image = DistroImages[tag]
     local buildDir = options.root .. '/work/forge-smoke-images/' .. tag
     util.mkdir(buildDir)
-    util.write(buildDir .. '/Dockerfile', `FROM {image[1]}\nRUN {image[2]}\n`)
+    util.write(buildDir .. '/Dockerfile', imageDockerfile(tag))
     local imageTag = 'openmw-forge-smoke:' .. tag
     util.stream(options.engine, { 'build', '-t', imageTag, '-f', buildDir .. '/Dockerfile', buildDir })
     local count = 0
@@ -215,4 +222,5 @@ end
 
 return table.freeze {
   smoke = smoke, smokeBinaries = smokeBinaries, validateHelpResult = validateHelpResult,
+  imageDockerfile = imageDockerfile,
 }
