@@ -19,6 +19,26 @@ local uberConfig = require '@forge/uberbranch-config'
 local suite = test.new()
 
 suite.describe('packaged executable smoke contracts', function()
+  suite.it('provides GL and EGL runtime dispatch for graphical distro smoke tests', function()
+    for _, tag in { 'almalinux-9', 'fedora-latest' } do
+      local recipe = nativeSmoke.imageDockerfile(tag)
+      test.expect(recipe).toContain('mesa-libGL libglvnd-egl')
+      test.expect(recipe).toContain('RUN dnf install -y ')
+    end
+
+    for _, tag in { 'debian-12', 'debian-13', 'ubuntu-22.04', 'ubuntu-24.04' } do
+      local recipe = nativeSmoke.imageDockerfile(tag)
+      test.expect(recipe).toContain('libgl1 libegl1')
+      test.expect(recipe).toContain('RUN apt-get update && apt-get install -y ')
+    end
+
+    test.expect(nativeSmoke.imageDockerfile('opensuse-tumbleweed')).toContain('Mesa-libGL1 Mesa-libEGL1')
+
+    for _, tag in { 'archlinux', 'voidlinux' } do
+      test.expect(nativeSmoke.imageDockerfile(tag)).toContain('libglvnd')
+    end
+  end)
+
   suite.it('accepts only the documented exit-one OpenMW help responses', function()
     for _, fixture in {
       { 'bsatool', 'Inspect and extract files from Bethesda BSA archives' },

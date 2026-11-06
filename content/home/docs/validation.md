@@ -51,6 +51,14 @@ Known release risks: mutable AlmaLinux and distro image tags on first publicatio
 
 Before a production release: `./openmw-forge-linux-x64 doctor`; then run `pipeline --source ... --run-tests` with no compatibility opt-outs on a container-capable host; inspect ELF requirements, debug sidecars and final packages; run `smoke --archive ... --distros almalinux-9,debian-12,ubuntu-24.04`; compare outputs of a second incremental build and retain the build logs.
 
+The distro smoke images install both OpenGL and EGL runtime dispatch libraries
+before testing the graphical Qt binaries. On AlmaLinux 9, `mesa-libGL` alone
+does **not** provide `libEGL.so.1`; the smoke image also installs
+`libglvnd-egl`. On Debian/Ubuntu, the corresponding package is `libegl1`.
+The test images supply system graphics dependencies; they do not imply those
+libraries are included in the downloadable OpenMW distribution. The Forge
+package itself still undergoes the independent ELF ABI and executable checks.
+
 ## Generated asset parity
 
 Run `jess run --trusted tools/embed_assets.jsl --check` to verify the compiled
