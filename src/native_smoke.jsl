@@ -48,12 +48,18 @@ local function validateHelpResult(tool: string, label: string, success: boolean,
   return true, nil
 end
 
--- A Qt GUI may ignore --help and start its event loop. Its ability to
--- stay alive through a bounded startup window is a liveness check, not a
--- successful --help response. Do not accept loader/Qt startup diagnostics.
+-- GUI programs are launched without --help: OpenMW-CS interprets positional
+-- arguments as content filenames, and tries to open a nonexistent '--help'.
+-- Its ability to stay alive through a bounded startup window is a liveness
+-- check, not a successful help response. Reject fatal startup diagnostics.
 local GuiTools = { ['openmw-launcher'] = true, ['openmw-cs'] = true, ['openmw-wizard'] = true }
 local GuiWaitSeconds = 5
 local CliWaitSeconds = 30
+
+local function smokeInvocationArgs(tool: string): { string }
+  if GuiTools[tool] then return {} end
+  return { '--help' }
+end
 
 local function validateGuiResult(label: string, code: number?, timedOut: boolean,
   stdout: string?, stderr: string?): (boolean, string?)
@@ -68,6 +74,7 @@ local function validateGuiResult(label: string, code: number?, timedOut: boolean
     'could not find the qt platform plugin',
     'could not connect to display',
     'failed to create context',
+    'fatal error:',
   } do
     if combined:find(problem, 1, true) then
       return false, `GUI smoke {label} failed startup: stdout: {out} stderr: {err}`
@@ -93,9 +100,13 @@ local function runPackageCommand(stage: string, tool: string, name: string, prog
   -- GNU timeout terminates the full process group; 124 is accepted only for
   -- known GUI programs that survived a bounded startup without fatal diagnostics.
   local seconds = if GuiTools[tool] then GuiWaitSeconds else CliWaitSeconds
-  local result, failure = process.run('timeout', {
-    '--signal=TERM', '--kill-after=2s', tostring(seconds) .. 's', program, '--help',
-  }, { cwd = stage, env = env, stdout = 'capture', stderr = 'capture' })
+  local invocation = {
+    '--signal=TERM', '--kill-after=2s', tostring(seconds) .. 's', program,
+  }
+
+  for _, argument in smokeInvocationArgs(tool) do table.insert(invocation, argument) end
+  local result, failure = process.run('timeout', invocation,
+    { cwd = stage, env = env, stdout = 'capture', stderr = 'capture' })
 
   if not result then error(`smoke could not run {name}: {failure or ''}`) end
   local valid, reason = validateBoundedResult(tool, name, result.code, result.code == 124,
@@ -165,11 +176,15 @@ local function runDistroCommand(engine: string, imageTag: string, volume: string
   tag: string, tool: string, entry: string, maxRoundsOverride: number?,
   testEnvironment: { [string]: string }?)
   local label = tag .. '/' .. entry
-  local start, why = process.run(engine, {
+  local invocation = {
     'run', '--detach', '--network', 'none', '-v', volume, '-w', '/pkg',
     '-e', 'LD_LIBRARY_PATH=/pkg/lib', '-e', 'QT_PLUGIN_PATH=/pkg/plugins',
-    '-e', 'QT_QPA_PLATFORM=offscreen', imageTag, '/pkg/' .. entry, '--help',
-  }, { stdout = 'capture', stderr = 'capture', env = testEnvironment })
+    '-e', 'QT_QPA_PLATFORM=offscreen', imageTag, '/pkg/' .. entry,
+  }
+
+  for _, argument in smokeInvocationArgs(tool) do table.insert(invocation, argument) end
+  local start, why = process.run(engine, invocation,
+    { stdout = 'capture', stderr = 'capture', env = testEnvironment })
 
   if not start or not start.success then
     error(`{label} failed to start container: {why or ''} {if start then start.stderr or '' else ''}`)
@@ -346,5 +361,5 @@ end
 return table.freeze {
   smoke = smoke, smokeBinaries = smokeBinaries, validateHelpResult = validateHelpResult,
   validateBoundedResult = validateBoundedResult, imageDockerfile = imageDockerfile,
-  runDistroCommand = runDistroCommand,
+  runDistroCommand = runDistroCommand, smokeInvocationArgs = smokeInvocationArgs,
 }

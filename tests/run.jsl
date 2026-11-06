@@ -38,6 +38,22 @@ suite.describe('bounded OpenMW GUI smoke startup', function()
     end
   end)
 
+  suite.it('launches GUI startup without treating --help as a file to open', function()
+    for _, name in { 'openmw-launcher', 'openmw-cs', 'openmw-wizard' } do
+      local invocation = nativeSmoke.smokeInvocationArgs(name)
+      test.expect(#invocation).toBe(0)
+      local fatal = nativeSmoke.validateBoundedResult(name, name, 0, true,
+        "Fatal error: Failed to open '--help' for reading", '')
+      test.expect(fatal).toBeFalsy()
+    end
+
+    for _, name in { 'openmw', 'bsatool', 'esmtool', 'niftest' } do
+      local invocation = nativeSmoke.smokeInvocationArgs(name)
+      test.expect(#invocation).toBe(1)
+      test.expect(invocation[1]).toBe('--help')
+    end
+  end)
+
   suite.it('never accepts a long-running command line tool as a working GUI', function()
     local stuck = nativeSmoke.validateBoundedResult('openmw', 'openmw', 0, true, '', '')
     test.expect(stuck).toBeFalsy()

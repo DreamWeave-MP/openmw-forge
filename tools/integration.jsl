@@ -383,6 +383,15 @@ smokeModule.runDistroCommand(mockedBin .. '/podman', 'smoke:test', '/fixture:/pk
 local smokeLifecycle = util.file(mockSmokeLog)
 check(smokeLifecycle:find('run\t--detach', 1, true) ~= nil,
   'GUI smoke must launch a detached container rather than block in docker run')
+local launcherRun = smokeLifecycle:match('^[^\n]+')
+check(launcherRun ~= nil and launcherRun:find('/pkg/openmw-launcher.x86_64', 1, true) ~= nil
+    and launcherRun:find('--help', 1, true) == nil,
+  'GUI smoke must launch the actual GUI without an unwanted --help filename')
+smokeModule.runDistroCommand(mockedBin .. '/podman', 'smoke:test', '/fixture:/pkg:ro',
+  'almalinux-9', 'openmw-cs', 'openmw-cs.x86_64', 1, guiEnv)
+local csRun = util.file(mockSmokeLog):match('[^\n]*openmw%-cs%.x86_64[^\n]*')
+check(csRun ~= nil and csRun:find('--help', 1, true) == nil,
+  'OpenMW-CS GUI smoke must not interpret --help as a missing content file')
 check(smokeLifecycle:find('inspect\t--format', 1, true) ~= nil,
   'GUI smoke must poll the container status')
 check(smokeLifecycle:find('logs\tabcdef012345', 1, true) ~= nil,
