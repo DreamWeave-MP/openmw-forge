@@ -149,18 +149,21 @@ local function smokeBinaries(stage: string, withQt: boolean?)
   if ran == 0 then error('no smoke binaries were executed') end
 end
 
--- Qt GUI tools require GL and EGL at runtime. mesa-libGL alone does not
--- install the EGL dispatch library on AlmaLinux or Fedora.
+-- Qt GUI tools require GL, EGL and GLib at runtime. The GL/EGL packages do
+-- not guarantee libglib-2.0.so.0 (notably on minimal Ubuntu containers).
+-- Debian 13 and Ubuntu 24.04 renamed the GLib runtime package for time64;
+-- use each distribution's actual package name rather than relying on an
+-- incidental transitive dependency from the graphics stack.
 local DistroImages: { [string]: { string } } = {
-  ['almalinux-9'] = { 'almalinux:9', 'dnf install -y mesa-libGL libglvnd-egl' },
-  ['debian-12'] = { 'debian:12', 'apt-get update && apt-get install -y libgl1 libegl1' },
-  ['debian-13'] = { 'debian:trixie', 'apt-get update && apt-get install -y libgl1 libegl1' },
-  ['ubuntu-22.04'] = { 'ubuntu:22.04', 'apt-get update && apt-get install -y libgl1 libegl1' },
-  ['ubuntu-24.04'] = { 'ubuntu:24.04', 'apt-get update && apt-get install -y libgl1 libegl1' },
-  ['fedora-latest'] = { 'fedora:latest', 'dnf install -y mesa-libGL libglvnd-egl' },
-  ['archlinux'] = { 'archlinux:latest', 'pacman -Sy --noconfirm --needed libglvnd' },
-  ['opensuse-tumbleweed'] = { 'opensuse/tumbleweed', 'zypper --non-interactive install Mesa-libGL1 Mesa-libEGL1' },
-  ['voidlinux'] = { 'ghcr.io/void-linux/void-glibc-full:latest', 'xbps-install -Sy libglvnd' },
+  ['almalinux-9'] = { 'almalinux:9', 'dnf install -y mesa-libGL libglvnd-egl glib2' },
+  ['debian-12'] = { 'debian:12', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0' },
+  ['debian-13'] = { 'debian:trixie', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0t64' },
+  ['ubuntu-22.04'] = { 'ubuntu:22.04', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0' },
+  ['ubuntu-24.04'] = { 'ubuntu:24.04', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0t64' },
+  ['fedora-latest'] = { 'fedora:latest', 'dnf install -y mesa-libGL libglvnd-egl glib2' },
+  ['archlinux'] = { 'archlinux:latest', 'pacman -Sy --noconfirm --needed libglvnd glib2' },
+  ['opensuse-tumbleweed'] = { 'opensuse/tumbleweed', 'zypper --non-interactive install Mesa-libGL1 Mesa-libEGL1 libglib-2_0-0' },
+  ['voidlinux'] = { 'ghcr.io/void-linux/void-glibc-full:latest', 'xbps-install -Sy libglvnd glib' },
 }
 
 local function imageDockerfile(tag: string): string
