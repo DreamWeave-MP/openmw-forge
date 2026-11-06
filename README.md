@@ -97,6 +97,24 @@ systemd links are not rejected. Forge still validates extracted link targets,
 containment, and archive metadata before it publishes the SDK. Never use
 `-snld20` or restore the old one-process-per-symlink decompression loop.
 
+## Bounded GUI smoke tests
+
+Release smoke tests still exercise **both** native executables and packaged
+launchers, including the Qt graphical tools (`openmw-launcher`, `openmw-cs`,
+`openmw-wizard`). Unlike command-line tools, a Qt application may ignore
+`--help` and enter an event loop. Forge now checks those GUI programs for
+**five seconds** with `QT_QPA_PLATFORM=offscreen`. A clean exit passes; a process
+that stays alive through startup with no fatal linker/Qt diagnostics counts as a
+*startup-liveness pass*, then Forge terminates it. Early crashes, loader errors,
+Qt platform failures and OOM kills fail. This does not guarantee complete GUI
+functionality or a usable display.
+
+Command-line tools retain strict help/exit validation and have a **30-second**
+execution deadline. In cross-distribution smoke checks, Forge launches
+containers detached, polls their state, collects their logs, and forcibly removes
+each container on completion. These limits do not change the AlmaLinux builder,
+vcpkg SDK, or published package format.
+
 ## Persistent caches and safe cleanup
 
 The AlmaLinux 9 container image contains the system packages used by both build

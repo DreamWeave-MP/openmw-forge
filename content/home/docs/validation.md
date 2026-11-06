@@ -82,3 +82,14 @@ match the original vendor files byte-for-byte. A developer must regenerate the
 asset map when editing an overlay or source template. Strict/style and fixture
 tests still **do not** qualify a production OpenMW release; the real AlmaLinux
 9 Docker/vcpkg/Qt/CMake/distro run is the final gate.
+
+### GUI startup is bounded, not skipped
+
+The release smoke gate launches the packaged `openmw-launcher`, `openmw-cs`,
+and `openmw-wizard` executables and shell wrappers under the offscreen Qt
+backend, on each selected distribution. These programs may ignore `--help` and
+remain in their GUI event loop. Forge observes their startup for five seconds,
+fails a crash, OOM, missing shared library or Qt platform error, and terminates
+still-running GUI containers after the deadline. A still-running app is a
+startup-liveness check, not proof of interactive rendering. The command-line
+smoke deadline is 30 seconds and timeouts fail.

@@ -294,3 +294,14 @@ and metadata first, performs a single isolated extraction, then checks the
 actual extracted links before using or publishing the SDK. This avoids the
 former several-hundred-process decompression loop without weakening the ABI
 audit or allowing unvalidated archive members to escape staging.
+
+### Cross-distro smoke appears stuck on the first GUI tool
+
+A legacy Forge smoke implementation ran `openmw-launcher --help` synchronously
+without a timeout. The Qt launcher can enter an event loop instead of exiting.
+The bounded smoke path now starts distro containers detached, checks their
+state, collects logs, and removes them after at most a five-second GUI startup
+window (plus container overhead). The CLI help deadline is 30 seconds. Fatal
+linker or Qt diagnostics remain failures, and long-running GUI startup is
+reported only as a liveness check. If a build predates this change, cancel the
+hung GitHub Actions run; the patch applies to subsequent runs only.
