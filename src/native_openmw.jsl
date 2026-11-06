@@ -90,7 +90,7 @@ local function extractDeps(options: Options)
   if string.match(archive, '%.tar%.xz$') then
     util.stream('tar', { '-xJf', archive, '-C', temp })
   else
-    util.stream(util.tool { '7zz', '7z', '7za' }, { 'x', '-y', '-o' .. temp, archive })
+    util.stream(util.tool { '7zz', '7z', '7za' }, archiveSafety.extractionArgs(temp, archive))
     -- Preflight already proved no member can be written through an archived
     -- symlink. The first full extraction is also our single decompression.
     -- Match the actual link bytes to the listing before using or publishing

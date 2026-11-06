@@ -173,6 +173,16 @@ local function preflightArchiveEntries(program: string, path: string)
   validate7zListing(util.checked(program, { 'l', '-slt', path }), nil, true)
 end
 
+-- 7-Zip 25+ rejects ordinary libfoo.so -> libfoo.so.1 -> libfoo.so.1.2
+-- chains with the default link-over-link check. Level 10 permits these
+-- links while retaining path containment checks. Level 20 would disable all link
+-- security checks and must never be used. This argv is safe only AFTER the
+-- archive metadata preflight and into an empty, Forge-owned staging directory;
+-- callers MUST still validate extracted link targets before using the tree.
+local function extractionArgs(destination: string, path: string): { string }
+  return { 'x', '-y', '-snld10', '-o' .. destination, path }
+end
+
 local function validateExtractedLinks(root: string)
   local entries, failure = fs.walk(root, { include = 'all', sort = true })
   if not entries then error('failed to inspect extracted archive: ' .. (failure or '')) end
@@ -201,6 +211,6 @@ end
 return table.freeze {
   isSafeName = isSafeName, listTar = listTar, requireSafeArchive = requireSafeArchive,
   validate7zListing = validate7zListing, validateArchiveEntries = validateArchiveEntries,
-  preflightArchiveEntries = preflightArchiveEntries,
+  preflightArchiveEntries = preflightArchiveEntries, extractionArgs = extractionArgs,
   validateExtractedLinks = validateExtractedLinks,
 }
