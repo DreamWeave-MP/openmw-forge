@@ -9,25 +9,57 @@ local args = require '@forge/args'
 
 type Options = args.Options
 
+-- These OpenMW tools intentionally return 1 after printing --help. A nonzero
+-- exit is acceptable only when the tool emits its own unmistakable help text;
+-- accepting every exit 1 would hide missing libraries and broken launchers.
+local HelpExitOne: { [string]: string } = {
+  bsatool = 'Inspect and extract files from Bethesda BSA archives',
+  esmtool = 'Inspect and extract from Morrowind ES files',
+  niftest = 'Ensure that OpenMW can use the provided NIF',
+}
+
+local function validateHelpResult(tool: string, label: string, success: boolean,
+  code: number?, signal: number?, stdout: string?, stderr: string?): (boolean, string?)
+  local out = stdout or ''
+  local err = stderr or ''
+  local combined = out .. err
+  for _, problem in {
+    'error while loading shared libraries', 'symbol lookup error',
+    'undefined symbol', 'cannot open shared object',
+  } do
+    if combined:find(problem, 1, true) then
+      return false, `smoke failure in {label}: {combined}`
+    end
+  end
+
+  local banner = HelpExitOne[tool]
+  if banner and out:find(banner, 1, true) ~= nil and err == ''
+    and (success or code == 1) then
+    return true, nil
+  end
+
+  if not success then
+    return false, `smoke {label} exited with {tostring(code or signal)}: stdout: {out} stderr: {err}`
+  end
+
+  if banner then
+    return false, `smoke {label} did not print expected help: stdout: {out} stderr: {err}`
+  end
+  return true, nil
+end
+
 -- Exercise the installed POSIX launchers as users actually invoke them.
 -- Testing only .x86_64 binaries misses broken wrappers, paths and library setup.
-local function runPackageCommand(stage: string, name: string, program: string, env: { [string]: string })
+local function runPackageCommand(stage: string, tool: string, name: string, program: string,
+  env: { [string]: string })
   local result, failure = process.run(program, { '--help' }, {
     cwd = stage, env = env, stdout = 'capture', stderr = 'capture',
   })
 
   if not result then error(`smoke could not run {name}: {failure or ''}`) end
-
-  if not result.success then
-    error(`smoke {name} exited with {tostring(result.code or result.signal)}: {result.stderr or ''}`)
-  end
-  local output = (result.stdout or '') .. (result.stderr or '')
-  for _, problem in {
-    'error while loading shared libraries', 'symbol lookup error',
-    'undefined symbol', 'cannot open shared object',
-  } do
-    if output:find(problem, 1, true) then error(`smoke failure in {name}: {output}`) end
-  end
+  local valid, reason = validateHelpResult(tool, name, result.success,
+    result.code, result.signal, result.stdout, result.stderr)
+  if not valid then error(reason or `smoke failed: {name}`) end
 end
 
 local function smokeBinaries(stage: string, withQt: boolean?)
@@ -56,8 +88,8 @@ local function smokeBinaries(stage: string, withQt: boolean?)
     local wrapper = stage .. '/' .. name
     if not fs.isFile(wrapper) then error('missing installed launcher: ' .. name) end
     local env = { LD_LIBRARY_PATH = stage .. '/lib', QT_PLUGIN_PATH = stage .. '/plugins' }
-    runPackageCommand(stage, name .. '.x86_64', binary, env)
-    runPackageCommand(stage, name .. ' launcher', wrapper, env)
+    runPackageCommand(stage, name, name .. '.x86_64', binary, env)
+    runPackageCommand(stage, name, name .. ' launcher', wrapper, env)
     ran += 1
     print('PASS smoke binary + launcher ' .. name)
   end
@@ -125,9 +157,10 @@ local function multiSmoke(options: Options, staging: string)
           '-e', 'QT_QPA_PLATFORM=offscreen', imageTag, '/pkg/' .. entry, '--help',
         }, { stdout = 'capture', stderr = 'capture' })
 
-        if not result or not result.success then
-          error(`{tag}/{entry} failed to execute: {failure or (if result then result.stderr or '' else '')}`)
-        end
+        if not result then error(`{tag}/{entry} failed to execute: {failure or ''}`) end
+        local valid, reason = validateHelpResult(name, tag .. '/' .. entry, result.success,
+          result.code, result.signal, result.stdout, result.stderr)
+        if not valid then error(reason or `{tag}/{entry} failed smoke`) end
       end
       print(`PASS {tag}: binary + launcher {name}`)
     end
@@ -180,4 +213,6 @@ local function smoke(options: Options)
   if not ok then error(tostring(problem)) end
 end
 
-return table.freeze { smoke = smoke, smokeBinaries = smokeBinaries }
+return table.freeze {
+  smoke = smoke, smokeBinaries = smokeBinaries, validateHelpResult = validateHelpResult,
+}
