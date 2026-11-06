@@ -113,6 +113,13 @@ A process that displays a non-fatal warning and remains running still counts as
 alive, not fully functional. This check does not guarantee complete GUI
 functionality or a usable display.
 
+The minimal distro smoke images explicitly provision GL, EGL and GLib runtime
+libraries. GL/EGL installation alone does not guarantee `libglib-2.0.so.0`
+on Ubuntu 24.04. For GLib, Ubuntu 24.04 and Debian 13 use
+`libglib2.0-0t64`, whereas Ubuntu 22.04 and Debian 12 use `libglib2.0-0`;
+other package managers have their own names. These are dependencies of the
+**test containers**, not changes to the AlmaLinux toolchain or OpenMW SDK.
+
 Command-line tools retain `--help` arguments, strict help/exit validation, and a **30-second**
 execution deadline. In cross-distribution smoke checks, Forge launches
 containers detached, polls their state, collects their logs, and forcibly removes
