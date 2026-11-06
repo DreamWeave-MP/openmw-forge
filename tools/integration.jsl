@@ -29,6 +29,12 @@ local function check(condition: boolean, message: string)
   cases += 1
 end
 
+-- Resolve automatic parallelism under trusted execution, where process.spawn
+-- is available. Unit tests can validate explicit jobs without that grant.
+local detectedJobs = util.resolveJobs('auto')
+check(detectedJobs >= 1 and detectedJobs <= 1024, 'auto jobs must resolve to available CPUs')
+check(util.resolveJobs(2) == 2, 'explicit parallelism must override auto detection')
+
 -- Archive preflight is intentionally metadata-only; the post-extraction phase
 -- must verify the actual filesystem symlinks, without invoking 7z per link.
 local linkRoot = scratch .. '/validated-archive-links'

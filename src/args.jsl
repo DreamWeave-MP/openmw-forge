@@ -18,7 +18,7 @@ export type Options = {
   depsSha256: string,
   triplet: string,
   buildType: string,
-  jobs: number,
+  jobs: number | string, -- validated integer or the literal auto
   qtVersion: string,
   distros: string,
   gtestFilter: string,
@@ -184,11 +184,15 @@ local function parse(argv: { string }, root: string): (Options?, string?)
       end
 
       if flag == '--jobs' then
-        local jobCount = tonumber(value)
-        if not jobCount or jobCount < 1 or jobCount > 1024 or jobCount % 1 ~= 0 then
-          return nil, '--jobs must be an integer from 1 to 1024'
+        if value == 'auto' then
+          options.jobs = 'auto'
+        else
+          local jobCount = tonumber(value)
+          if not jobCount or jobCount < 1 or jobCount > 1024 or jobCount % 1 ~= 0 then
+            return nil, '--jobs must be auto or an integer from 1 to 1024'
+          end
+          options.jobs = jobCount
         end
-        options.jobs = jobCount
       else
         table.insert(options.cmakeArgs, value)
       end

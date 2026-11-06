@@ -166,6 +166,31 @@ local function publishManagedDirectory(candidate: string, destination: string)
   if hadPrevious then remove(previous) end
 end
 
+-- Resolve CPU parallelism inside the execution environment (the AlmaLinux
+-- container in CI). Do not inspect the host CPU count during planning: the
+-- container may have a different affinity or CPU allocation. An explicit
+-- --jobs N always takes precedence over automatic detection.
+local function resolveJobs(selection: number | string): number
+  if type(selection) == 'number' then
+    if selection < 1 or selection > 1024 or selection % 1 ~= 0 then
+      error('build parallelism must be an integer from 1 to 1024')
+    end
+    return selection
+  end
+
+  if selection ~= 'auto' then error('unsupported build parallelism: ' .. selection) end
+
+  local result, failure = process.run('nproc', {}, { stdout = 'capture', stderr = 'capture' })
+  if not result or not result.success then
+    error('cannot detect available CPUs with nproc: ' .. (failure or (if result then result.stderr or '' else 'unknown error')))
+  end
+  local detected = tonumber((result.stdout or ''):match('^%s*(%d+)%s*$'))
+  if not detected or detected < 1 then error('nproc returned an invalid CPU count') end
+  -- Preserve Forge's existing maximum while remaining portable to machines
+  -- reporting more than 1024 CPUs.
+  return math.min(detected, 1024)
+end
+
 local function tool(names: { string }): string
   for _, candidate in names do
     local result = process.run(candidate, { '--help' }, { stdout = 'null', stderr = 'null' })
@@ -177,7 +202,7 @@ end
 return table.freeze {
   checked = checked, stream = stream, mkdir = mkdir, remove = remove,
   write = write, copy = copy, tree = tree, list = list, file = file, tool = tool,
-  prepareBuildRoot = prepareBuildRoot,
+  resolveJobs = resolveJobs, prepareBuildRoot = prepareBuildRoot,
   resetManaged = resetManaged, managed = managed,
   recoverManagedDirectory = recoverManagedDirectory, publishManagedDirectory = publishManagedDirectory,
 }

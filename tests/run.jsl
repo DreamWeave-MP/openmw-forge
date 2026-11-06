@@ -3,6 +3,7 @@ local test = require '@jess/test'
 local args = require '@forge/args'
 local planning = require '@forge/plan'
 local profile = require '@forge/config'
+local util = require '@forge/native-util'
 local nativeOpenmw = require '@forge/native-openmw'
 local nativeQt = require '@forge/native-qt'
 local nativeArchive = require '@forge/native-archive'
@@ -131,7 +132,7 @@ suite.describe('profile and CLI', function()
     test.expect(options.mode).toBe('container')
     test.expect(options.engine).toBe('podman')
     test.expect(options.triplet).toBe(profile.triplet)
-    test.expect(options.jobs).toBe(3)
+    test.expect(options.jobs).toBe('auto')
   end)
 
   suite.it('preserves arbitrary CMake arguments as values', function()
@@ -156,9 +157,12 @@ suite.describe('profile and CLI', function()
     fails({ 'deps', '--deps-output=' }, 'missing value')
   end)
 
-  suite.it('bounds parallelism', function()
+  suite.it('supports CPU-aware parallelism and explicit job counts', function()
+    test.expect(parsed({ 'build', '--jobs', 'auto' }).jobs).toBe('auto')
+    test.expect(parsed({ 'build', '--jobs=auto' }).jobs).toBe('auto')
+    test.expect(util.resolveJobs(4)).toBe(4)
     for _, value in { '0', '-3', '3.14', 'many', '1025' } do
-      fails({ 'deps', '--jobs', value }, '--jobs must be an integer')
+      fails({ 'deps', '--jobs', value }, '--jobs must be auto or an integer')
     end
   end)
 
@@ -683,6 +687,7 @@ suite.describe('scheduled das-uberbranch release contract', function()
     test.expect(uberConfig.repository).toBe('https://gitlab.com/OpenMW/openmw.git')
     test.expect(uberConfig.ref).toBe('master')
     test.expect(uberConfig.releaseTag).toBe('das-uberbranch')
+    test.expect(uberConfig.jobs).toBe('auto')
   end)
 
   suite.it('only accepts safe repository references and the expected release tag', function()
@@ -691,6 +696,7 @@ suite.describe('scheduled das-uberbranch release contract', function()
       { repository = uberConfig.repository, ref = '../escape', releaseTag = 'das-uberbranch', jobs = 8 },
       { repository = uberConfig.repository, ref = 'master', releaseTag = 'stable', jobs = 8 },
       { repository = uberConfig.repository, ref = 'master', releaseTag = 'das-uberbranch', jobs = 0 },
+      { repository = uberConfig.repository, ref = 'master', releaseTag = 'das-uberbranch', jobs = 'all' },
     } do
       local valid = uber.validate(record)
       test.expect(valid).toBeFalsy()
@@ -705,6 +711,8 @@ suite.describe('scheduled das-uberbranch release contract', function()
     test.expect(has(command, '--ref')).toBeTruthy()
     test.expect(has(command, uberConfig.ref)).toBeTruthy()
     test.expect(has(command, '--run-tests')).toBeTruthy()
+    test.expect(has(command, '--jobs')).toBeTruthy()
+    test.expect(has(command, 'auto')).toBeTruthy()
     test.expect(has(command, '/tmp/forge-uber-fixture')).toBeTruthy()
   end)
 
@@ -712,9 +720,11 @@ suite.describe('scheduled das-uberbranch release contract', function()
     local dependencies = uber.depsArgs(uberConfig)
     test.expect(dependencies[1]).toBe('deps')
     test.expect(has(dependencies, '--engine')).toBeTruthy()
+    test.expect(has(dependencies, 'auto')).toBeTruthy()
     local build = uber.buildOnlyArgs(uberConfig, '/tmp/forge-output')
     test.expect(build[1]).toBe('build')
     test.expect(has(build, '--run-tests')).toBeTruthy()
+    test.expect(has(build, 'auto')).toBeTruthy()
     test.expect(has(build, uberConfig.repository)).toBeTruthy()
     test.expect(has(build, '/tmp/forge-output')).toBeTruthy()
   end)

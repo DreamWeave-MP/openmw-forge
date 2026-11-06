@@ -200,9 +200,11 @@ local function build(options: Options)
   util.prepareBuildRoot(options.build, options.clean)
   if not options.noPrepare then prepare(options) end
   configure(options)
-  util.stream('cmake', { '--build', options.build, '--parallel', tostring(options.jobs) }, nil, setTools(options))
+  local jobs = util.resolveJobs(options.jobs)
+  print('OpenMW CMake parallelism: ' .. tostring(jobs) .. ' jobs (' .. tostring(options.jobs) .. ')')
+  util.stream('cmake', { '--build', options.build, '--parallel', tostring(jobs) }, nil, setTools(options))
   if options.runTests then
-    util.stream('cmake', { '--build', options.build, '--target', 'openmw-tests', 'components-tests', '--parallel', tostring(options.jobs) }, nil, setTools(options))
+    util.stream('cmake', { '--build', options.build, '--target', 'openmw-tests', 'components-tests', '--parallel', tostring(jobs) }, nil, setTools(options))
     local env = { LD_LIBRARY_PATH = options.deps .. '/openmw-deps/installed/' .. options.triplet .. '/lib:' .. options.deps .. '/QT/' .. options.qtVersion .. '/gcc_64/lib' }
     for _, name in { 'openmw-tests', 'components-tests' } do
       local binary = options.build .. '/' .. name

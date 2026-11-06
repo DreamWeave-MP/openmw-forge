@@ -125,7 +125,9 @@ local function runUnlocked(options: Options)
   end
   local env = vcpkgPython.prepare(vcpkg, toolsetEnv())
   env.VCPKG_ROOT = vcpkg
-  env.VCPKG_MAX_CONCURRENCY = tostring(options.jobs)
+  local jobs = util.resolveJobs(options.jobs)
+  print('vcpkg concurrency: ' .. tostring(jobs) .. ' jobs')
+  env.VCPKG_MAX_CONCURRENCY = tostring(jobs)
   -- The binary cache is a host volume for containers, and persistent locally.
   -- Never restore packages built against the previous, floating EL9 glibc.
   -- The host-mounted parent persists, but the ABI baseline has a dedicated

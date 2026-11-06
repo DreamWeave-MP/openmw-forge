@@ -32,7 +32,7 @@ Common switches:
   --build-dir PATH          CMake build root
   --deps-prefix PATH        Extracted vcpkg and Qt root
   --output-dir PATH         OpenMW packaging output directory
-  --jobs N                 Default: 3 (specify machine capacity)
+  --jobs auto|N            Default: auto (CPUs visible inside build container)
   --triplet NAME            Default: x64-linux-dynamic
   --build-type TYPE         Default: RelWithDebInfo
   --qt-version X.Y.Z        Default: 6.6.3
@@ -55,7 +55,7 @@ Usage: forge pipeline (--repo URL --ref REF | --source DIR) [OPTIONS]
   --repo URL --ref REF  Build any HTTPS/SSH fork and Git ref (default ref: HEAD)
   --source DIR         Build an existing checkout without changing its branch
   --engine docker      Use Docker rather than Podman
-  --jobs N             Parallel build jobs; --run-tests enables GoogleTests
+  --jobs auto|N        Parallel build jobs; --run-tests enables GoogleTests
   --output-dir DIR     Destination for main and debug release tarballs
   --dry-run            Print planned stages without network or filesystem writes
 Examples:
@@ -69,10 +69,10 @@ Usage: forge build (--source DIR | --repo URL --ref REF) [OPTIONS]
   --no-prepare         Reuse already extracted dependencies and Qt
   --run-tests          Build and execute OpenMW GoogleTests
   --build-dir DIR --deps-prefix DIR --output-dir DIR
-  --mode container|local --engine podman|docker --jobs N
+  --mode container|local --engine podman|docker --jobs auto|N
 ]],
   deps = [[deps: compile and export the pinned AlmaLinux 9 vcpkg dependencies
-Usage: forge deps [--engine podman|docker] [--jobs N] [--deps-output DIR]
+Usage: forge deps [--engine podman|docker] [--jobs auto|N] [--deps-output DIR]
   Uses persistent vcpkg source/download and binary caches. The output is a
   verified .7z dependency export and build metadata in artifacts/deps/.
 ]],

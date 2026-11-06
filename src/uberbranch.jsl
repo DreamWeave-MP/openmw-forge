@@ -6,15 +6,17 @@ local util = require '@forge/native-util'
 local source = require '@forge/source'
 local config = require '@forge/uberbranch-config'
 
-type Config = { read repository: string, read ref: string, read releaseTag: string, read jobs: number }
+type Config = { read repository: string, read ref: string, read releaseTag: string, read jobs: number | string }
 
 local function validate(settings: Config): (boolean, string?)
   if not source.validRepo(settings.repository) then return false, 'invalid scheduled OpenMW repository' end
   if not source.validRef(settings.ref) then return false, 'invalid scheduled OpenMW ref' end
   if settings.releaseTag ~= 'das-uberbranch' then return false, 'scheduled release must be das-uberbranch' end
 
-  if settings.jobs < 1 or settings.jobs > 1024 or settings.jobs % 1 ~= 0 then
-    return false, 'scheduled jobs must be an integer between 1 and 1024'
+  if settings.jobs ~= 'auto' then
+    if type(settings.jobs) ~= 'number' or settings.jobs < 1 or settings.jobs > 1024 or settings.jobs % 1 ~= 0 then
+      return false, 'scheduled jobs must be auto or an integer between 1 and 1024'
+    end
   end
   return true, nil
 end
