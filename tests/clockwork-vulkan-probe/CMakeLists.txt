@@ -2,19 +2,20 @@ cmake_minimum_required(VERSION 3.22.1)
 project(ForgeClockworkVulkanProbe LANGUAGES C CXX)
 
 set(CLOCKWORK_SOURCE_DIR "$ENV{CLOCKWORK_SOURCE_DIR}" CACHE PATH "Clockwork checkout")
+set(CLOCKWORK_EXPECTED_REVISION "c5e5a9a6362c35512823884753d2d5284af204fa" CACHE STRING
+    "Clockwork revision for the historical compatibility probe")
 if (NOT EXISTS "${CLOCKWORK_SOURCE_DIR}/cmake/OpenMWVulkan.cmake")
     message(FATAL_ERROR "CLOCKWORK_SOURCE_DIR must name the pinned Clockwork checkout")
 endif()
-set(CLOCKWORK_EXPECTED_REVISION "c5e5a9a6362c35512823884753d2d5284af204fa")
 execute_process(
-    COMMAND git -C "${CLOCKWORK_SOURCE_DIR}" rev-parse HEAD
+    COMMAND git -c "safe.directory=${CLOCKWORK_SOURCE_DIR}" -C "${CLOCKWORK_SOURCE_DIR}" rev-parse HEAD
     RESULT_VARIABLE revision_result
     OUTPUT_VARIABLE actual_revision
     OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 if (NOT revision_result EQUAL 0 OR NOT "${actual_revision}" STREQUAL "${CLOCKWORK_EXPECTED_REVISION}")
     message(FATAL_ERROR
-        "Clockwork checkout must be ${CLOCKWORK_EXPECTED_REVISION}; got '${actual_revision}'")
+        "Clockwork checkout must resolve to ${CLOCKWORK_EXPECTED_REVISION}; got '${actual_revision}'")
 endif()
 
 set(OPENMW_USE_VULKAN ON CACHE BOOL "" FORCE)
@@ -35,12 +36,18 @@ FetchContent_Declare(vma
     SOURCE_SUBDIR include
 )
 FetchContent_MakeAvailable(vma)
+if (NOT EXISTS "${vma_SOURCE_DIR}/include/vk_mem_alloc.h")
+    message(FATAL_ERROR "Pinned VMA header was not fetched")
+endif()
 
 if (NOT OPENMW_USE_VULKAN)
     message(FATAL_ERROR "OPENMW_USE_VULKAN was silently disabled")
 endif()
 if (NOT TARGET glslang::glslang OR NOT TARGET glslang::SPIRV)
     message(FATAL_ERROR "Clockwork's pinned glslang targets are unavailable")
+endif()
+if (NOT TARGET Vulkan::Vulkan)
+    message(FATAL_ERROR "Vulkan loader import target is unavailable")
 endif()
 if (NOT EXISTS "${OPENMW_VULKAN_REGISTRY}")
     message(FATAL_ERROR "Clockwork's Vulkan XML registry is unavailable")
@@ -54,6 +61,10 @@ add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/devicetable.cpp"
         "${OPENMW_VULKAN_REGISTRY}"
 )
 add_custom_target(clockwork_device_table ALL DEPENDS "${CMAKE_BINARY_DIR}/devicetable.cpp")
+
+add_executable(clockwork_vulkan_link_probe vulkan_link_probe.cpp)
+target_include_directories(clockwork_vulkan_link_probe PRIVATE "${vma_SOURCE_DIR}/include")
+target_link_libraries(clockwork_vulkan_link_probe PRIVATE Vulkan::Vulkan)
 
 message(STATUS "QUALIFIED OPENMW_USE_VULKAN=${OPENMW_USE_VULKAN}")
 message(STATUS "QUALIFIED glslang_VERSION=${glslang_VERSION}")
