@@ -113,12 +113,24 @@ A process that displays a non-fatal warning and remains running still counts as
 alive, not fully functional. This check does not guarantee complete GUI
 functionality or a usable display.
 
-The minimal distro smoke images explicitly provision GL, EGL and GLib runtime
-libraries. GL/EGL installation alone does not guarantee `libglib-2.0.so.0`
+The minimal distro smoke images explicitly provision GL, EGL, GLib and Kerberos GSSAPI
+runtime libraries. GL/EGL installation alone does not guarantee `libglib-2.0.so.0`
 on Ubuntu 24.04. For GLib, Ubuntu 24.04 and Debian 13 use
 `libglib2.0-0t64`, whereas Ubuntu 22.04 and Debian 12 use `libglib2.0-0`;
-other package managers have their own names. These are dependencies of the
-**test containers**, not changes to the AlmaLinux toolchain or OpenMW SDK.
+other package managers have their own names. `libgssapi_krb5.so.2` is supplied
+by Ubuntu/Debian `libgssapi-krb5-2`, EL/Fedora `krb5-libs`, and distro-specific
+Kerberos packages elsewhere (`mit-krb5-libs` on Void). These are dependencies of the **test containers**,
+not changes to the AlmaLinux toolchain or OpenMW SDK.
+
+Before any distribution executes OpenMW, Forge runs a **runtime dependency-closure
+preflight** with the target distribution's own `ldd` and the packaged library
+search path. It checks every regular ELF in the package (including dynamically
+loaded Qt plugins) in bounded batches, aggregates all unresolved libraries and
+version errors across the selected distributions, and fails before GUI launch.
+That preflight complements, but does not replace, the real bounded GUI and
+command-line smoke tests: `ldd` alone does not exercise plugin initialization.
+To rerun against an existing tarball without rebuilding C++, use Forge's
+`smoke --archive ... --distros ... --with-qt` command.
 
 Command-line tools retain `--help` arguments, strict help/exit validation, and a **30-second**
 execution deadline. In cross-distribution smoke checks, Forge launches

@@ -56,7 +56,23 @@ before testing the graphical Qt binaries. On AlmaLinux 9, `mesa-libGL` alone
 does **not** provide `libEGL.so.1`; the smoke image also installs
 `libglvnd-egl`. On Debian/Ubuntu, the corresponding package is `libegl1`.
 The test images supply system graphics dependencies; they do not imply those
-libraries are included in the downloadable OpenMW distribution. The Forge
+libraries are included in the downloadable OpenMW distribution. QtNetwork may bring in MIT Kerberos GSSAPI (`libgssapi_krb5.so.2`) even
+when OpenMW-CS itself does not use network authentication. The smoke images
+therefore install the distro-specific GSSAPI runtime (`libgssapi-krb5-2` on
+Debian/Ubuntu, `krb5-libs` on Fedora/AlmaLinux, `krb5` on Arch/openSUSE, `mit-krb5-libs` on Void).
+
+Before starting any packaged executable, Forge enumerates every regular ELF in
+the extracted package, including `.so` libraries and Qt plugins. It invokes
+`ldd` **inside each target distro image** with the same packaged library path,
+collects missing dependencies and incompatible symbol versions in bounded
+batches, then reports every failed distribution together. The check is strict
+even if `ldd` exits zero while printing `not found`. It does not replace
+bounded GUI startup or CLI smoke tests: plugin discovery and initialization
+can still fail even after the ELF closure resolves. Recheck an existing archive
+with `forge smoke --archive <archive.tar.gz> --distros <csv> --with-qt` without
+rerunning OpenMW compilation. No Docker/Podman validation was available locally.
+
+The Forge
 package itself still undergoes the independent ELF ABI and executable checks.
 
 ## Generated asset parity

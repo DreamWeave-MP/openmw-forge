@@ -295,6 +295,21 @@ actual extracted links before using or publishing the SDK. This avoids the
 former several-hundred-process decompression loop without weakening the ABI
 audit or allowing unvalidated archive members to escape staging.
 
+### Missing `libgssapi_krb5.so.2` or other `.so` in smoke containers
+
+OpenMW-CS may load QtNetwork, which transitively requires Kerberos GSSAPI.
+The Ubuntu/Debian image recipes install `libgssapi-krb5-2`; Fedora/AlmaLinux
+use `krb5-libs`, while other distro profiles use `krb5` (Arch/openSUSE) or `mit-krb5-libs` (Void). Do not bundle the
+builder's system Kerberos libraries to conceal missing target-runtime dependencies.
+
+The distro smoke gate now performs a full ELF dependency-closure check before
+launching any executable. It checks the packaged Qt plugin tree as well as
+binaries, using each target distro's loader environment, and reports *all*
+unresolved SONAMEs or symbol-version problems together. Fix missing system
+runtime packages in the corresponding smoke image; keep actual bounded GUI
+startup checks in place to catch non-linker failures. An existing packaged
+tarball can be rechecked with `forge smoke --archive ... --distros ... --with-qt`.
+
 ### Cross-distro smoke appears stuck on the first GUI tool
 
 A legacy Forge smoke implementation ran `openmw-launcher --help` synchronously
