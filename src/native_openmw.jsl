@@ -18,7 +18,7 @@ local function setTools(options: Options): { [string]: string }
     CC = '/opt/rh/gcc-toolset-13/root/usr/bin/gcc',
     CXX = '/opt/rh/gcc-toolset-13/root/usr/bin/g++',
     CCACHE_DIR = process.env('CCACHE_DIR') or (if options.mode == 'local' then options.root .. '/work/cache/ccache' else '/forge/work/ccache'),
-    CCACHE_MAXSIZE = process.env('CCACHE_MAXSIZE') or '1G',
+    CCACHE_MAXSIZE = process.env('CCACHE_MAXSIZE') or '2G',
     CCACHE_COMPRESS = 'true',
   }
 end

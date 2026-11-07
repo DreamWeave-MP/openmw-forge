@@ -53,7 +53,8 @@ jobs:
           restore-keys: |
             forge-sdk-v3-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-
       - name: Restore bounded ccache
-        uses: actions/cache@v6
+        id: ccache
+        uses: actions/cache/restore@v6
         with:
           path: work/cache/ccache
           key: forge-ccache-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ steps.cache-key.outputs.day }}
@@ -131,9 +132,20 @@ jobs:
       - name: Reclaim dependency buildtrees and report remaining disk
         run: jess run --trusted --package . tools/ci_resources.jsl --before-build
       - name: Build configured OpenMW, run GoogleTests, verify archive and distro launchers
+        id: openmw-build
         env:
           FORGE_BIN: ${{ github.workspace }}/build/openmw-forge-linux-x64
         run: jess run --trusted --package . tools/uberbranch.jsl --build-only
+      # Unlike actions/cache's automatic post-job save, this executes after a
+      # packaging or distro smoke failure. Preserve successful C/C++ compiles
+      # on the same mounted cache volume so the next CI run can reuse them.
+      - name: Preserve ccache after OpenMW build even on smoke failure
+        if: ${{ always() && !cancelled() && steps.openmw-build.outcome != 'skipped' && steps.ccache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: work/cache/ccache
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@v4
         with:
           name: openmw-das-uberbranch-candidate
