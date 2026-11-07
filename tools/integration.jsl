@@ -320,6 +320,7 @@ if not destination then error('missing mock command log') end
 local recorded, failure = fs.writeFile(destination, table.concat(arguments, '\t') .. '\n', { append = true })
 if not recorded then error(failure or 'mock log write failed') end
 if process.env('FORGE_MOCK_FAIL') == arguments[1] then error('intentional mock container failure') end
+
 if process.env('FORGE_MOCK_FAIL_MANIFEST') == '1' and arguments[2] == 'upload'
   and arguments[4] and arguments[4]:find('SHA256SUMS', 1, true) then
   error('intentional checksum manifest upload failure')
@@ -327,18 +328,32 @@ end
 
 -- Provide a deterministic detached container to test Forge's actual GUI
 -- smoke lifecycle without relying on an installed Docker daemon.
+if arguments[1] == 'run' and arguments[2] == '--rm' then
+  if process.env('FORGE_MOCK_LDD_MISSING') == '1' then
+    print('/pkg/openmw.x86_64:')
+    print('    libgssapi_krb5.so.2 => not found')
+  else
+    print('/pkg/openmw.x86_64:')
+    print('    libc.so.6 => /lib64/libc.so.6 (0x1234)')
+  end
+  return
+end
+
 if arguments[1] == 'run' and arguments[2] == '--detach' then
   print('abcdef012345')
   return
 end
+
 if arguments[1] == 'inspect' and arguments[2] == '--format' then
   print('true:0:false')
   return
 end
+
 if arguments[1] == 'logs' then
   print('Qt smoke fixture running')
   return
 end
+
 if arguments[1] == 'rm' and arguments[2] == '-f' then return end
 
 if arguments[1] == 'release' and arguments[2] == 'view' then
@@ -398,6 +413,34 @@ check(smokeLifecycle:find('logs\tabcdef012345', 1, true) ~= nil,
   'GUI smoke must capture startup diagnostics')
 check(smokeLifecycle:find('rm\t-f\t-v\tabcdef012345', 1, true) ~= nil,
   'GUI smoke must forcibly clean up its container after bounded startup')
+
+-- Test the real dependency-closure runner against a Jess-built container
+-- mock, including a dlopen-loaded Qt plugin, a short non-ELF and an unresolved
+-- library. No Docker daemon or special external library is required.
+local closureRoot = scratch .. '/closure-fixture'
+util.mkdir(closureRoot .. '/plugins/platforms')
+util.copy(binary, closureRoot .. '/openmw.x86_64')
+util.copy(binary, closureRoot .. '/plugins/platforms/libqxcb.so')
+util.write(closureRoot .. '/short-file', '\127EL')
+local closureEntries = smokeModule.closureEntries(closureRoot)
+check(#closureEntries == 2, 'closure must include binaries and Qt plugins but not short files')
+local closureLog = scratch .. '/mock-closure.log'
+local closureEngine = mockedBin .. '/podman'
+local ClosureTag = 'smoke:test'
+local closureVolume = closureRoot .. ':/pkg:ro'
+local closureOkay = smokeModule.auditDistroClosure(closureEngine, ClosureTag, closureVolume,
+  'ubuntu-24.04', closureEntries, { FORGE_MOCK_LOG = closureLog })
+check(#closureOkay == 0, 'valid dependency closure must pass')
+local closureLogText = util.file(closureLog)
+check(closureLogText:find('run\t--rm', 1, true) ~= nil,
+  'dependency closure must run bounded one-shot container, not launch an application')
+check(closureLogText:find('/pkg/plugins/platforms/libqxcb.so', 1, true) ~= nil,
+  'dependency closure must include Qt plugins that dlopen at runtime')
+local closureMissing = smokeModule.auditDistroClosure(closureEngine, ClosureTag, closureVolume,
+  'ubuntu-24.04', closureEntries,
+  { FORGE_MOCK_LOG = closureLog, FORGE_MOCK_LDD_MISSING = '1' })
+check(#closureMissing == 1 and closureMissing[1]:find('libgssapi_krb5.so.2', 1, true) ~= nil,
+  'unresolved GSSAPI dependency must fail preflight even on ldd exit 0')
 
 -- The disk reclamation helper must refuse local invocation, preserve unowned
 -- checkout content without blocking a valid cached-SDK OpenMW build, and

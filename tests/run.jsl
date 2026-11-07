@@ -66,36 +66,76 @@ suite.describe('bounded OpenMW GUI smoke startup', function()
 end)
 
 suite.describe('packaged executable smoke contracts', function()
-  suite.it('provides GL, EGL and GLib runtimes for graphical distro smoke tests', function()
+  suite.it('provides GL, EGL, GLib and GSSAPI runtimes for graphical distro smoke tests', function()
     for _, tag in { 'almalinux-9', 'fedora-latest' } do
       local recipe = nativeSmoke.imageDockerfile(tag)
-      test.expect(recipe).toContain('mesa-libGL libglvnd-egl glib2')
+      test.expect(recipe).toContain('mesa-libGL libglvnd-egl glib2 krb5-libs')
       test.expect(recipe).toContain('RUN dnf install -y ')
     end
 
     -- The actual Debian/Ubuntu package names differ across the time64 switch.
     for _, tag in { 'debian-12', 'ubuntu-22.04' } do
       local recipe = nativeSmoke.imageDockerfile(tag)
-      test.expect(recipe).toContain('libgl1 libegl1 libglib2.0-0\n')
+      test.expect(recipe).toContain('libgl1 libegl1 libglib2.0-0 libgssapi-krb5-2\n')
       test.expect(recipe).toContain('RUN apt-get update && apt-get install -y ')
     end
 
     for _, tag in { 'debian-13', 'ubuntu-24.04' } do
       local recipe = nativeSmoke.imageDockerfile(tag)
-      test.expect(recipe).toContain('libgl1 libegl1 libglib2.0-0t64\n')
+      test.expect(recipe).toContain('libgl1 libegl1 libglib2.0-0t64 libgssapi-krb5-2\n')
       test.expect(recipe).toContain('RUN apt-get update && apt-get install -y ')
     end
 
     test.expect(nativeSmoke.imageDockerfile('opensuse-tumbleweed'))
-      .toContain('Mesa-libGL1 Mesa-libEGL1 libglib-2_0-0')
+      .toContain('Mesa-libGL1 Mesa-libEGL1 libglib-2_0-0 krb5')
     test.expect(nativeSmoke.imageDockerfile('archlinux'))
-      .toContain('pacman -Sy --noconfirm --needed libglvnd glib2')
+      .toContain('pacman -Sy --noconfirm --needed libglvnd glib2 krb5')
     test.expect(nativeSmoke.imageDockerfile('voidlinux'))
-      .toContain('xbps-install -Sy libglvnd glib')
+      .toContain('xbps-install -Sy libglvnd glib mit-krb5-libs')
 
     for _, tag in { 'archlinux', 'voidlinux' } do
       test.expect(nativeSmoke.imageDockerfile(tag)).toContain('libglvnd')
     end
+  end)
+
+  suite.it('reports all missing SONAMEs and version errors from ldd', function()
+    local sample = [[/pkg/openmw-cs.x86_64:
+        libgssapi_krb5.so.2 => not found
+        libQt6Core.so.6 => /pkg/lib/libQt6Core.so.6 (0x1234)
+/pkg/plugins/platforms/libqxcb.so:
+        libXrender.so.1 => not found
+]]
+    local errors = nativeSmoke.closureProblems(sample, '', 0)
+    test.expect(#errors).toBe(2)
+    test.expect(errors[1]).toContain('/pkg/openmw-cs.x86_64')
+    test.expect(errors[1]).toContain('libgssapi_krb5.so.2')
+    test.expect(errors[2]).toContain('/pkg/plugins/platforms/libqxcb.so')
+    test.expect(errors[2]).toContain('libXrender.so.1')
+
+    local versions = nativeSmoke.closureProblems('',
+      "/pkg/lib/libQt6Core.so.6: /lib/libc.so.6: version `GLIBC_2.38' not found", 1)
+    test.expect(#versions).toBe(1)
+    test.expect(versions[1]).toContain('GLIBC_2.38')
+
+    local okay = nativeSmoke.closureProblems('statically linked\n', '', 0)
+    test.expect(#okay).toBe(0)
+    local failure = nativeSmoke.closureProblems('', 'ldd: command not found', 127)
+    test.expect(#failure).toBe(1)
+    test.expect(failure[1]).toContain('command not found')
+  end)
+
+  suite.it('runs a bounded dependency audit with the packaged runtime paths', function()
+    local entries = { '/pkg/openmw-cs.x86_64', '/pkg/plugins/platforms/libqxcb.so' }
+    local command = nativeSmoke.closureCommand('forge-smoke:test', '/fixture:/pkg:ro',
+      entries, 1, #entries)
+    test.expect(command[1]).toBe('run')
+    test.expect(command[2]).toBe('--rm')
+    test.expect(table.concat(command, ' ')).toContain('--network none')
+    test.expect(table.concat(command, ' ')).toContain('LD_LIBRARY_PATH=/pkg/lib')
+    test.expect(table.concat(command, ' ')).toContain('QT_PLUGIN_PATH=/pkg/plugins')
+    test.expect(table.concat(command, ' ')).toContain('120s ldd')
+    test.expect(command[#command - 1]).toBe('/pkg/openmw-cs.x86_64')
+    test.expect(command[#command]).toBe('/pkg/plugins/platforms/libqxcb.so')
   end)
 
   suite.it('accepts only the documented exit-one OpenMW help responses', function()

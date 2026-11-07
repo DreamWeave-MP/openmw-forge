@@ -149,27 +149,110 @@ local function smokeBinaries(stage: string, withQt: boolean?)
   if ran == 0 then error('no smoke binaries were executed') end
 end
 
--- Qt GUI tools require GL, EGL and GLib at runtime. The GL/EGL packages do
--- not guarantee libglib-2.0.so.0 (notably on minimal Ubuntu containers).
--- Debian 13 and Ubuntu 24.04 renamed the GLib runtime package for time64;
--- use each distribution's actual package name rather than relying on an
--- incidental transitive dependency from the graphics stack.
+-- Qt GUI tools need GL/EGL/GLib and may transitively need Kerberos GSSAPI
+-- through QtNetwork. Keep explicit runtime packages in minimal smoke images:
+-- dependency-closure preflight below catches further missing SONAMEs at once.
 local DistroImages: { [string]: { string } } = {
-  ['almalinux-9'] = { 'almalinux:9', 'dnf install -y mesa-libGL libglvnd-egl glib2' },
-  ['debian-12'] = { 'debian:12', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0' },
-  ['debian-13'] = { 'debian:trixie', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0t64' },
-  ['ubuntu-22.04'] = { 'ubuntu:22.04', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0' },
-  ['ubuntu-24.04'] = { 'ubuntu:24.04', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0t64' },
-  ['fedora-latest'] = { 'fedora:latest', 'dnf install -y mesa-libGL libglvnd-egl glib2' },
-  ['archlinux'] = { 'archlinux:latest', 'pacman -Sy --noconfirm --needed libglvnd glib2' },
-  ['opensuse-tumbleweed'] = { 'opensuse/tumbleweed', 'zypper --non-interactive install Mesa-libGL1 Mesa-libEGL1 libglib-2_0-0' },
-  ['voidlinux'] = { 'ghcr.io/void-linux/void-glibc-full:latest', 'xbps-install -Sy libglvnd glib' },
+  ['almalinux-9'] = { 'almalinux:9', 'dnf install -y mesa-libGL libglvnd-egl glib2 krb5-libs' },
+  ['debian-12'] = { 'debian:12', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0 libgssapi-krb5-2' },
+  ['debian-13'] = { 'debian:trixie', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0t64 libgssapi-krb5-2' },
+  ['ubuntu-22.04'] = { 'ubuntu:22.04', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0 libgssapi-krb5-2' },
+  ['ubuntu-24.04'] = { 'ubuntu:24.04', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0t64 libgssapi-krb5-2' },
+  ['fedora-latest'] = { 'fedora:latest', 'dnf install -y mesa-libGL libglvnd-egl glib2 krb5-libs' },
+  ['archlinux'] = { 'archlinux:latest', 'pacman -Sy --noconfirm --needed libglvnd glib2 krb5' },
+  ['opensuse-tumbleweed'] = { 'opensuse/tumbleweed', 'zypper --non-interactive install Mesa-libGL1 Mesa-libEGL1 libglib-2_0-0 krb5' },
+  ['voidlinux'] = { 'ghcr.io/void-linux/void-glibc-full:latest', 'xbps-install -Sy libglvnd glib mit-krb5-libs' },
 }
 
 local function imageDockerfile(tag: string): string
   local image = DistroImages[tag]
   if not image then error('unknown smoke distro: ' .. tag) end
   return `FROM {image[1]}\nRUN {image[2]}\n`
+end
+
+-- Check the actual dynamic-linker closure *inside* each smoke distro before
+-- attempting to start applications. Include Qt's dlopen-loaded plugins, not
+-- only the DT_NEEDED chain of executable entry points. ldd must run in the
+-- target image so that its system library set, not the builder's, is tested.
+-- Batches bound argument length and prevent one enormous captured output.
+local ClosureBatchSize = 64
+
+local function closureEntries(stage: string): { string }
+  local found, problem = fs.walk(stage, { include = 'files', sort = true })
+  if not found then error(problem or 'cannot enumerate packaged ELF files') end
+  local entries: { string } = {}
+  for _, relative in found.paths do
+    if abi.isElf(stage .. '/' .. relative) then
+      table.insert(entries, '/pkg/' .. relative)
+    end
+  end
+
+  if #entries == 0 then error('runtime dependency audit found no ELF files') end
+  return entries
+end
+
+-- ldd often exits successfully even when a DT_NEEDED library is absent.
+-- Always inspect the text. Headers tie each unresolved dependency back to the
+-- file that requires it; do not mistake a 'statically linked' ELF for failure.
+local function closureProblems(stdout: string, stderr: string, code: number?): { string }
+  local problems: { string } = {}
+  local current = '(unknown ELF)'
+  for line in (stdout .. '\n' .. stderr):gmatch('[^\r\n]+') do
+    local header = line:match('^(/pkg/[^:]+):%s*$')
+    if header then current = header end
+    local lower = line:lower()
+    if lower:find('not found', 1, true)
+      or lower:find('cannot open shared object', 1, true)
+      or lower:find('no such file or directory', 1, true)
+      or lower:find('symbol lookup error', 1, true)
+      or lower:find('undefined symbol', 1, true)
+      or lower:find('inconsistency detected', 1, true) then
+      table.insert(problems, current .. ': ' .. line:gsub('^%s+', ''))
+    end
+  end
+
+  if code ~= 0 and #problems == 0 then
+    local details = (stderr ~= '' and stderr or stdout):sub(1, 500)
+    table.insert(problems, `ldd failed (exit {tostring(code)}): {details}`)
+  end
+  return problems
+end
+
+local function closureCommand(imageTag: string, volume: string,
+  entries: { string }, from: number, last: number): { string }
+  local command = {
+    'run', '--rm', '--network', 'none', '-v', volume, '-w', '/pkg',
+    '-e', 'LD_LIBRARY_PATH=/pkg/lib', '-e', 'QT_PLUGIN_PATH=/pkg/plugins',
+    imageTag, 'timeout', '--signal=TERM', '--kill-after=2s', '120s', 'ldd',
+  }
+
+  for index = from, last do table.insert(command, entries[index]) end
+  return command
+end
+
+local function auditDistroClosure(engine: string, imageTag: string, volume: string,
+  tag: string, entries: { string }, testEnvironment: { [string]: string }?): { string }
+  local problems: { string } = {}
+  for first = 1, #entries, ClosureBatchSize do
+    local last = math.min(first + ClosureBatchSize - 1, #entries)
+    local result, failure = process.run(engine,
+      closureCommand(imageTag, volume, entries, first, last),
+      { stdout = 'capture', stderr = 'capture', env = testEnvironment })
+    if not result then
+      table.insert(problems, `could not start closure audit: {failure or 'unknown'}`)
+    else
+      for _, problem in closureProblems(result.stdout or '', result.stderr or '', result.code) do
+        table.insert(problems, problem)
+      end
+
+      if not result.success and result.code == nil then
+        table.insert(problems, `dependency audit terminated unexpectedly: {result.stderr or ''}`)
+      end
+    end
+  end
+
+  if #problems == 0 then print(`PASS {tag}: dependency closure ({#entries} packaged ELF files)`) end
+  return problems
 end
 
 -- Detached containers let Forge poll GUI startup without blocking in
@@ -283,12 +366,32 @@ local function multiSmoke(options: Options, staging: string)
     error('required OpenMW Qt launcher is missing from package')
   end
 
+  -- Build every chosen runtime image, then report the complete unresolved
+  -- dependency set for all distros before starting any smoke executable.
+  local volume = staging .. ':/pkg:ro' .. (if options.engine == 'podman' then ',z' else '')
+  local entries = closureEntries(staging)
   for _, tag in selected do
     local buildDir = options.root .. '/work/forge-smoke-images/' .. tag
     util.mkdir(buildDir)
     util.write(buildDir .. '/Dockerfile', imageDockerfile(tag))
     local imageTag = 'openmw-forge-smoke:' .. tag
     util.stream(options.engine, { 'build', '-t', imageTag, '-f', buildDir .. '/Dockerfile', buildDir })
+  end
+
+  local missing: { string } = {}
+  for _, tag in selected do
+    local imageTag = 'openmw-forge-smoke:' .. tag
+    local problems = auditDistroClosure(options.engine, imageTag, volume, tag, entries)
+    for _, problem in problems do table.insert(missing, tag .. ': ' .. problem) end
+  end
+
+  if #missing > 0 then
+    error(`runtime dependency closure failed ({#missing} diagnostics):\n`
+      .. table.concat(missing, '\n'))
+  end
+
+  for _, tag in selected do
+    local imageTag = 'openmw-forge-smoke:' .. tag
     local count = 0
     local names = {
       'openmw', 'openmw-iniimporter', 'openmw-essimporter', 'openmw-navmeshtool',
@@ -305,7 +408,6 @@ local function multiSmoke(options: Options, staging: string)
       if not fs.isFile(staging .. '/' .. name .. '.x86_64') then continue end
       if not fs.isFile(staging .. '/' .. name) then error('missing installed launcher: ' .. name) end
       count += 1
-      local volume = staging .. ':/pkg:ro' .. (if options.engine == 'podman' then ',z' else '')
       -- Run both entry points; a distro-specific wrapper failure is a release failure.
       for _, entry in { name .. '.x86_64', name } do
         runDistroCommand(options.engine, imageTag, volume, tag, name, entry)
@@ -365,4 +467,6 @@ return table.freeze {
   smoke = smoke, smokeBinaries = smokeBinaries, validateHelpResult = validateHelpResult,
   validateBoundedResult = validateBoundedResult, imageDockerfile = imageDockerfile,
   runDistroCommand = runDistroCommand, smokeInvocationArgs = smokeInvocationArgs,
+  closureEntries = closureEntries, closureProblems = closureProblems,
+  closureCommand = closureCommand, auditDistroClosure = auditDistroClosure,
 }
