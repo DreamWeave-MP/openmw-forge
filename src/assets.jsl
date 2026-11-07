@@ -34,7 +34,7 @@ RUN dnf config-manager --set-enabled crb
 # AlmaLinux 9 ships curl-minimal; full curl conflicts with the base RPM.
 RUN dnf install -y git tar gzip p7zip zip unzip curl-minimal gcc-toolset-13 cmake ninja-build ccache \
     perl autoconf autoconf-archive automake libtool nasm pkgconfig mesa-libGL-devel \
-    mesa-libEGL-devel libXcursor-devel libX11-devel libXft-devel libXext-devel \
+    mesa-libEGL-devel vulkan-loader-devel libXcursor-devel libX11-devel libXft-devel libXext-devel \
     libxkbcommon-devel libxkbcommon-x11 wayland-devel texinfo gettext-devel \
     kernel-headers python3 python3-pip make patch libstdc++ \
     libxcb xcb-util xcb-util-image xcb-util-keysyms xcb-util-wm \

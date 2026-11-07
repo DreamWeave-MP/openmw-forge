@@ -821,6 +821,7 @@ suite.describe('embedded assets, versions, and archive names', function()
     end
     test.expect(dockerfile).toContain('vault.almalinux.org/9.5/extras/')
     test.expect(dockerfile).toContain('gcc-toolset-13')
+    test.expect(dockerfile).toContain('vulkan-loader-devel')
     test.expect(dockerfile).toContain('rpm -q glibc glibc-common')
     test.expect(dockerfile).toContain('nm -D --defined-only')
     test.expect(dockerfile).toContain('__memcmpeq|_dl_find_object|epoll_pwait2')
