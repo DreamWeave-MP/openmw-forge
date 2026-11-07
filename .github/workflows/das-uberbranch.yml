@@ -37,6 +37,7 @@ jobs:
       repository: ${{ steps.config.outputs.repository }}
       requested_ref: ${{ steps.config.outputs.ref }}
       release_tag: ${{ steps.config.outputs.release_tag }}
+      profile: ${{ steps.config.outputs.profile }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -62,6 +63,7 @@ jobs:
           OPENMW_REPOSITORY: ${{ steps.config.outputs.repository }}
           OPENMW_REF: ${{ steps.config.outputs.ref }}
           OPENMW_RELEASE_TAG: ${{ steps.config.outputs.release_tag }}
+          OPENMW_PROFILE: ${{ steps.config.outputs.profile }}
           FORGE_TOOLCHAIN_ID: ${{ steps.toolchain.outputs.toolchain_id }}
           RUNNER_ARCH: ${{ runner.arch }}
           FORCE_REBUILD: ${{ inputs.force_rebuild || false }}
@@ -153,6 +155,7 @@ jobs:
           FORGE_INPUT_FINGERPRINT: ${{ needs.preflight.outputs.input_fingerprint }}
           FORGE_INPUTS_JSON: ${{ needs.preflight.outputs.inputs_json }}
           FORGE_REQUESTED_REF: ${{ needs.preflight.outputs.requested_ref }}
+          FORGE_RELEASE_PROFILE: ${{ needs.preflight.outputs.profile }}
         run: jess run --trusted --package . tools/uberbranch.jsl --prepare-deps
       - name: Preserve upstream vcpkg failure diagnostics
         if: failure()
@@ -203,6 +206,7 @@ jobs:
           FORGE_INPUT_FINGERPRINT: ${{ needs.preflight.outputs.input_fingerprint }}
           FORGE_INPUTS_JSON: ${{ needs.preflight.outputs.inputs_json }}
           FORGE_REQUESTED_REF: ${{ needs.preflight.outputs.requested_ref }}
+          FORGE_RELEASE_PROFILE: ${{ needs.preflight.outputs.profile }}
         run: jess run --trusted --package . tools/uberbranch.jsl --build-only
       # Unlike actions/cache's automatic post-job save, this executes after a
       # packaging or distro smoke failure. Preserve successful C/C++ compiles
@@ -246,4 +250,5 @@ jobs:
           FORGE_INPUT_FINGERPRINT: ${{ needs.preflight.outputs.input_fingerprint }}
           FORGE_RESOLVED_SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
           FORGE_INPUTS_JSON: ${{ needs.preflight.outputs.inputs_json }}
+          FORGE_RELEASE_PROFILE: ${{ needs.preflight.outputs.profile }}
         run: jess run --trusted --package . tools/uberbranch.jsl --publish-artifacts "$PWD/dist"

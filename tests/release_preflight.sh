@@ -55,6 +55,7 @@ chmod +x "$scratch/bin/git" "$scratch/bin/gh"
 export PATH="$scratch/bin:$PATH" REAL_GIT="$real_git"
 export GITHUB_OUTPUT="$scratch/output" GITHUB_STEP_SUMMARY="$scratch/summary" GITHUB_TOKEN=fixture
 export OPENMW_REPOSITORY=https://example.invalid/openmw.git OPENMW_REF=master OPENMW_RELEASE_TAG=das-uberbranch
+export OPENMW_PROFILE=upstream
 export FORGE_TOOLCHAIN_ID=ghcr.io/example/forge-builder@sha256:$(printf 'b%.0s' {1..64}) RUNNER_ARCH=X64
 export MOCK_RELEASE_JSON='{}' MOCK_DOWNLOAD_LOG="$scratch/downloads.log"
 
@@ -91,17 +92,20 @@ fp=$(output input_fingerprint); sha=$(output source_sha); inputs=$(output inputs
 mkdir -p "$scratch/assets"
 printf 'archive payload\n' > "$scratch/assets/openmw-0.53.0-g${sha:0:12}-Linux-64Bit.tar.gz"
 printf 'debug payload\n' > "$scratch/assets/openmw-0.53.0-g${sha:0:12}-Linux-64Bit-debug.tar.gz"
-printf 'OpenMW repository: %s\nOpenMW requested ref: %s\nOpenMW resolved SHA: %s\nBuild input fingerprint: %s\n' \
-  "$OPENMW_REPOSITORY" "$OPENMW_REF" "$sha" "$fp" > "$scratch/assets/SOURCE.txt"
+printf 'Profile: %s\nGitHub release: %s\nOpenMW repository: %s\nOpenMW requested ref: %s\nOpenMW resolved SHA: %s\nBuild input fingerprint: %s\n' \
+  "$OPENMW_PROFILE" "$OPENMW_RELEASE_TAG" "$OPENMW_REPOSITORY" "$OPENMW_REF" "$sha" "$fp" > "$scratch/assets/SOURCE.txt"
 jq -cnS --arg fp "$fp" --arg sha "$sha" --arg repo "$OPENMW_REPOSITORY" --arg ref "$OPENMW_REF" \
   --argjson inputs "$inputs" \
-  '{schema:"forge-qualified-release/v1",qualified:true,input_fingerprint:$fp,source_sha:$sha,repository:$repo,requested_ref:$ref,inputs:$inputs}' \
+  '{schema:"forge-qualified-release/v1",qualified:true,input_fingerprint:$fp,source_sha:$sha,repository:$repo,requested_ref:$ref,profile:"upstream",release_tag:"das-uberbranch",inputs:$inputs}' \
   > "$scratch/assets/PROVENANCE.json"
 (cd "$scratch/assets" && sha256sum openmw-* SOURCE.txt PROVENANCE.json > SHA256SUMS)
 export MOCK_ASSET_DIR="$scratch/assets" MOCK_GH_MODE=present
 refresh_release_json
 run_preflight
 [[ "$(output should_build)" == false && "$(output reason)" == skipped-qualified ]] || exit 1
+OPENMW_PROFILE=clockwork run_preflight
+[[ "$(output should_build)" == true && "$(output reason)" == invalid-or-mismatched-provenance ]] || exit 1
+grep -Fq -- '- Profile: `clockwork`' "$GITHUB_STEP_SUMMARY" || exit 1
 grep -qx 'SHA256SUMS SOURCE.txt PROVENANCE.json' "$MOCK_DOWNLOAD_LOG" || exit 1
 if grep -q 'openmw-.*tar.gz' "$MOCK_DOWNLOAD_LOG"; then
   echo 'preflight downloaded a large OpenMW archive' >&2; exit 1

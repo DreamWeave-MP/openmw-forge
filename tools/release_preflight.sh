@@ -6,6 +6,11 @@ set -euo pipefail
 : "${GITHUB_OUTPUT:?}" "${GITHUB_STEP_SUMMARY:?}" "${GITHUB_TOKEN:?}"
 : "${OPENMW_REPOSITORY:?}" "${OPENMW_REF:?}" "${OPENMW_RELEASE_TAG:?}"
 : "${FORGE_TOOLCHAIN_ID:?}" "${RUNNER_ARCH:?}"
+OPENMW_PROFILE="${OPENMW_PROFILE:-upstream}"
+if [[ ! "$OPENMW_PROFILE" =~ ^[a-z][a-z0-9-]*$ ]]; then
+  echo "Invalid release profile id: $OPENMW_PROFILE" >&2
+  exit 1
+fi
 
 if [[ ! "$FORGE_TOOLCHAIN_ID" =~ ^(ghcr\.io/.+@sha256:[0-9a-f]{64}|fallback:[0-9a-f]{64}:[0-9a-f]{64})$ ]]; then
   echo "Cannot establish immutable toolchain identity: $FORGE_TOOLCHAIN_ID" >&2
@@ -103,9 +108,10 @@ recipe_hash=$(git ls-files -z .github/workflows ci src tools vendor/builder vend
   | sort -z | xargs -0 -r sha256sum | sha256sum | cut -d' ' -f1)
 inputs=$(jq -cnS \
   --arg schema 'forge-release-inputs/v1' \
-  --arg profile 'upstream' \
+  --arg profile "$OPENMW_PROFILE" \
   --arg repository "$OPENMW_REPOSITORY" \
   --arg requested_ref "$OPENMW_REF" \
+  --arg release_tag "$OPENMW_RELEASE_TAG" \
   --arg source_sha "$source_sha" \
   --arg target "linux-$RUNNER_ARCH" \
   --arg toolchain "$FORGE_TOOLCHAIN_ID" \
@@ -114,7 +120,7 @@ inputs=$(jq -cnS \
   --arg compiler 'GCC Toolset 13; CMake from immutable AlmaLinux 9 builder' \
   --arg cmake_flags 'Forge scheduled defaults; --run-tests; jobs=auto' \
   --arg recipe_hash "$recipe_hash" \
-  '{schema:$schema,profile:$profile,repository:$repository,requested_ref:$requested_ref,source_sha:$source_sha,target:$target,toolchain:$toolchain,dependency_sdk_fingerprint:$dependencies,qt:$qt,compiler_configuration:$compiler,cmake_flags:$cmake_flags,forge_recipe_sha256:$recipe_hash}')
+  '{schema:$schema,profile:$profile,repository:$repository,requested_ref:$requested_ref,release_tag:$release_tag,source_sha:$source_sha,target:$target,toolchain:$toolchain,dependency_sdk_fingerprint:$dependencies,qt:$qt,compiler_configuration:$compiler,cmake_flags:$cmake_flags,forge_recipe_sha256:$recipe_hash}')
 fingerprint=$(printf '%s' "$inputs" | sha256sum | cut -d' ' -f1)
 printf 'source_sha=%s\ninput_fingerprint=%s\ninputs_json=%s\n' \
   "$source_sha" "$fingerprint" "$inputs" >> "$GITHUB_OUTPUT"
@@ -151,8 +157,11 @@ elif release_json=$(GH_TOKEN="$GITHUB_TOKEN" gh release view "$OPENMW_RELEASE_TA
       source="$temp/SOURCE.txt"
       if jq -e --arg fp "$fingerprint" --arg sha "$source_sha" --arg repo "$OPENMW_REPOSITORY" \
         --arg ref "$OPENMW_REF" --argjson inputs "$inputs" \
-        '.schema == "forge-qualified-release/v1" and .qualified == true and .input_fingerprint == $fp and .source_sha == $sha and .repository == $repo and .requested_ref == $ref and .inputs == $inputs' \
+        --arg profile "$OPENMW_PROFILE" --arg tag "$OPENMW_RELEASE_TAG" \
+        '.schema == "forge-qualified-release/v1" and .qualified == true and .input_fingerprint == $fp and .source_sha == $sha and .repository == $repo and .requested_ref == $ref and .profile == $profile and .release_tag == $tag and .inputs == $inputs' \
         "$provenance" >/dev/null \
+        && grep -Fqx "Profile: $OPENMW_PROFILE" "$source" \
+        && grep -Fqx "GitHub release: $OPENMW_RELEASE_TAG" "$source" \
         && grep -Fqx "OpenMW repository: $OPENMW_REPOSITORY" "$source" \
         && grep -Fqx "OpenMW requested ref: $OPENMW_REF" "$source" \
         && grep -Fqx "OpenMW resolved SHA: $source_sha" "$source" \
@@ -175,8 +184,9 @@ fi
 
 printf 'should_build=%s\nreason=%s\n' "$should_build" "$reason" >> "$GITHUB_OUTPUT"
 {
-  printf '### Upstream release preflight\n\n- Decision: `%s`\n- Source: `%s` @ `%s`\n- Resolved SHA: `%s`\n- Input fingerprint: `%s`\n' \
-    "$reason" "$OPENMW_REPOSITORY" "$OPENMW_REF" "$source_sha" "$fingerprint"
+  printf '### Release preflight\n\n- Profile: `%s`\n- Decision: `%s`\n- Source: `%s` @ `%s`\n- Release: `%s`\n- Resolved SHA: `%s`\n- Input fingerprint: `%s`\n' \
+    "$OPENMW_PROFILE" "$reason" "$OPENMW_REPOSITORY" "$OPENMW_REF" \
+    "$OPENMW_RELEASE_TAG" "$source_sha" "$fingerprint"
 } >> "$GITHUB_STEP_SUMMARY"
 echo "Preflight: $reason ($fingerprint)"
 if [[ "$preflight_failure" == true ]]; then

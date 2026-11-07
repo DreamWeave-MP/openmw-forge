@@ -13,6 +13,7 @@ if not valid or not source.validRepo(config.repository) or not source.validRef(c
 end
 local output = process.env('GITHUB_OUTPUT')
 if not output or output == '' then error('GITHUB_OUTPUT is required') end
-local values = 'repository=' .. config.repository .. '\nref=' .. config.ref .. '\nrelease_tag=' .. config.releaseTag .. '\n'
+local values = 'profile=' .. config.id .. '\nrepository=' .. config.repository .. '\nref=' .. config.ref
+  .. '\nrelease_tag=' .. config.releaseTag .. '\n'
 local ok, problem = fs.writeFile(output, values, { append = true })
 if not ok then error(problem or 'cannot write release configuration outputs') end

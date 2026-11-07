@@ -1140,20 +1140,22 @@ util.copy(valid, releaseMain)
 util.copy(valid, releaseDebug)
 local inputIdentityPath = scratch .. '/release-inputs.json'
 local inputIdentity = util.checked('jq', { '-cnS', '--arg', 'repo', uberConfig.repository,
-  '--arg', 'ref', uberConfig.ref,
-  '{schema:"forge-release-inputs/v1",profile:"upstream",repository:$repo,requested_ref:$ref,target:"linux-X64",toolchain:"fixture",source_sha:"' .. fakeRevision .. '"}' }):gsub('%s+$', '')
+  '--arg', 'ref', uberConfig.ref, '--arg', 'tag', uberConfig.releaseTag,
+  '{schema:"forge-release-inputs/v1",profile:"upstream",repository:$repo,requested_ref:$ref,release_tag:$tag,target:"linux-X64",toolchain:"fixture",source_sha:"' .. fakeRevision .. '"}' }):gsub('%s+$', '')
 util.write(inputIdentityPath, inputIdentity)
 local inputFingerprint = util.checked('sha256sum', { inputIdentityPath }):match('^([0-9a-f]+)')
 if not inputFingerprint then error('could not fingerprint release identity fixture') end
 local sourceNotes = releaseDir .. '/SOURCE.txt'
-local sourceText = 'OpenMW repository: ' .. uberConfig.repository .. '\n'
+local sourceText = 'Profile: upstream\nGitHub release: ' .. uberConfig.releaseTag .. '\n'
+  .. 'OpenMW repository: ' .. uberConfig.repository .. '\n'
   .. 'OpenMW requested ref: ' .. uberConfig.ref .. '\nOpenMW resolved SHA: ' .. fakeRevision .. '\n'
   .. 'Build input fingerprint: ' .. inputFingerprint .. '\n'
 util.write(sourceNotes, sourceText)
 local provenance = util.checked('jq', { '-cnS', '--arg', 'fingerprint', inputFingerprint,
   '--arg', 'sha', fakeRevision, '--arg', 'repo', uberConfig.repository, '--arg', 'ref', uberConfig.ref,
+  '--arg', 'tag', uberConfig.releaseTag,
   '--argjson', 'inputs', inputIdentity,
-  '{schema:"forge-qualified-release/v1",qualified:true,input_fingerprint:$fingerprint,source_sha:$sha,repository:$repo,requested_ref:$ref,inputs:$inputs}' })
+  '{schema:"forge-qualified-release/v1",qualified:true,input_fingerprint:$fingerprint,source_sha:$sha,repository:$repo,requested_ref:$ref,profile:"upstream",release_tag:$tag,inputs:$inputs}' })
 util.write(releaseDir .. '/PROVENANCE.json', provenance)
 local checksumLines: { string } = {}
 for _, path in { releaseMain, releaseDebug, sourceNotes, releaseDir .. '/PROVENANCE.json' } do
@@ -1170,9 +1172,16 @@ publisherEnv.GH_TOKEN = 'fixture-only-not-a-secret'
 publisherEnv.FORGE_INPUT_FINGERPRINT = inputFingerprint
 publisherEnv.FORGE_RESOLVED_SOURCE_SHA = fakeRevision
 publisherEnv.FORGE_INPUTS_JSON = inputIdentity
-local function publishFixture(env: { [string]: string }): dream_process_Result
-  local result, failure = process.run(jessBin, { 'run', '--trusted', '--package', '.',
-    'tools/uberbranch.jsl', '--publish-artifacts', releaseDir }, {
+publisherEnv.FORGE_RELEASE_PROFILE = 'upstream'
+local function publishFixture(env: { [string]: string }, explicitProfile: boolean?): dream_process_Result
+  local args = { 'run', '--trusted', '--package', '.', 'tools/uberbranch.jsl' }
+  if explicitProfile then
+    table.insert(args, '--release-profile')
+    table.insert(args, 'upstream')
+  end
+  table.insert(args, '--publish-artifacts')
+  table.insert(args, releaseDir)
+  local result, failure = process.run(jessBin, args, {
     cwd = root, env = env, stdout = 'capture', stderr = 'capture',
   })
 
@@ -1184,7 +1193,7 @@ local withoutToken = table.clone(publisherEnv)
 withoutToken.GH_TOKEN = ''
 check(not publishFixture(withoutToken).success, 'publisher must require a release-capable token')
 util.write(mockLog, '')
-local published = publishFixture(publisherEnv)
+local published = publishFixture(publisherEnv, true)
 check(published.success, 'verified release candidate should reach fake gh: ' .. (published.stderr or ''))
 local releaseLog = util.file(mockLog)
 check(releaseLog:find('release\tupload\tdas-uberbranch', 1, true) ~= nil,
