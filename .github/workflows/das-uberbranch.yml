@@ -221,6 +221,10 @@ jobs:
           FORGE_REQUESTED_REF: ${{ needs.preflight.outputs.requested_ref }}
           FORGE_RELEASE_PROFILE: ${{ needs.preflight.outputs.profile }}
         run: jess run --trusted --package . tools/uberbranch.jsl --build-only
+      - name: Report OpenMW build capacity even on failure
+        if: ${{ always() && !cancelled() && steps.openmw-build.outcome != 'skipped' }}
+        continue-on-error: true
+        run: jess run --trusted --package . tools/ci_resources.jsl --after-build
       # Unlike actions/cache's automatic post-job save, this executes after a
       # packaging or distro smoke failure. Preserve successful C/C++ compiles
       # on the same mounted cache volume so the next CI run can reuse them.
