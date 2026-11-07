@@ -54,6 +54,18 @@ check(preflight:find('verify_asset_digests', 1, true) ~= nil
   and preflight:find('peeled="$ref^{}"', 1, true) ~= nil
   and preflight:find('refs/heads/*', 1, true) ~= nil,
   'release preflight must verify API asset digests, full identity, and peeled annotated tags without downloading archives')
+check(preflight:find('profile_settings:$profile_settings', 1, true) ~= nil
+  and preflight:find('jess_runtime:$jess_runtime', 1, true) ~= nil
+  and preflight:find('git ls-files -z .github/workflows/das-uberbranch.yml .github/actions/setup-jess/action.yml src tools', 1, true) ~= nil
+  and preflight:find('git ls-files -z .github/workflows ci src tools', 1, true) == nil,
+  'release fingerprint must include selected profile settings and pinned Jess identity without hashing every profile')
+local setupJessAction = util.file(root .. '/.github/actions/setup-jess/action.yml')
+check(setupJessAction:find('steps.runtime.outputs.identity', 1, true) ~= nil
+  and setupJessAction:find('sha256sum --check', 1, true) ~= nil,
+  'setup-jess must verify and expose the immutable runtime asset digest')
+check(workflow:find('Verify immutable Jess runtime identity', 1, true) ~= nil
+  and workflow:find('FORGE_PROFILE_SETTINGS_JSON:', 1, true) ~= nil,
+  'build/publish jobs must use the preflight Jess identity and selected profile settings')
 
 local releaseFixtures, releaseFixtureFailure = process.run('bash', { root .. '/tests/release_preflight.sh' }, {
   cwd = root, stdout = 'capture', stderr = 'capture',
@@ -424,6 +436,32 @@ if arguments[1] == 'image' and process.env('FORGE_MOCK_IMAGE_PRESENT') == '1' th
 end
 ]])
 local jessBin = process.env('JESS_BIN') or util.checked('which', { 'jess' }):gsub('%s+$', '')
+
+for _, profileCase in {
+  { id = 'upstream', repository = 'https://gitlab.com/OpenMW/openmw.git', ref = 'master',
+    releaseTag = 'das-uberbranch', expectedFeature = '"vulkan":false' },
+  { id = 'clockwork', repository = 'https://gitlab.com/OursCodeur/openmw.git', ref = 'clockwork-alpha',
+    releaseTag = 'das-uberbranch-clockwork', expectedFeature = '"vulkan":true' },
+} do
+  local configOutputPath = scratch .. '/preflight-config-' .. profileCase.id
+  util.write(configOutputPath, '')
+  local configRun, configFailure = process.run(jessBin, {
+    'run', '--trusted', '--package', '.', 'tools/release_preflight_config.jsl',
+  }, { cwd = root, env = { FORGE_RELEASE_PROFILE = profileCase.id, GITHUB_OUTPUT = configOutputPath },
+    stdout = 'capture', stderr = 'capture' })
+  check(configRun ~= nil and configRun.success,
+    'release preflight config must execute for ' .. profileCase.id .. ': '
+      .. (configFailure or (configRun and configRun.stderr or 'unknown')))
+  local configText = util.file(configOutputPath)
+  check(configText:find('profile=' .. profileCase.id .. '\n', 1, true) ~= nil
+    and configText:find('repository=' .. profileCase.repository .. '\n', 1, true) ~= nil
+    and configText:find('ref=' .. profileCase.ref .. '\n', 1, true) ~= nil
+    and configText:find('release_tag=' .. profileCase.releaseTag .. '\n', 1, true) ~= nil,
+    'release preflight config must resolve the requested ' .. profileCase.id .. ' profile')
+  check(configText:find('"profile":"' .. profileCase.id .. '"', 1, true) ~= nil
+    and configText:find(profileCase.expectedFeature, 1, true) ~= nil,
+    'release preflight settings JSON must identify ' .. profileCase.id .. ' build features')
+end
 
 local resolvedSourceDryRun = process.run(jessBin, { 'run', '--trusted', '--package', '.',
   'tools/uberbranch.jsl', '--dry-run' }, {

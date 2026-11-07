@@ -6,7 +6,7 @@ type TestPolicy = { read googleTests: boolean, read packageSmoke: boolean, read 
 type ReleaseProfile = {
   read id: string, read repository: string, read ref: string, read releaseTag: string,
   read releaseTitle: string, read jobs: string, read cmakeArgs: { string },
-  read artifactNamespace: string, read distros: string, read runTests: boolean,
+  read artifactNamespace: string, read distros: string,
   read features: Features, read testPolicy: TestPolicy,
 }
 
@@ -21,7 +21,6 @@ local upstream: ReleaseProfile = {
     cmakeArgs = table.freeze(upstreamCmakeArgs),
     artifactNamespace = 'uberbranch',
     distros = 'almalinux-9,ubuntu-24.04',
-    runTests = true,
     features = table.freeze { vulkan = false, luau = false, luaUi = false },
     testPolicy = table.freeze { googleTests = true, packageSmoke = true, qtSmoke = true },
   }
@@ -41,7 +40,6 @@ local clockwork: ReleaseProfile = {
     },
     artifactNamespace = 'uberbranch-clockwork',
     distros = 'almalinux-9,ubuntu-24.04',
-    runTests = true,
     features = table.freeze { vulkan = true, luau = true, luaUi = true },
     testPolicy = table.freeze { googleTests = true, packageSmoke = true, qtSmoke = true },
   }

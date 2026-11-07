@@ -7,7 +7,7 @@ local source = require '@forge/source'
 type Profile = {
   read id: string, read repository: string, read ref: string, read releaseTag: string,
   read releaseTitle: string, read jobs: number | string, read cmakeArgs: { string },
-  read artifactNamespace: string, read distros: string, read runTests: boolean,
+  read artifactNamespace: string, read distros: string,
   read features: { read vulkan: boolean, read luau: boolean, read luaUi: boolean },
   read testPolicy: { read googleTests: boolean, read packageSmoke: boolean, read qtSmoke: boolean },
 }
@@ -43,8 +43,8 @@ local function validate(settings: Profile): (boolean, string?)
     return false, 'profile disables Vulkan but OPENMW_USE_VULKAN is ON'
   end
 
-  if settings.testPolicy.googleTests and not settings.runTests then
-    return false, 'profile GoogleTest policy requires --run-tests'
+  if settings.testPolicy.qtSmoke and not settings.testPolicy.packageSmoke then
+    return false, 'profile Qt smoke policy requires package smoke'
   end
 
   return true, nil
@@ -89,7 +89,7 @@ local function appendBuildSettings(command: { string }, settings: Profile, outpu
     table.insert(command, arg)
   end
 
-  if settings.runTests then table.insert(command, '--run-tests') end
+  if settings.testPolicy.googleTests then table.insert(command, '--run-tests') end
   table.insert(command, '--output-dir')
   table.insert(command, output)
 end
@@ -108,6 +108,13 @@ local function buildOnlyArgs(settings: Profile, output: string, resolvedSha: str
   local ref = resolvedSha or settings.ref
   local command = { 'build', '--repo', settings.repository, '--ref', ref }
   appendBuildSettings(command, settings, output)
+  return command
+end
+
+local function smokeArgs(settings: Profile, archive: string): { string }?
+  if not settings.testPolicy.packageSmoke then return nil end
+  local command = { 'smoke', '--archive', archive, '--engine', 'docker', '--distros', settings.distros }
+  if settings.testPolicy.qtSmoke then table.insert(command, '--with-qt') end
   return command
 end
 
@@ -334,6 +341,9 @@ local function run(argv: { string })
   print(`Artifact namespace: {settings.artifactNamespace}`)
   print('Required features: Vulkan=' .. tostring(settings.features.vulkan)
     .. ', Luau=' .. tostring(settings.features.luau) .. ', Lua UI=' .. tostring(settings.features.luaUi))
+  print('Test policy: GoogleTests=' .. tostring(settings.testPolicy.googleTests)
+    .. ', package smoke=' .. tostring(settings.testPolicy.packageSmoke)
+    .. ', Qt smoke=' .. tostring(settings.testPolicy.qtSmoke))
   for _, arg in settings.cmakeArgs do print('CMake argument: ' .. arg) end
   print('Forge command: ' .. binary .. ' ' .. table.concat(command, ' '))
 
@@ -357,8 +367,8 @@ local function run(argv: { string })
   -- Run the packaged launchers inside real distribution containers; publication
   -- is disabled if this release gate fails.
 
-  util.stream(binary, { 'smoke', '--archive', main, '--engine', 'docker',
-    '--distros', settings.distros, '--with-qt' }, root)
+  local smoke = smokeArgs(settings, main)
+  if smoke then util.stream(binary, smoke, root) end
 
   local notes = output .. '/SOURCE.txt'
   local requestedRef = process.env('FORGE_REQUESTED_REF') or settings.ref
@@ -390,6 +400,7 @@ end
 return table.freeze {
   validate = validate, validateProfiles = validateProfiles, profile = profile,
   buildArgs = buildArgs, depsArgs = depsArgs, buildOnlyArgs = buildOnlyArgs,
+  smokeArgs = smokeArgs,
   isMainTarball = isMainTarball,
   findOutputs = findOutputs, publishArtifacts = publishArtifacts, run = run,
 }
