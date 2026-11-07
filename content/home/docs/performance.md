@@ -25,6 +25,17 @@ OpenMW compilation, and release verification. The fundamental optimization is
 | Packaging + distro smoke | Always verified for releases | Rerun when a build is required; never treated as passed because a cache hit occurred |
 | Qualified candidate recovery | Not applicable | Republish a retained candidate only after its build, current identity, provenance and checksums validate |
 
+The vcpkg binary-cache restore key is broader than its write key: it can find a
+snapshot from an earlier builder image when the dependency recipe and runner
+architecture match. vcpkg still selects individual archives by package ABI
+hash, which includes the compiler, triplet, port inputs and dependency ABIs;
+packages with a different ABI are rebuilt. Newly saved snapshots remain scoped
+to the exact builder image. The complete SDK export has stricter identity and
+is reused only after its full builder-bound fingerprint and archive checks.
+This is intended to retain compatible port builds after an additive builder
+package change; the actual Clockwork cache restore remains unobserved until the
+qualified image is published and a full build runs.
+
 Clockwork summaries report SDK, vcpkg binary, Qt and ccache restore hits, the
 source fingerprint, selected work decision, total build/smoke duration,
 CMake compile wall time, per-launcher distro smoke pass/failure counts, and
