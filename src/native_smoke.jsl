@@ -153,21 +153,23 @@ end
 -- through QtNetwork. Keep explicit runtime packages in minimal smoke images:
 -- dependency-closure preflight below catches further missing SONAMEs at once.
 local DistroImages: { [string]: { string } } = {
-  ['almalinux-9'] = { 'almalinux:9', 'dnf install -y mesa-libGL libglvnd-egl glib2 krb5-libs libwayland-cursor libwayland-egl vulkan-loader' },
-  ['debian-12'] = { 'debian:12', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1 libvulkan1' },
-  ['debian-13'] = { 'debian:trixie', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0t64 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1 libvulkan1' },
-  ['ubuntu-22.04'] = { 'ubuntu:22.04', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1 libvulkan1' },
-  ['ubuntu-24.04'] = { 'ubuntu:24.04', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0t64 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1 libvulkan1' },
-  ['fedora-latest'] = { 'fedora:latest', 'dnf install -y mesa-libGL libglvnd-egl glib2 krb5-libs libwayland-cursor libwayland-egl vulkan-loader' },
-  ['archlinux'] = { 'archlinux:latest', 'pacman -Sy --noconfirm --needed libglvnd glib2 krb5 wayland vulkan-icd-loader' },
-  ['opensuse-tumbleweed'] = { 'opensuse/tumbleweed', 'zypper --non-interactive install Mesa-libGL1 Mesa-libEGL1 libglib-2_0-0 krb5 libwayland-cursor0 libwayland-egl1 libvulkan1' },
-  ['voidlinux'] = { 'ghcr.io/void-linux/void-glibc-full:latest', 'xbps-install -Sy libglvnd glib mit-krb5-libs wayland vulkan-loader' },
+  ['almalinux-9'] = { 'almalinux:9', 'dnf install -y mesa-libGL libglvnd-egl glib2 krb5-libs libwayland-cursor libwayland-egl', 'vulkan-loader' },
+  ['debian-12'] = { 'debian:12', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1', 'libvulkan1' },
+  ['debian-13'] = { 'debian:trixie', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0t64 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1', 'libvulkan1' },
+  ['ubuntu-22.04'] = { 'ubuntu:22.04', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1', 'libvulkan1' },
+  ['ubuntu-24.04'] = { 'ubuntu:24.04', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0t64 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1', 'libvulkan1' },
+  ['fedora-latest'] = { 'fedora:latest', 'dnf install -y mesa-libGL libglvnd-egl glib2 krb5-libs libwayland-cursor libwayland-egl', 'vulkan-loader' },
+  ['archlinux'] = { 'archlinux:latest', 'pacman -Sy --noconfirm --needed libglvnd glib2 krb5 wayland', 'vulkan-icd-loader' },
+  ['opensuse-tumbleweed'] = { 'opensuse/tumbleweed', 'zypper --non-interactive install Mesa-libGL1 Mesa-libEGL1 libglib-2_0-0 krb5 libwayland-cursor0 libwayland-egl1', 'libvulkan1' },
+  ['voidlinux'] = { 'ghcr.io/void-linux/void-glibc-full:latest', 'xbps-install -Sy libglvnd glib mit-krb5-libs wayland', 'vulkan-loader' },
 }
 
-local function imageDockerfile(tag: string): string
+local function imageDockerfile(tag: string, vulkanRuntime: boolean?): string
   local image = DistroImages[tag]
   if not image then error('unknown smoke distro: ' .. tag) end
-  return `FROM {image[1]}\nRUN {image[2]}\n`
+  local install = image[2]
+  if vulkanRuntime then install ..= ' ' .. image[3] end
+  return `FROM {image[1]}\nRUN {install}\n`
 end
 
 -- Check the actual dynamic-linker closure *inside* each smoke distro before
@@ -411,7 +413,7 @@ local function multiSmoke(options: Options, staging: string)
   for _, tag in selected do
     local buildDir = options.root .. '/work/forge-smoke-images/' .. tag
     util.mkdir(buildDir)
-    util.write(buildDir .. '/Dockerfile', imageDockerfile(tag))
+    util.write(buildDir .. '/Dockerfile', imageDockerfile(tag, table.find(options.requiredFeatures, 'vulkan') ~= nil))
     local imageTag = 'openmw-forge-smoke:' .. tag
     util.stream(options.engine, { 'build', '-t', imageTag, '-f', buildDir .. '/Dockerfile', buildDir })
   end

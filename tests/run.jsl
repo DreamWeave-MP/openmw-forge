@@ -116,7 +116,11 @@ suite.describe('packaged executable smoke contracts', function()
     }
 
     for distro, loaderPackage in packages do
-      test.expect(nativeSmoke.imageDockerfile(distro)).toContain(loaderPackage)
+      local baseImage = nativeSmoke.imageDockerfile(distro)
+      local vulkanImage = nativeSmoke.imageDockerfile(distro, true)
+      test.expect(vulkanImage).toContain(loaderPackage)
+      local loaderInBaseImage = string.find(baseImage, loaderPackage)
+      test.expect(loaderInBaseImage).toBeNil()
     end
     test.expect(nativePackage.VulkanRuntimePolicy).toContain('does not bundle libvulkan.so.1')
     test.expect(nativePackage.VulkanRuntimePolicy).toContain('vendor driver/ICD')
@@ -1036,6 +1040,7 @@ suite.describe('scheduled das-uberbranch release contract', function()
     local smoke = uber.smokeArgs(upstream, '/tmp/openmw.tar.gz')
     test.expect(smoke ~= nil).toBeTruthy()
     test.expect(has(smoke or {}, '--with-qt')).toBeFalsy()
+    test.expect(has(smoke or {}, 'vulkan')).toBeFalsy()
 
     upstream.testPolicy = { googleTests = true, packageSmoke = false, qtSmoke = false }
     local testsOnly = uber.buildArgs(upstream, '/tmp/forge-policy-fixture')
@@ -1045,6 +1050,11 @@ suite.describe('scheduled das-uberbranch release contract', function()
     upstream.testPolicy = { googleTests = true, packageSmoke = true, qtSmoke = true }
     local fullSmoke = uber.smokeArgs(upstream, '/tmp/openmw.tar.gz')
     test.expect(has(fullSmoke or {}, '--with-qt')).toBeTruthy()
+
+    local clockwork = uber.profile('clockwork')
+    local clockworkSmoke = uber.smokeArgs(clockwork, '/tmp/clockwork.tar.gz')
+    test.expect(has(clockworkSmoke or {}, '--require-feature')).toBeTruthy()
+    test.expect(has(clockworkSmoke or {}, 'vulkan')).toBeTruthy()
   end)
 
   suite.it('keeps Clockwork flags and artifact namespace separate from upstream', function()
