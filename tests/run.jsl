@@ -11,6 +11,7 @@ local nativeQt = require '@forge/native-qt'
 local nativeArchive = require '@forge/native-archive'
 local nativeAbi = require '@forge/native-abi'
 local nativeSmoke = require '@forge/native-smoke'
+local nativePackage = require '@forge/native-package'
 local sdkCache = require '@forge/native-sdk-cache'
 local nativeDeps = require '@forge/native-deps'
 local vcpkgPython = require '@forge/native-vcpkg-python'
@@ -99,6 +100,68 @@ suite.describe('packaged executable smoke contracts', function()
     for _, tag in { 'archlinux', 'voidlinux' } do
       test.expect(nativeSmoke.imageDockerfile(tag)).toContain('libglvnd')
     end
+  end)
+
+  suite.it('provides the system Vulkan loader without bundling an ICD', function()
+    local packages: { [string]: string } = {
+      ['almalinux-9'] = 'vulkan-loader',
+      ['debian-12'] = 'libvulkan1',
+      ['debian-13'] = 'libvulkan1',
+      ['ubuntu-22.04'] = 'libvulkan1',
+      ['ubuntu-24.04'] = 'libvulkan1',
+      ['fedora-latest'] = 'vulkan-loader',
+      ['archlinux'] = 'vulkan-icd-loader',
+      ['opensuse-tumbleweed'] = 'libvulkan1',
+      ['voidlinux'] = 'vulkan-loader',
+    }
+
+    for distro, loaderPackage in packages do
+      test.expect(nativeSmoke.imageDockerfile(distro)).toContain(loaderPackage)
+    end
+    test.expect(nativePackage.VulkanRuntimePolicy).toContain('does not bundle libvulkan.so.1')
+    test.expect(nativePackage.VulkanRuntimePolicy).toContain('vendor driver/ICD')
+  end)
+
+  suite.it('requires Clockwork Vulkan, Luau UI resources and all dependency licenses', function()
+    local root = '/tmp/clockwork-package-assets'
+    util.remove(root)
+    util.mkdir(root .. '/stage/resources/shaders')
+    util.mkdir(root .. '/source/files/licenses')
+    util.write(root .. '/stage/resources/shaders/runtime.glsl', '// shader')
+    local features, parseError = args.parse({ 'build', '--require-feature', 'vulkan', '--require-feature', 'lua-ui' }, '/tmp/forge-root')
+    if not features then error(parseError or 'cannot parse feature fixture') end
+    local valid, reason = nativePackage.validateFeatureAssets(root .. '/stage', root .. '/source', features)
+    test.expect(valid).toBeFalsy()
+    test.expect(reason).toContain('luau.txt')
+
+    local licenseFiles: { string } = {
+      'luau.txt', 'glslang.txt', 'spirv-headers.txt', 'spirv-tools.txt',
+      'vulkan-headers.txt', 'vulkan-memory-allocator.txt',
+    }
+
+    for _, filename in licenseFiles do
+      util.write(root .. '/source/files/licenses/' .. filename, 'license fixture')
+    end
+    util.mkdir(root .. '/stage/resources/lua_libs')
+    util.write(root .. '/stage/resources/lua_libs/content.lua', '-- Lua UI')
+    valid = nativePackage.stageFeatureAssets(root .. '/stage', root .. '/source', features)
+    test.expect(valid).toBeTruthy()
+    for _, filename in licenseFiles do
+      test.expect(fs.isFile(root .. '/stage/licenses/' .. filename)).toBeTruthy()
+    end
+    test.expect(util.file(root .. '/stage/VULKAN-RUNTIME.txt')).toContain('system')
+
+    util.remove(root .. '/stage/resources/lua_libs/content.lua')
+    valid, reason = nativePackage.validateFeatureAssets(root .. '/stage', root .. '/source', features)
+    test.expect(valid).toBeFalsy()
+    test.expect(reason).toContain('lua_libs/content.lua')
+
+    local upstream, upstreamError = args.parse({ 'build' }, '/tmp/forge-root')
+    if not upstream then error(upstreamError or 'cannot parse upstream fixture') end
+    valid = nativePackage.stageFeatureAssets(root .. '/upstream-stage', root .. '/source', upstream)
+    test.expect(valid).toBeTruthy()
+    test.expect(fs.isFile(root .. '/upstream-stage/VULKAN-RUNTIME.txt')).toBeFalsy()
+    util.remove(root)
   end)
 
   suite.it('reports all missing SONAMEs and version errors from ldd', function()

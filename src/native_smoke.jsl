@@ -153,15 +153,15 @@ end
 -- through QtNetwork. Keep explicit runtime packages in minimal smoke images:
 -- dependency-closure preflight below catches further missing SONAMEs at once.
 local DistroImages: { [string]: { string } } = {
-  ['almalinux-9'] = { 'almalinux:9', 'dnf install -y mesa-libGL libglvnd-egl glib2 krb5-libs libwayland-cursor libwayland-egl' },
-  ['debian-12'] = { 'debian:12', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1' },
-  ['debian-13'] = { 'debian:trixie', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0t64 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1' },
-  ['ubuntu-22.04'] = { 'ubuntu:22.04', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1' },
-  ['ubuntu-24.04'] = { 'ubuntu:24.04', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0t64 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1' },
-  ['fedora-latest'] = { 'fedora:latest', 'dnf install -y mesa-libGL libglvnd-egl glib2 krb5-libs libwayland-cursor libwayland-egl' },
-  ['archlinux'] = { 'archlinux:latest', 'pacman -Sy --noconfirm --needed libglvnd glib2 krb5 wayland' },
-  ['opensuse-tumbleweed'] = { 'opensuse/tumbleweed', 'zypper --non-interactive install Mesa-libGL1 Mesa-libEGL1 libglib-2_0-0 krb5 libwayland-cursor0 libwayland-egl1' },
-  ['voidlinux'] = { 'ghcr.io/void-linux/void-glibc-full:latest', 'xbps-install -Sy libglvnd glib mit-krb5-libs wayland' },
+  ['almalinux-9'] = { 'almalinux:9', 'dnf install -y mesa-libGL libglvnd-egl glib2 krb5-libs libwayland-cursor libwayland-egl vulkan-loader' },
+  ['debian-12'] = { 'debian:12', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1 libvulkan1' },
+  ['debian-13'] = { 'debian:trixie', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0t64 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1 libvulkan1' },
+  ['ubuntu-22.04'] = { 'ubuntu:22.04', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1 libvulkan1' },
+  ['ubuntu-24.04'] = { 'ubuntu:24.04', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0t64 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1 libvulkan1' },
+  ['fedora-latest'] = { 'fedora:latest', 'dnf install -y mesa-libGL libglvnd-egl glib2 krb5-libs libwayland-cursor libwayland-egl vulkan-loader' },
+  ['archlinux'] = { 'archlinux:latest', 'pacman -Sy --noconfirm --needed libglvnd glib2 krb5 wayland vulkan-icd-loader' },
+  ['opensuse-tumbleweed'] = { 'opensuse/tumbleweed', 'zypper --non-interactive install Mesa-libGL1 Mesa-libEGL1 libglib-2_0-0 krb5 libwayland-cursor0 libwayland-egl1 libvulkan1' },
+  ['voidlinux'] = { 'ghcr.io/void-linux/void-glibc-full:latest', 'xbps-install -Sy libglvnd glib mit-krb5-libs wayland vulkan-loader' },
 }
 
 local function imageDockerfile(tag: string): string
