@@ -39,6 +39,27 @@ check(util.resolveJobs(2) == 2, 'explicit parallelism must override auto detecti
 -- validation deliberately run after OpenMW compilation in one CI step.
 -- GitHub's automatic cache save requires a successful overall job.
 local workflow = util.file(root .. '/.github/workflows/das-uberbranch.yml')
+local preflight = util.file(root .. '/tools/release_preflight.sh')
+check(workflow:find('needs: preflight', 1, true) ~= nil
+  and workflow:find("if: needs.preflight.outputs.should_build == 'true'", 1, true) ~= nil,
+  'expensive build and publication jobs must depend on successful qualification preflight')
+check(workflow:find('force_rebuild:', 1, true) ~= nil
+  and workflow:find('type: boolean', 1, true) ~= nil,
+  'manual dispatch must expose an explicit boolean force_rebuild')
+check(preflight:find('sha256sum --strict --check SHA256SUMS', 1, true) ~= nil
+  and preflight:find('input_fingerprint', 1, true) ~= nil
+  and preflight:find('refs/tags/$ref^{}', 1, true) ~= nil,
+  'release preflight must verify checksums, full identity, and peeled annotated tags')
+
+local releaseFixtures, releaseFixtureFailure = process.run('bash', { root .. '/tests/release_preflight.sh' }, {
+  cwd = root, stdout = 'capture', stderr = 'capture',
+})
+
+if not releaseFixtures or not releaseFixtures.success then
+  error('release preflight fixtures failed: ' .. (releaseFixtureFailure or (releaseFixtures and releaseFixtures.stderr or 'unknown')))
+end
+check((releaseFixtures.stdout or ''):find('PASS release preflight fixtures', 1, true) ~= nil,
+  'release preflight fixture matrix must report its covered decisions')
 check(workflow:find('uses: actions/cache/restore@v6', 1, true) ~= nil,
   'hosted compiler cache must use an explicit restore-only action')
 check(workflow:find('uses: actions/cache/save@v6', 1, true) ~= nil,

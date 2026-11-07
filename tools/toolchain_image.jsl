@@ -19,46 +19,81 @@ end
 
 local image = 'ghcr.io/' .. repository:lower() .. '-builder:alma9-' .. source:sub(1, 20)
 local dry = ... == '--dry-run'
+local preflight = ... == '--preflight'
 if dry then
   print(image)
   return
 end
 
 local key = 'fallback-' .. source:sub(1, 20)
-local result = process.run('docker', { 'pull', image }, { stdout = 'capture', stderr = 'capture' })
-local pinned: string? = nil
-local toolchainId: string? = nil
-if result and result.success then
-  local inspected = process.run('docker', { 'image', 'inspect', '--format', '{{index .RepoDigests 0}}', image }, {
+local pinned = ''
+local toolchainId = ''
+local function manifestDigest(reference: string): string
+  local result = process.run('docker', { 'manifest', 'inspect', '--verbose', reference }, {
     stdout = 'capture', stderr = 'capture',
   })
 
-  if inspected and inspected.success then
-    local ref = (inspected.stdout or ''):gsub('%s+$', '')
-    if ref:match('^ghcr%.io/[%w._/%-]+@sha256:[0-9a-f]+$') then
-      pinned = ref
-      toolchainId = ref
-      key = ref:match('sha256:([0-9a-f]+)') or key
-      print('PASS verified OCI toolchain image: ' .. pinned)
-    end
-  end
+  if not result or not result.success then return '' end
+
+  local parsed = process.run('jq', { '-r', '.Descriptor.digest' }, {
+    stdin = result.stdout or '', stdout = 'capture', stderr = 'null',
+  })
+
+  if not parsed or not parsed.success then return '' end
+  local digest = (parsed.stdout or ''):gsub('%s+$', '')
+  if not digest:match('^sha256:[0-9a-f]+$') or #digest ~= 71 then return '' end
+  return digest
 end
 
-if not pinned then
-  print('WARN no published toolchain image; using local AlmaLinux 9 toolchain build (first run/fork)')
-  -- The fallback also needs an image identity: the pinned 9.5 baseline is versioned.
-  -- A pulled base digest distinguishes one cold bootstrap from another.
-  local base = process.run('docker', { 'pull', 'almalinux/9-base:9.5-20250519' }, { stdout = 'capture', stderr = 'capture' })
-  if base and base.success then
-    local inspected = process.run('docker', { 'image', 'inspect', '--format', '{{index .RepoDigests 0}}', 'almalinux/9-base:9.5-20250519' }, {
+if preflight then
+  local digest = manifestDigest(image)
+  if digest ~= '' then
+    pinned = image:gsub(':[^:]+$', '') .. '@' .. digest
+    toolchainId = pinned
+    key = digest:sub(8)
+    print('PASS resolved OCI toolchain manifest without pulling layers: ' .. pinned)
+  end
+else
+  local result = process.run('docker', { 'pull', image }, { stdout = 'capture', stderr = 'capture' })
+  if result and result.success then
+    local inspected = process.run('docker', { 'image', 'inspect', '--format', '{{index .RepoDigests 0}}', image }, {
       stdout = 'capture', stderr = 'capture',
     })
 
     if inspected and inspected.success then
-      local digest = (inspected.stdout or ''):match('@sha256:([0-9a-f]+)')
-      if digest and #digest == 64 then
-        key = 'fallback-' .. source:sub(1, 12) .. '-' .. digest:sub(1, 16)
-        toolchainId = 'fallback:' .. source .. ':' .. digest
+      local ref = (inspected.stdout or ''):gsub('%s+$', '')
+      if ref:match('^ghcr%.io/[%w._/%-]+@sha256:[0-9a-f]+$') then
+        pinned = ref
+        toolchainId = ref
+        key = ref:match('sha256:([0-9a-f]+)') or key
+        print('PASS verified OCI toolchain image: ' .. pinned)
+      end
+    end
+  end
+end
+
+if pinned == '' then
+  if preflight then
+    local digest = manifestDigest('almalinux/9-base:9.5-20250519')
+    if digest ~= '' then
+      key = 'fallback-' .. source:sub(1, 12) .. '-' .. digest:sub(8, 23)
+      toolchainId = 'fallback:' .. source .. ':' .. digest:sub(8)
+    end
+  else
+    print('WARN no published toolchain image; using local AlmaLinux 9 toolchain build (first run/fork)')
+    -- A pulled base digest distinguishes one cold bootstrap from another.
+    local base = process.run('docker', { 'pull', 'almalinux/9-base:9.5-20250519' }, { stdout = 'capture', stderr = 'capture' })
+    if base and base.success then
+      local inspected = process.run('docker', { 'image', 'inspect', '--format', '{{index .RepoDigests 0}}', 'almalinux/9-base:9.5-20250519' }, {
+        stdout = 'capture', stderr = 'capture',
+      })
+
+      if inspected and inspected.success then
+        local digest = (inspected.stdout or ''):match('@sha256:([0-9a-f]+)')
+        if digest and #digest == 64 then
+          key = 'fallback-' .. source:sub(1, 12) .. '-' .. digest:sub(1, 16)
+          toolchainId = 'fallback:' .. source .. ':' .. digest
+        end
       end
     end
   end
@@ -66,13 +101,15 @@ end
 
 local output = process.env('GITHUB_OUTPUT')
 if output and output ~= '' then
-  local ok, problem = fs.writeFile(output, 'cache_key=' .. key:sub(1, 32) .. '\n', { append = true })
+  local identity = if toolchainId ~= '' then toolchainId else ('unresolved:' .. source)
+  local ok, problem = fs.writeFile(output, 'cache_key=' .. key:sub(1, 32)
+    .. '\ntoolchain_id=' .. identity .. '\n', { append = true })
   if not ok then error(problem or 'cannot report OCI cache identity') end
 end
 
 local envFile = process.env('GITHUB_ENV')
-if toolchainId and envFile and envFile ~= '' then
-  local environment = (if pinned then 'FORGE_TOOLCHAIN_IMAGE=' .. pinned .. '\n' else '')
+if toolchainId ~= '' and envFile and envFile ~= '' then
+  local environment = (if pinned ~= '' then 'FORGE_TOOLCHAIN_IMAGE=' .. pinned .. '\n' else '')
     .. 'FORGE_TOOLCHAIN_ID=' .. toolchainId .. '\n'
   local ok, problem = fs.writeFile(envFile, environment, { append = true })
   if not ok then error(problem or 'cannot set pinned OCI toolchain identity') end

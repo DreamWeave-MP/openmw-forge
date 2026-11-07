@@ -33,9 +33,10 @@ local function depsArgs(settings: Config): { string }
   return { 'deps', '--engine', 'docker', '--jobs', tostring(settings.jobs) }
 end
 
-local function buildOnlyArgs(settings: Config, output: string): { string }
+local function buildOnlyArgs(settings: Config, output: string, resolvedSha: string?): { string }
+  local ref = resolvedSha or settings.ref
   return {
-    'build', '--repo', settings.repository, '--ref', settings.ref,
+    'build', '--repo', settings.repository, '--ref', ref,
     '--engine', 'docker', '--jobs', tostring(settings.jobs),
     '--run-tests', '--output-dir', output,
   }
@@ -124,6 +125,7 @@ local function publishArtifacts(directory: string, root: string)
   local main, debug = findOutputs(directory)
   local notes = directory .. '/SOURCE.txt'
   local checksums = directory .. '/SHA256SUMS'
+  local provenancePath = directory .. '/PROVENANCE.json'
   local content = util.file(notes)
   if not content:find('OpenMW repository: ' .. config.repository .. '\n', 1, true)
     or not content:find('OpenMW requested ref: ' .. config.ref .. '\n', 1, true) then
@@ -131,12 +133,34 @@ local function publishArtifacts(directory: string, root: string)
   end
   local revision = content:match('OpenMW resolved SHA: ([0-9a-f]+)\n')
   if not revision or #revision ~= 40 then error('release provenance missing full source SHA') end
+  local fingerprint = process.env('FORGE_INPUT_FINGERPRINT') or ''
+  local expectedSha = process.env('FORGE_RESOLVED_SOURCE_SHA') or ''
+  local expectedInputs = process.env('FORGE_INPUTS_JSON') or ''
+  if #fingerprint ~= 64 or not fingerprint:match('^[0-9a-f]+$') or revision ~= expectedSha then
+    error('published source SHA or full input fingerprint does not match preflight')
+  end
+
+  if not content:find('Build input fingerprint: ' .. fingerprint .. '\n', 1, true) then
+    error('human-readable release provenance does not match the full input fingerprint')
+  end
+
+  if expectedInputs == '' then error('missing canonical preflight input JSON') end
+  local provenance = util.file(provenancePath)
+  local verified = process.run('jq', { '-e', '--arg', 'fingerprint', fingerprint, '--arg', 'sha', revision,
+    '--arg', 'repo', config.repository, '--arg', 'ref', config.ref,
+    '--argjson', 'inputs', expectedInputs,
+    '.schema == "forge-qualified-release/v1" and .qualified == true and .input_fingerprint == $fingerprint'
+      .. ' and .source_sha == $sha and .repository == $repo and .requested_ref == $ref and .inputs == $inputs', provenancePath }, {
+    stdout = 'null', stderr = 'capture',
+  })
+
+  if not verified or not verified.success then error('qualified release JSON does not match preflight identity') end
 
   if not main:find('-g' .. revision:sub(1, 12) .. '-', 1, true) then
     error('release tarball filename does not match source provenance')
   end
   local allowed: { [string]: string } = {}
-  for _, path in { main, debug, notes } do allowed[fs.fileName(path) or ''] = path end
+  for _, path in { main, debug, notes, provenancePath } do allowed[fs.fileName(path) or ''] = path end
   local expected: { [string]: boolean } = {}
   for line in util.file(checksums):gmatch('[^\r\n]+') do
     local hash, filename = line:match('^([0-9a-f]+)  ([^/\\]+)$')
@@ -151,7 +175,7 @@ local function publishArtifacts(directory: string, root: string)
   for filename in allowed do
     if not expected[filename] then error('missing checksum for ' .. filename) end
   end
-  publish(config.releaseTag, root, { main, debug, notes, checksums }, notes)
+  publish(config.releaseTag, root, { main, debug, notes, provenancePath, checksums }, notes)
 end
 
 local function run(argv: { string })
@@ -191,7 +215,9 @@ local function run(argv: { string })
   local attempt = process.env('GITHUB_RUN_ATTEMPT') or '1'
   if not runId:match('^[%w%-]+$') or not attempt:match('^%d+$') then error('invalid CI run identity') end
   local output = root .. '/artifacts/uberbranch/' .. runId .. '-' .. attempt
-  local command = if depsOnly then depsArgs(config) elseif buildOnly then buildOnlyArgs(config, output) else buildArgs(config, output)
+  local resolvedSha = process.env('FORGE_RESOLVED_SOURCE_SHA')
+  if resolvedSha and not resolvedSha:match('^[0-9a-f]{40}$') then error('invalid preflight source SHA') end
+  local command = if depsOnly then depsArgs(config) elseif buildOnly then buildOnlyArgs(config, output, resolvedSha) else buildArgs(config, output)
 
   print(`Scheduled OpenMW source: {config.repository} @ {config.ref}`)
   print(`GitHub release: {config.releaseTag}`)
@@ -221,10 +247,23 @@ local function run(argv: { string })
     '--distros', 'almalinux-9,ubuntu-24.04', '--with-qt' }, root)
 
   local notes = output .. '/SOURCE.txt'
-  util.write(notes, `OpenMW repository: {config.repository}\nOpenMW requested ref: {config.ref}\nOpenMW resolved SHA: {revision}\nForge CI run: {runId}/{attempt}\n`)
+  local requestedRef = process.env('FORGE_REQUESTED_REF') or config.ref
+  local fingerprint = process.env('FORGE_INPUT_FINGERPRINT') or ''
+  local inputs = process.env('FORGE_INPUTS_JSON') or ''
+  if #fingerprint ~= 64 or not fingerprint:match('^[0-9a-f]+$') or inputs == '' then
+    error('missing versioned preflight input identity')
+  end
+
+  if resolvedSha and revision ~= resolvedSha then error('built source differs from preflight-resolved SHA') end
+  util.write(notes, `OpenMW repository: {config.repository}\nOpenMW requested ref: {requestedRef}\nOpenMW resolved SHA: {revision}\nBuild input fingerprint: {fingerprint}\nForge CI run: {runId}/{attempt}\n`)
+  local provenancePath = output .. '/PROVENANCE.json'
+  local provenance = util.checked('jq', { '-cnS', '--arg', 'fingerprint', fingerprint, '--arg', 'sha', revision,
+    '--arg', 'repo', config.repository, '--arg', 'ref', requestedRef, '--argjson', 'inputs', inputs,
+    '{schema:"forge-qualified-release/v1",qualified:true,input_fingerprint:$fingerprint,source_sha:$sha,repository:$repo,requested_ref:$ref,inputs:$inputs}' })
+  util.write(provenancePath, provenance .. '\n')
   local checksums = output .. '/SHA256SUMS'
   local lines: { string } = {}
-  for _, path in { main, debug, notes } do
+  for _, path in { main, debug, notes, provenancePath } do
     local checksum = util.checked('sha256sum', { path }):match('^([0-9a-f]+)')
     if not checksum or #checksum ~= 64 then error('failed to compute artifact SHA-256: ' .. path) end
     table.insert(lines, checksum .. '  ' .. (fs.fileName(path) or path))
