@@ -91,8 +91,9 @@ does not upload a candidate. Candidate artifacts are retained for three days;
 they are not a compilation cache and do not bypass qualification.
 
 The run summary records the profile, full source SHA, fingerprint, preflight and
-recovery decision, cache restore results, builder digest, build/smoke duration,
-ccache statistics, and release URL when one is available. Verify the published
+recovery decision, cache restore results, builder digest, total build/smoke
+duration, CMake compile wall time, completed per-launcher distro smoke results
+and failures, ccache statistics, and release URL when one is available. Verify the published
 release by checking `SOURCE.txt`, `PROVENANCE.json`,
 `VULKAN-QUALIFICATION.txt`, and `SHA256SUMS` together.
 

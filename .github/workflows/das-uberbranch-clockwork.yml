@@ -383,7 +383,7 @@ jobs:
           FORGE_REQUESTED_REF: ${{ needs.preflight.outputs.requested_ref }}
           FORGE_RELEASE_PROFILE: clockwork
           FORGE_CLOCKWORK_EXAMPLE_SUITE: ${{ github.workspace }}/work/example-suite
-        run: jess run --trusted --package . tools/uberbranch.jsl --build-only
+        run: set -o pipefail; jess run --trusted --package . tools/uberbranch.jsl --build-only 2>&1 | tee "$RUNNER_TEMP/forge-build.log"
       - name: Report OpenMW build capacity even on failure
         if: ${{ always() && !cancelled() && steps.openmw-build.outcome != 'skipped' }}
         continue-on-error: true
@@ -414,6 +414,7 @@ jobs:
           BUILD_START: ${{ steps.build-timer.outputs.started_at }}
           TOOLCHAIN_ID: ${{ steps.toolchain.outputs.toolchain_id }}
           CANDIDATE_REUSED: ${{ needs.recover-candidate.outputs.candidate_valid }}
+          BUILD_LOG: ${{ runner.temp }}/forge-build.log
         run: |
           set -u
           now=$(date -u +%s)
@@ -431,10 +432,20 @@ jobs:
             echo "- Preflight decision: \`$PREFLIGHT_REASON\`; build path: \`$decision\`"
             echo "- SDK cache hit: \`$SDK_CACHE_HIT\`; vcpkg binary cache hit: \`$VCPKG_CACHE_HIT\`; Qt cache hit: \`$QT_CACHE_HIT\`; ccache restore hit: \`$CCACHE_CACHE_HIT\`"
             echo "- OpenMW build and smoke duration: \`$duration\`"
+            compile_time=$(grep -Eo 'FORGE_METRIC openmw_compile_seconds=[0-9.]+' "$BUILD_LOG" | tail -n1 | cut -d= -f2 || true)
+            echo "- OpenMW compile wall time: \`${compile_time:-unavailable}s\`"
             echo "- Builder: \`$TOOLCHAIN_ID\`"
             echo "- Release: $RELEASE_URL"
             echo "- Build outcome: \`${{ steps.openmw-build.outcome }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+          if [[ -f "$BUILD_LOG" ]]; then
+            echo '' >> "$GITHUB_STEP_SUMMARY"
+            echo '### Completed smoke outcomes' >> "$GITHUB_STEP_SUMMARY"
+            distro_passes=$(grep -Ec '^PASS (almalinux|debian|ubuntu|fedora|archlinux|opensuse|voidlinux):' "$BUILD_LOG" || true)
+            distro_failures=$(grep -c '^FORGE_SMOKE_FAILURE distro=' "$BUILD_LOG" || true)
+            echo "- Per-launcher distro smoke commands: $distro_passes passed; $distro_failures failed" >> "$GITHUB_STEP_SUMMARY"
+            grep -E '^(PASS (almalinux|debian|ubuntu|fedora|archlinux|opensuse|voidlinux):|FORGE_SMOKE_FAILURE distro=|PASS Clockwork Vulkan|PASS tarball smoke)' "$BUILD_LOG" >> "$GITHUB_STEP_SUMMARY" || true
+          fi
           if [[ -n "$TOOLCHAIN_ID" ]]; then
             echo '' >> "$GITHUB_STEP_SUMMARY"
             echo '### ccache statistics' >> "$GITHUB_STEP_SUMMARY"

@@ -26,7 +26,8 @@ OpenMW compilation, and release verification. The fundamental optimization is
 | Qualified candidate recovery | Not applicable | Republish a retained candidate only after its build, current identity, provenance and checksums validate |
 
 Clockwork summaries report SDK, vcpkg binary, Qt and ccache restore hits, the
-source fingerprint, selected work decision, OpenMW build/smoke duration, and
+source fingerprint, selected work decision, total build/smoke duration,
+CMake compile wall time, per-launcher distro smoke pass/failure counts, and
 ccache's own statistics. A republish candidate is kept for three days and is
 accepted only when its successful Clockwork build job and exact current
 provenance/checksums validate. It does not skip the qualification tests that

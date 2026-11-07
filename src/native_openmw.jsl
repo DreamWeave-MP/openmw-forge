@@ -217,7 +217,10 @@ local function build(options: Options)
   configure(options)
   local jobs = util.resolveJobs(options.jobs)
   print('OpenMW CMake parallelism: ' .. tostring(jobs) .. ' jobs (' .. tostring(options.jobs) .. ')')
+  local compileStarted = os.clock()
   util.stream('cmake', { '--build', options.build, '--parallel', tostring(jobs) }, nil, setTools(options))
+  local compileSeconds = math.floor((os.clock() - compileStarted) * 1000) / 1000
+  print(`FORGE_METRIC openmw_compile_seconds={compileSeconds}`)
   if options.runTests then
     util.stream('cmake', { '--build', options.build, '--target', 'openmw-tests', 'components-tests', '--parallel', tostring(jobs) }, nil, setTools(options))
     local env = { LD_LIBRARY_PATH = options.deps .. '/openmw-deps/installed/' .. options.triplet .. '/lib:' .. options.deps .. '/QT/' .. options.qtVersion .. '/gcc_64/lib' }
