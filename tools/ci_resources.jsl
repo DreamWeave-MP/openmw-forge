@@ -16,10 +16,26 @@ end
 local function report(label: string)
   print('=== ' .. label .. ' ===')
   print(util.checked('df', { '-h', root }))
+  local memory = process.run('free', { '-h' }, { stdout = 'capture', stderr = 'capture' })
+  if memory and memory.success then
+    print(memory.stdout or '')
+  else
+    print('Memory summary unavailable: ' .. (if memory then memory.stderr or '' else 'free command failed'))
+  end
+
+  for _, metric in { 'memory.max', 'memory.current', 'memory.peak', 'memory.events' } do
+    local path = '/sys/fs/cgroup/' .. metric
+    if fs.isFile(path) then print('cgroup ' .. metric .. ':\n' .. util.file(path)) end
+  end
 end
 
 local command = ...
-if command ~= '--before-build' then error('usage: tools/ci_resources.jsl --before-build') end
+if command == '--after-build' then
+  report('After OpenMW build')
+  return
+end
+
+if command ~= '--before-build' then error('usage: tools/ci_resources.jsl --before-build|--after-build') end
 report('Before OpenMW build cleanup')
 
 -- Never follow a rewritten cache path through a symlink. The workspace and
