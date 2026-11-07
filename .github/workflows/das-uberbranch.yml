@@ -135,15 +135,20 @@ jobs:
           key: forge-ccache-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ steps.cache-key.outputs.day }}
           restore-keys: forge-ccache-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-
       # Only pay for the larger per-port binary cache when the complete SDK
-      # is not available. A corrupted SDK is caught by the worker and rebuilt.
+      # is not available. vcpkg validates each restored archive against its
+      # compiler/port ABI hash, so snapshots from a compatible previous image
+      # remain useful after an additive builder package change. Keep exact
+      # writes isolated by image identity and restore old key layouts too.
       - name: Restore vcpkg binary packages when SDK is missing
         if: steps.sdk.outputs.cache-hit != 'true'
         id: vcpkg
         uses: actions/cache/restore@v6
         with:
           path: work/cache/vcpkg-binaries
-          key: forge-vcpkg-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ hashFiles('vendor/deps/**', 'src/config.jsl') }}-${{ steps.cache-key.outputs.day }}
-          restore-keys: forge-vcpkg-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-
+          key: forge-vcpkg-alma9-${{ runner.arch }}-${{ hashFiles('vendor/deps/**', 'src/config.jsl') }}-${{ steps.toolchain.outputs.cache_key }}-${{ steps.cache-key.outputs.day }}
+          restore-keys: |
+            forge-vcpkg-alma9-${{ runner.arch }}-${{ hashFiles('vendor/deps/**', 'src/config.jsl') }}-
+            forge-vcpkg-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-
       - name: Restore versioned Qt installation
         uses: actions/cache@v6
         with:
@@ -192,7 +197,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: work/cache/vcpkg-binaries
-          key: forge-vcpkg-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ hashFiles('vendor/deps/**', 'src/config.jsl') }}-failed-${{ github.run_id }}-${{ github.run_attempt }}
+          key: forge-vcpkg-alma9-${{ runner.arch }}-${{ hashFiles('vendor/deps/**', 'src/config.jsl') }}-${{ steps.toolchain.outputs.cache_key }}-failed-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Save qualified SDK even if subsequent OpenMW compilation fails
         if: steps.sdk.outputs.cache-hit != 'true'
         continue-on-error: true
@@ -206,7 +211,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: work/cache/vcpkg-binaries
-          key: forge-vcpkg-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ hashFiles('vendor/deps/**', 'src/config.jsl') }}-${{ steps.cache-key.outputs.day }}
+          key: forge-vcpkg-alma9-${{ runner.arch }}-${{ hashFiles('vendor/deps/**', 'src/config.jsl') }}-${{ steps.toolchain.outputs.cache_key }}-${{ steps.cache-key.outputs.day }}
       # Standard hosted runners have limited disk. The SDK is already sealed;
       # retaining vcpkg buildtrees here would crowd out CMake and packaging.
       - name: Reclaim dependency buildtrees and report remaining disk
