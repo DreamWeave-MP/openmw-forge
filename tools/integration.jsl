@@ -661,6 +661,16 @@ util.write(qtBase .. '/lib/cmake/Qt6LinguistTools/Qt6LinguistToolsConfig.cmake',
 util.mkdir(qtBase .. '/lib/cmake/Qt6')
 util.write(qtBase .. '/lib/cmake/Qt6/Qt6Config.cmake', '# Qt fixture')
 util.copy('/bin/true', qtBase .. '/plugins/platforms/libqxcb.so')
+-- The Qt SDK is not itself the runtime distribution. Do not package
+-- desktop integration, printer drivers, or proprietary database clients.
+util.copy('/bin/true', qtBase .. '/plugins/platforms/libqoffscreen.so')
+util.copy('/bin/true', qtBase .. '/plugins/platforms/libqwayland-egl.so')
+util.copy('/bin/true', qtBase .. '/plugins/sqldrivers/libqsqlite.so')
+util.copy('/bin/true', qtBase .. '/plugins/sqldrivers/libqsqlmimer.so')
+util.copy('/bin/true', qtBase .. '/plugins/sqldrivers/libqsqlmysql.so')
+util.copy('/bin/true', qtBase .. '/plugins/platformthemes/libqgtk3.so')
+util.copy('/bin/true', qtBase .. '/plugins/printsupport/libcupsprintersupport.so')
+util.copy('/bin/true', qtBase .. '/plugins/designer/libqdesigner.so')
 local qtOptions, qtReason = argsModule.parse({ 'package', '--deps-prefix', deps }, empty)
 if not qtOptions then error(qtReason or 'could not create Qt fixture options') end
 -- Regression for the CI crash at /forge/aqtinstall.log: aqtinstall's
@@ -716,6 +726,17 @@ check(fs.isFile(stage .. '/resources/empty.bin'), 'empty resource must survive s
 check(fs.isFile(stage .. '/resources/three.bin'), 'short resource must survive staging')
 check(fs.lstat(stage .. '/lib/libTest.so') ~= nil, 'vcpkg shared library symlink lost')
 check(fs.isFile(stage .. '/plugins/platforms/libqxcb.so'), 'missing Qt plugin tree')
+check(fs.isFile(stage .. '/plugins/platforms/libqoffscreen.so'), 'must keep headless Qt platform')
+check(fs.isFile(stage .. '/plugins/platforms/libqwayland-egl.so'), 'must keep native Wayland platform')
+check(fs.isFile(stage .. '/plugins/sqldrivers/libqsqlite.so'), 'must keep SQLite driver')
+for _, extra in {
+  'sqldrivers/libqsqlmimer.so', 'sqldrivers/libqsqlmysql.so',
+  'platformthemes/libqgtk3.so', 'printsupport/libcupsprintersupport.so',
+  'designer/libqdesigner.so',
+} do
+  check(not fs.lstat(stage .. '/plugins/' .. extra), 'optional Qt SDK plugin must not ship: ' .. extra)
+end
+
 check(fs.isFile(stage .. '/README.packagecontents.txt'), 'embedded package template missing')
 
 -- The pair is compressed completely before either existing artifact changes.

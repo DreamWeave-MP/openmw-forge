@@ -302,6 +302,30 @@ The Ubuntu/Debian image recipes install `libgssapi-krb5-2`; Fedora/AlmaLinux
 use `krb5-libs`, while other distro profiles use `krb5` (Arch/openSUSE) or `mit-krb5-libs` (Void). Do not bundle the
 builder's system Kerberos libraries to conceal missing target-runtime dependencies.
 
+### Optional Qt SDK plugins versus supported OpenMW runtime plugins
+
+The aqt Qt SDK contains drivers for third-party databases (Mimer SQL,
+MySQL, PostgreSQL, ODBC), GTK desktop theme integration, and CUPS printing.
+These are **not OpenMW runtime requirements**. Forge now stages only supported
+runtime plugin families and the local SQLite driver, not the entire Qt SDK
+plugin directory. This avoids advertising broken features or forcing every
+portable OpenMW build to install unrelated client libraries.
+
+Native Wayland support **is retained**, including the Wayland Qt platform and
+its graphics integration plugins. The smoke containers therefore provide
+`libwayland-cursor.so.0` and `libwayland-egl.so.1` as system dependencies:
+`libwayland-cursor`/`libwayland-egl` on AlmaLinux and Fedora;
+`libwayland-cursor0`/`libwayland-egl1` on Debian/Ubuntu; and the corresponding
+Wayland runtime on other selected distributions. The release still checks
+*every ELF that ships*, and both raw GUI executables and wrappers still start
+under a bounded timeout. This is a deliberate package-content policy, not a
+blanket exception to dependency checks.
+
+Closure failures are grouped by distribution and missing SONAME with a sample
+consumer path; symbol-version and other loader errors remain visible. To
+investigate new failures without recompiling OpenMW, run `forge smoke` against
+an already-built tarball in a container-enabled environment.
+
 The distro smoke gate now performs a full ELF dependency-closure check before
 launching any executable. It checks the packaged Qt plugin tree as well as
 binaries, using each target distro's loader environment, and reports *all*

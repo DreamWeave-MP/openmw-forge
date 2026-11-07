@@ -203,6 +203,12 @@ multi-file release. A failed release must not be interpreted as qualified.
 
 Important options: `--source`, `--repo`, `--ref`, `--deps-sha256`, `--deps-archive` (local absolute `.7z`/`.tar.xz` or HTTPS), `--deps-output`, `--build-dir`, `--deps-prefix`, `--output-dir`, `--jobs auto|N`, `--qt-version`, `--build-type`, `--triplet`, `--clean`, `--portable`, `--stage-only`, `--no-prepare`, `--no-ccache`, `--run-tests`, `--gtest-filter`, `--no-compat`, `--no-smoke`, repeatable `--cmake-arg`, `--distros`, `--with-qt`, and `--dry-run`. **Qt is required** for the current OpenMW distribution profile; unsupported `--no-qt` is rejected instead of silently producing an incomplete build.
 
+The Linux package includes the Qt runtime plugins needed for OpenMW, including
+XCB, Wayland and offscreen platforms; it does not copy optional Qt SDK plugins
+for unrelated external databases, printing or GTK3 theme integration. Forge
+checks the ELF dependency closure of everything it ships across target smoke
+distributions and retains real bounded GUI startup coverage.
+
 The ABI ceilings match AlmaLinux 9: `GLIBC_2.34`, `GLIBCXX_3.4.29`, `CXXABI_1.3.13`. Dependencies and OpenMW are built with the pinned `x64-linux-dynamic` triplet. An explicit dependency download does not silently fall back to an old artifact.
 
 ## Jess source and development

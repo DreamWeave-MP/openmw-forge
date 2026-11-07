@@ -66,32 +66,32 @@ suite.describe('bounded OpenMW GUI smoke startup', function()
 end)
 
 suite.describe('packaged executable smoke contracts', function()
-  suite.it('provides GL, EGL, GLib and GSSAPI runtimes for graphical distro smoke tests', function()
+  suite.it('provides GL, EGL, GLib, GSSAPI and Wayland runtimes for graphical distro smoke tests', function()
     for _, tag in { 'almalinux-9', 'fedora-latest' } do
       local recipe = nativeSmoke.imageDockerfile(tag)
-      test.expect(recipe).toContain('mesa-libGL libglvnd-egl glib2 krb5-libs')
+      test.expect(recipe).toContain('mesa-libGL libglvnd-egl glib2 krb5-libs libwayland-cursor libwayland-egl')
       test.expect(recipe).toContain('RUN dnf install -y ')
     end
 
     -- The actual Debian/Ubuntu package names differ across the time64 switch.
     for _, tag in { 'debian-12', 'ubuntu-22.04' } do
       local recipe = nativeSmoke.imageDockerfile(tag)
-      test.expect(recipe).toContain('libgl1 libegl1 libglib2.0-0 libgssapi-krb5-2\n')
+      test.expect(recipe).toContain('libgl1 libegl1 libglib2.0-0 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1')
       test.expect(recipe).toContain('RUN apt-get update && apt-get install -y ')
     end
 
     for _, tag in { 'debian-13', 'ubuntu-24.04' } do
       local recipe = nativeSmoke.imageDockerfile(tag)
-      test.expect(recipe).toContain('libgl1 libegl1 libglib2.0-0t64 libgssapi-krb5-2\n')
+      test.expect(recipe).toContain('libgl1 libegl1 libglib2.0-0t64 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1')
       test.expect(recipe).toContain('RUN apt-get update && apt-get install -y ')
     end
 
     test.expect(nativeSmoke.imageDockerfile('opensuse-tumbleweed'))
-      .toContain('Mesa-libGL1 Mesa-libEGL1 libglib-2_0-0 krb5')
+      .toContain('Mesa-libGL1 Mesa-libEGL1 libglib-2_0-0 krb5 libwayland-cursor0 libwayland-egl1')
     test.expect(nativeSmoke.imageDockerfile('archlinux'))
-      .toContain('pacman -Sy --noconfirm --needed libglvnd glib2 krb5')
+      .toContain('pacman -Sy --noconfirm --needed libglvnd glib2 krb5 wayland')
     test.expect(nativeSmoke.imageDockerfile('voidlinux'))
-      .toContain('xbps-install -Sy libglvnd glib mit-krb5-libs')
+      .toContain('xbps-install -Sy libglvnd glib mit-krb5-libs wayland')
 
     for _, tag in { 'archlinux', 'voidlinux' } do
       test.expect(nativeSmoke.imageDockerfile(tag)).toContain('libglvnd')
@@ -112,6 +112,13 @@ suite.describe('packaged executable smoke contracts', function()
     test.expect(errors[2]).toContain('/pkg/plugins/platforms/libqxcb.so')
     test.expect(errors[2]).toContain('libXrender.so.1')
 
+    local duplicates = nativeSmoke.closureProblems([[/pkg/openmw.x86_64:
+        libfoo.so.1 => not found
+        libfoo.so.1 => not found
+]], '', 0)
+    test.expect(#duplicates).toBe(1)
+    test.expect(duplicates[1]).toContain('/pkg/openmw.x86_64')
+
     local versions = nativeSmoke.closureProblems('',
       "/pkg/lib/libQt6Core.so.6: /lib/libc.so.6: version `GLIBC_2.38' not found", 1)
     test.expect(#versions).toBe(1)
@@ -122,6 +129,20 @@ suite.describe('packaged executable smoke contracts', function()
     local failure = nativeSmoke.closureProblems('', 'ldd: command not found', 127)
     test.expect(#failure).toBe(1)
     test.expect(failure[1]).toContain('command not found')
+  end)
+
+  suite.it('groups missing SONAME diagnostics without hiding other loader errors', function()
+    local summaries = nativeSmoke.summarizeClosureFailures({
+      'almalinux-9: /pkg/lib/libQt6WaylandClient.so.6: libwayland-cursor.so.0 => not found',
+      'almalinux-9: /pkg/plugins/platforms/libqwayland-egl.so: libwayland-cursor.so.0 => not found',
+      'ubuntu-24.04: /pkg/plugins/platforms/libqwayland-egl.so: libwayland-cursor.so.0 => not found',
+      'ubuntu-24.04: /pkg/openmw-cs.x86_64: symbol lookup error: missing symbol',
+    })
+    test.expect(#summaries).toBe(3)
+    test.expect(summaries[1]).toContain('almalinux-9: libwayland-cursor.so.0')
+    test.expect(summaries[1]).toContain('2 affected ELF reports')
+    test.expect(summaries[2]).toContain('ubuntu-24.04: libwayland-cursor.so.0')
+    test.expect(summaries[3]).toContain('symbol lookup error')
   end)
 
   suite.it('runs a bounded dependency audit with the packaged runtime paths', function()

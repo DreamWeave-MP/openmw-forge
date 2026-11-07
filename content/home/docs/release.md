@@ -47,7 +47,10 @@ that revision in the tarball name and `SOURCE.txt` provenance.
 3. Run Jess strict/style and source/JPK tests, compile the standalone ELF.
 4. Verify/reuse the pinned SDK or build/ABI-qualify it on a cache miss. Save it immediately; reclaim temporary vcpkg buildtrees. Compile OpenMW in AlmaLinux 9 with GoogleTests.
 5. Produce the main `.tar.gz` and matching `-debug.tar.gz`.
-6. Inspect ABI ceilings and execute **packaged launchers and raw ELF binaries**
+6. Audit the closure of every packaged ELF and supported Qt runtime plugin
+   inside each target smoke distribution. The package omits unused Qt SDK
+   database, GTK theme, and print plugins, but retains XCB, Wayland and
+   offscreen GUI support. Then inspect ABI ceilings and execute **packaged launchers and raw ELF binaries**
    in AlmaLinux 9 and Ubuntu 24.04 smoke containers.
 7. Transfer files through a short-lived Actions artifact; a separate job
    validates SHA-256 and the configured repository/ref/full SHA before using
