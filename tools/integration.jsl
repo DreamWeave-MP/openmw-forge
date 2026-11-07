@@ -35,6 +35,20 @@ local detectedJobs = util.resolveJobs('auto')
 check(detectedJobs >= 1 and detectedJobs <= 1024, 'auto jobs must resolve to available CPUs')
 check(util.resolveJobs(2) == 2, 'explicit parallelism must override auto detection')
 
+-- The hosted cache must survive non-compiler failures. Smoke and package
+-- validation deliberately run after OpenMW compilation in one CI step.
+-- GitHub's automatic cache save requires a successful overall job.
+local workflow = util.file(root .. '/.github/workflows/das-uberbranch.yml')
+check(workflow:find('uses: actions/cache/restore@v6', 1, true) ~= nil,
+  'hosted compiler cache must use an explicit restore-only action')
+check(workflow:find('uses: actions/cache/save@v6', 1, true) ~= nil,
+  'hosted compiler cache must have an explicit save action')
+check(workflow:find("steps.openmw-build.outcome != 'skipped'", 1, true) ~= nil
+  and workflow:find('always() && !cancelled()', 1, true) ~= nil,
+  'hosted compiler cache save must still run after failed OpenMW smoke tests')
+check(workflow:find('key: ${{ steps.ccache.outputs.cache-primary-key }}', 1, true) ~= nil,
+  'compiler cache save must reuse the exact restore key')
+
 -- The real GNU timeout used for local smoke must stop an event-loop-like
 -- process rather than leaving Forge blocked in @dream/process.run.
 local bounded, boundedFailure = process.run('timeout', {

@@ -116,7 +116,10 @@ SDK cache hit is not guaranteed until the export passes verification.
 ## `ccache` shows zero hits
 
 A cold build has no hits; inspect the cache statistics after a *second* build.
-Confirm `work/cache/ccache` is present in the container mount plan (try
+Older workflows used an automatic post-job cache save, which skipped saving
+on packaging or GUI smoke failures even after a complete OpenMW compile.
+Current CI uses explicit restore/save actions and preserves the 2 GiB ccache
+snapshot after the attempted build, including failed smoke tests. Confirm `work/cache/ccache` is present in the container mount plan (try
 `forge pipeline ... --dry-run`) and that CI restored the compiler cache after
 checkout. `--no-ccache` intentionally disables it. A changed compiler or
 build flags can invalidate cached objects.

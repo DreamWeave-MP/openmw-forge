@@ -18,7 +18,7 @@ OpenMW compilation, and release verification. The fundamental optimization is
 | vcpkg dependency SDK | SHA-256 input/metadata/archive check avoids reinstall/export | Complete qualified `.7z` export restored with Actions cache; worker rechecks its fingerprint and bytes |
 | vcpkg binary packages | Persistent mounted volume | Restored only if SDK cache misses; saved as soon as dependencies qualify |
 | Qt 6.6.3 | Installation is reused if present | Version-keyed Actions cache, restored into the mounted Qt prefix |
-| C/C++ object compilation | Ninja and mounted ccache | 1 GiB compressed ccache restored across hosted runs, per-day snapshots |
+| C/C++ object compilation | Ninja and mounted ccache | 2 GiB compressed ccache restored across hosted runs, saved even after failed packaging/smoke, per-day snapshots |
 | CMake buildtree | Reused for an unchanged local build root | Fresh per hosted run (too large to cache blindly without benchmarking) |
 | Dependency extraction | Full extracted-tree file/symlink hash avoids untrusted reuse; verified unchanged inputs skip decompression | Archive is extracted once into the fresh runner, then its root is **renamed**, not copied, into position |
 | Packaging + distro smoke | Always verified for releases | Always rerun, even if the source SHA is unchanged |
@@ -74,6 +74,15 @@ checkout and its CI binary-package cache. This reclaims room for CMake, debug
 symbols and packaging. Extraction uses same-filesystem rename to eliminate a
 second full SDK copy. `df -h` is printed before and after this reclamation.
 
+Compiler caching uses explicit GitHub Actions restore and save steps.
+The save step runs after the build/smoke stage even when that stage fails, so
+successfully compiled objects survive unrelated failures in packaging and
+runtime smoke tests. The cache key rotates daily and includes the immutable
+builder identity; older snapshots can be restored by prefix. A cache hit is
+not guaranteed until a previous run has actually saved one. The default
+compressed ccache allowance is now **2 GiB**, up from 1 GiB after a logged
+cold OpenMW build triggered four ccache cleanup passes.
+
 The toolchain image must still be pulled into the ephemeral runner, and Docker
 image layers share its disk budget. On a genuinely cold run, dependency builds
 may still exceed standard hosted resources. **No complete OpenMW production
@@ -93,8 +102,8 @@ cache status, and release hashes. A fast but false-green build has no value.
 GitHub's cache storage is finite. We intentionally **do not** upload complete
 CMake buildtrees or every installed dependency directory to Actions cache:
 they would consume substantial bandwidth and compete with the compiler cache.
-Do not increase ccache capacity without measuring cache-hit improvement versus
-upload/download time and quota churn. Use a separate GHCR/OCI-based artifact
+Monitor actual hit rate, cleanups, and upload/download time before increasing
+ccache capacity further; GitHub cache quota churn can negate improvements. Use a separate GHCR/OCI-based artifact
 store if the qualified SDK outgrows repository cache limits.
 
 ## Known limits / further work
