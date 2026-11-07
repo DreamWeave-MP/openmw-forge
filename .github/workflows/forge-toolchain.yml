@@ -3,9 +3,15 @@ name: Forge AlmaLinux 9 toolchain image
 # Heavy toolchain provisioning is independent of ordinary Forge code changes.
 # No self-hosted/large runner, custom secrets, or privileged build jobs.
 on:
+  pull_request:
+    paths:
+      - vendor/builder/Dockerfile
+      - tests/clockwork-vulkan-probe/**
+      - .github/workflows/forge-toolchain.yml
   push:
     paths:
       - vendor/builder/Dockerfile
+      - tests/clockwork-vulkan-probe/**
       - .github/workflows/forge-toolchain.yml
   workflow_dispatch:
 
@@ -13,12 +19,93 @@ permissions:
   contents: read
 
 concurrency:
-  group: forge-alma9-toolchain
+  group: forge-alma9-toolchain-${{ github.event_name == 'pull_request' && github.event.pull_request.number || 'publish' }}
   cancel-in-progress: false
 
 jobs:
+  qualify:
+    name: Build builder image and qualify Clockwork Vulkan
+    if: github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Resolve current Clockwork branch SHA
+        id: clockwork
+        run: |
+          sha=$(git ls-remote https://gitlab.com/OursCodeur/openmw.git refs/heads/clockwork-alpha | cut -f1)
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'could not resolve clockwork-alpha to a full SHA' >&2; exit 1; }
+          echo "source_sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Qualifying Clockwork source $sha"
+      - name: Fetch the exact resolved Clockwork revision
+        env:
+          CLOCKWORK_SHA: ${{ steps.clockwork.outputs.source_sha }}
+        run: |
+          mkdir -p work/clockwork
+          git -C work/clockwork init
+          git -C work/clockwork remote add origin https://gitlab.com/OursCodeur/openmw.git
+          git -C work/clockwork fetch --depth=1 origin "$CLOCKWORK_SHA"
+          git -C work/clockwork checkout --detach FETCH_HEAD
+          test "$(git -C work/clockwork rev-parse HEAD)" = "$CLOCKWORK_SHA"
+      - uses: docker/setup-buildx-action@v4
+      - name: Build the updated AlmaLinux builder image without publishing it
+        uses: docker/build-push-action@v7
+        with:
+          context: vendor/builder
+          file: vendor/builder/Dockerfile
+          platforms: linux/amd64
+          tags: openmw-forge-builder:clockwork-vulkan-pr
+          load: true
+          push: false
+          cache-from: type=gha,scope=openmw-forge-alma9-toolchain
+      - name: Configure and build Clockwork Vulkan probe in the builder image
+        env:
+          CLOCKWORK_SHA: ${{ steps.clockwork.outputs.source_sha }}
+        run: |
+          docker run --rm \
+            -e CLOCKWORK_SHA="$CLOCKWORK_SHA" \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            openmw-forge-builder:clockwork-vulkan-pr \
+            bash -euo pipefail -c '
+              export PATH=/opt/rh/gcc-toolset-13/root/usr/bin:/usr/local/bin:$PATH
+              export CC=/opt/rh/gcc-toolset-13/root/usr/bin/gcc
+              export CXX=/opt/rh/gcc-toolset-13/root/usr/bin/g++
+              cmake -S tests/clockwork-vulkan-probe \
+                -B work/clockwork-vulkan-probe-build \
+                -DCLOCKWORK_SOURCE_DIR=/workspace/work/clockwork \
+                -DCLOCKWORK_EXPECTED_REVISION="$CLOCKWORK_SHA" \
+                -DCMAKE_C_COMPILER="$CC" \
+                -DCMAKE_CXX_COMPILER="$CXX" \
+                -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+              cmake --build work/clockwork-vulkan-probe-build \
+                --target clockwork_device_table clockwork_vulkan_link_probe --parallel 2
+              test -s work/clockwork-vulkan-probe-build/devicetable.cpp
+              test -x work/clockwork-vulkan-probe-build/clockwork_vulkan_link_probe
+              readelf -d work/clockwork-vulkan-probe-build/clockwork_vulkan_link_probe | grep -F libvulkan.so.1
+              ldd work/clockwork-vulkan-probe-build/clockwork_vulkan_link_probe | tee work/clockwork-vulkan-probe-build/link-closure.txt
+              ! grep -F "not found" work/clockwork-vulkan-probe-build/link-closure.txt
+              echo PASS_CLOCKWORK_VULKAN_CONFIGURE_LINK_AND_DEVICE_TABLE
+            '
+      - name: Preserve CMake qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clockwork-vulkan-cmake-qualification-${{ steps.clockwork.outputs.source_sha }}
+          path: |
+            work/clockwork-vulkan-probe-build/CMakeCache.txt
+            work/clockwork-vulkan-probe-build/compile_commands.json
+            work/clockwork-vulkan-probe-build/devicetable.cpp
+            work/clockwork-vulkan-probe-build/link-closure.txt
+          if-no-files-found: warn
+          retention-days: 7
   publish:
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    needs: qualify
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:

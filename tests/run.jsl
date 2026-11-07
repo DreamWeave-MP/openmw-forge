@@ -1,5 +1,6 @@
 --!strict
 local test = require '@jess/test'
+local fs = require '@dream/fs'
 local args = require '@forge/args'
 local planning = require '@forge/plan'
 local profile = require '@forge/config'
@@ -835,6 +836,26 @@ suite.describe('embedded assets, versions, and archive names', function()
       test.expect(early < heavy and heavy < late).toBeTruthy()
     end
     test.expect(profile.sdkRecipe).toContain('alma95')
+  end)
+
+  suite.it('runs the exact-revision Clockwork Vulkan probe in CI against the built image', function()
+    local root, failure = fs.cwd()
+    test.expect(root ~= nil and failure == nil).toBeTruthy()
+    if not root then return end
+    local workflow = util.file(root .. '/.github/workflows/forge-toolchain.yml')
+    local probe = util.file(root .. '/tests/clockwork-vulkan-probe/CMakeLists.txt')
+    local linkProbe = util.file(root .. '/tests/clockwork-vulkan-probe/vulkan_link_probe.cpp')
+    test.expect(workflow).toContain('Build builder image and qualify Clockwork Vulkan')
+    test.expect(workflow).toContain('docker/build-push-action@v7')
+    test.expect(workflow).toContain('docker run --rm')
+    test.expect(workflow).toContain('clockwork_vulkan_link_probe')
+    test.expect(workflow).toContain('git ls-remote https://gitlab.com/OursCodeur/openmw.git refs/heads/clockwork-alpha')
+    test.expect(probe).toContain('CACHE STRING')
+    test.expect(probe).toContain('TARGET Vulkan::Vulkan')
+    test.expect(probe).toContain('vk_mem_alloc.h')
+    test.expect(probe).toContain('clockwork_vulkan_link_probe vulkan_link_probe.cpp')
+    test.expect(linkProbe).toContain('#define VMA_IMPLEMENTATION')
+    test.expect(linkProbe).toContain('vkCreateInstance')
   end)
 
   suite.it('compares ABI versions numerically', function()
