@@ -41,9 +41,10 @@ check(util.resolveJobs(2) == 2, 'explicit parallelism must override auto detecti
 -- GitHub's automatic cache save requires a successful overall job.
 local workflow = util.file(root .. '/.github/workflows/das-uberbranch.yml')
 local preflight = util.file(root .. '/tools/release_preflight.sh')
-check(workflow:find('needs: preflight', 1, true) ~= nil
-  and workflow:find("if: needs.preflight.outputs.should_build == 'true'", 1, true) ~= nil,
-  'expensive build and publication jobs must depend on successful qualification preflight')
+check(workflow:find('needs: [preflight, recover-candidate]', 1, true) ~= nil
+  and workflow:find('needs: [preflight, recover-candidate, build]', 1, true) ~= nil
+  and workflow:find("needs.preflight.outputs.should_build == 'true'", 1, true) ~= nil,
+  'build and publication jobs must depend on successful preflight and only reuse validated candidates')
 check(workflow:find('force_rebuild:', 1, true) ~= nil
   and workflow:find('type: boolean', 1, true) ~= nil,
   'manual dispatch must expose an explicit boolean force_rebuild')
@@ -78,6 +79,15 @@ if not releaseFixtures or not releaseFixtures.success then
 end
 check((releaseFixtures.stdout or ''):find('PASS release preflight fixtures', 1, true) ~= nil,
   'release preflight fixture matrix must report its covered decisions')
+local candidateFixtures, candidateFixtureFailure = process.run('bash', { root .. '/tests/release_candidate.sh' }, {
+  cwd = root, stdout = 'capture', stderr = 'capture',
+})
+
+if not candidateFixtures or not candidateFixtures.success then
+  error('release candidate fixture matrix failed: ' .. (candidateFixtureFailure or (candidateFixtures and candidateFixtures.stderr or 'unknown')))
+end
+check((candidateFixtures.stdout or ''):find('PASS candidate recovery fixtures', 1, true) ~= nil,
+  'candidate recovery must cover prior publish failure and invalid/expired candidate fallbacks')
 check(workflow:find('uses: actions/cache/restore@v6', 1, true) ~= nil,
   'hosted compiler cache must use an explicit restore-only action')
 check(workflow:find('uses: actions/cache/save@v6', 1, true) ~= nil,
@@ -1228,6 +1238,41 @@ local function publishFixture(env: { [string]: string }, explicitProfile: boolea
   if not result then error('failed to invoke publisher: ' .. (failure or '')) end
   return result
 end
+
+local function verifyCandidateFixture(env: { [string]: string }, directory: string?): dream_process_Result
+  local result, failure = process.run(jessBin, {
+    'run', '--trusted', '--package', '.', 'tools/uberbranch.jsl', '--verify-artifacts', directory or releaseDir,
+  }, { cwd = root, env = env, stdout = 'capture', stderr = 'capture' })
+
+  if not result then error('failed to invoke candidate verifier: ' .. (failure or '')) end
+
+  return result
+end
+
+local verifierEnv = table.clone(publisherEnv)
+verifierEnv.GH_TOKEN = ''
+local verifiedCandidate = verifyCandidateFixture(verifierEnv)
+check(verifiedCandidate.success
+  and (verifiedCandidate.stdout or ''):find('PASS candidate artifacts match current preflight identity and checksums', 1, true) ~= nil,
+  'read-only candidate verification must accept a complete candidate without a release token')
+
+local mismatchDir = scratch .. '/release-candidate-mismatched-debug'
+util.mkdir(mismatchDir)
+util.copy(releaseMain, mismatchDir .. '/' .. (fs.fileName(releaseMain) or 'main.tar.gz'))
+local wrongDebug = mismatchDir .. '/openmw-0.53.0-g' .. string.rep('b', 12) .. '-Linux-64Bit-debug.tar.gz'
+util.copy(releaseDebug, wrongDebug)
+for _, filename in { 'SOURCE.txt', 'PROVENANCE.json', 'SHA256SUMS' } do
+  util.copy(releaseDir .. '/' .. filename, mismatchDir .. '/' .. filename)
+end
+local mismatchedDebugCandidate = verifyCandidateFixture(verifierEnv, mismatchDir)
+check(not mismatchedDebugCandidate.success
+  and (mismatchedDebugCandidate.stderr or ''):find('release tarball filename does not match source provenance', 1, true) ~= nil,
+  'read-only candidate verification must reject a debug archive from a different source revision')
+
+local staleCandidate = table.clone(verifierEnv)
+staleCandidate.FORGE_RESOLVED_SOURCE_SHA = string.rep('b', 40)
+check(not verifyCandidateFixture(staleCandidate).success,
+  'read-only candidate verification must reject a different source SHA before recovery')
 
 local withoutToken = table.clone(publisherEnv)
 withoutToken.GH_TOKEN = ''

@@ -62,6 +62,44 @@ success while unrelated assets remain. GitHub Release assets are independent
 objects, not an atomic multi-asset transaction. Consumers should verify the
 checksums and matching source revision before using a rolling release.
 
+## Clockwork experimental release and publish recovery
+
+Clockwork is published only through the separate
+`das-uberbranch-clockwork` experimental prerelease. Its workflow remains
+`workflow_dispatch` only until the real Vulkan frame, Luau/UI behavior, package,
+GoogleTest, ABI, and distribution gates have passed. The upstream four-hour
+schedule and release tag are independent.
+
+Preflight records the full Clockwork source SHA and versioned build-input
+fingerprint. If that identity already has a complete checksummed release, the
+workflow exits without restoring SDK or compiler caches. Use `force_rebuild`
+only when a new compilation is intended. Cache hits are reported separately;
+they never qualify a release.
+
+If a build and its qualification tests succeeded but the publication job
+failed, dispatch the Clockwork workflow again with the prior run's numeric
+`candidate_run_id`. Set `force_republish` when the existing release is already
+qualified but the operator explicitly wants to publish that candidate again.
+Recovery checks that the run belongs to this workflow and repository, its
+Clockwork build job succeeded, and its candidate artifact is still retained.
+Forge then compares its full source SHA, fingerprint, structured provenance,
+Clockwork Vulkan report, and every SHA-256 entry against the new preflight
+identity before transferring it to the write-scoped publisher. A missing,
+expired, malformed, or mismatched candidate falls back to a cold build when
+preflight says one is needed. A failed build, GoogleTest, ABI, or smoke gate
+does not upload a candidate. Candidate artifacts are retained for three days;
+they are not a compilation cache and do not bypass qualification.
+
+The run summary records the profile, full source SHA, fingerprint, preflight and
+recovery decision, cache restore results, builder digest, build/smoke duration,
+ccache statistics, and release URL when one is available. Verify the published
+release by checking `SOURCE.txt`, `PROVENANCE.json`,
+`VULKAN-QUALIFICATION.txt`, and `SHA256SUMS` together.
+
+The upstream `das-uberbranch` manual workflow accepts the same run-ID recovery
+inputs for a qualified upstream candidate. Its scheduled runs remain unchanged;
+recovery is an operator-triggered dispatch.
+
 ## Offline dry runs for the two scheduled stages
 
 ```sh

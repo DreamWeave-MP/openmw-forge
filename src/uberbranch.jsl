@@ -213,11 +213,7 @@ end
 
 -- Verify artifacts received from the low-privilege build runner before
 -- allowing the high-privilege publication job to touch a GitHub release.
-local function publishArtifacts(directory: string, root: string, settings: Profile)
-  local token = process.env('GH_TOKEN')
-  if process.env('GITHUB_ACTIONS') ~= 'true' or not token or token == '' then
-    error('publishing requires GitHub Actions and GH_TOKEN')
-  end
+local function verifyArtifacts(directory: string, settings: Profile): { string }
   local main, debug = findOutputs(directory)
   local notes = directory .. '/SOURCE.txt'
   local checksums = directory .. '/SHA256SUMS'
@@ -275,7 +271,8 @@ local function publishArtifacts(directory: string, root: string, settings: Profi
     end
   elseif fs.exists(qualificationPath) then error('non-Vulkan release contains Clockwork qualification evidence') end
 
-  if not main:find('-g' .. revision:sub(1, 12) .. '-', 1, true) then
+  local expectedDebug = main:gsub('%.tar%.gz$', '-debug.tar.gz')
+  if not main:find('-g' .. revision:sub(1, 12) .. '-', 1, true) or debug ~= expectedDebug then
     error('release tarball filename does not match source provenance')
   end
   local allowed: { [string]: string } = {}
@@ -298,6 +295,16 @@ local function publishArtifacts(directory: string, root: string, settings: Profi
   local publishFiles = { main, debug, notes, provenancePath }
   if settings.features.vulkan then table.insert(publishFiles, qualificationPath) end
   table.insert(publishFiles, checksums)
+  return publishFiles
+end
+
+local function publishArtifacts(directory: string, root: string, settings: Profile)
+  local token = process.env('GH_TOKEN')
+  if process.env('GITHUB_ACTIONS') ~= 'true' or not token or token == '' then
+    error('publishing requires GitHub Actions and GH_TOKEN')
+  end
+  local publishFiles = verifyArtifacts(directory, settings)
+  local notes = directory .. '/SOURCE.txt'
   publish(settings, root, publishFiles, notes)
 end
 
@@ -308,6 +315,7 @@ local function run(argv: { string })
   local selectedId: string? = process.env('FORGE_RELEASE_PROFILE')
   local profileOptionSeen = false
   local publishDirectory: string? = nil
+  local verifyDirectory: string? = nil
   local scan = 1
   while scan <= #argv do
     if argv[scan] == '--release-profile' then
@@ -328,12 +336,27 @@ local function run(argv: { string })
       if not publishDirectory or publishDirectory == '' then
         error('usage: --publish-artifacts /absolute/output/dir [--release-profile id]')
       end
+    elseif argv[scan] == '--verify-artifacts' then
+      if verifyDirectory then error('--verify-artifacts may be supplied only once') end
+      scan += 1
+      verifyDirectory = argv[scan]
+      if not verifyDirectory or verifyDirectory == '' then
+        error('usage: --verify-artifacts /absolute/candidate/dir [--release-profile id]')
+      end
     end
     scan += 1
   end
   local settings = profile(selectedId)
   local profilesValid, profilesReason = validateProfiles()
   if not profilesValid then error(profilesReason or 'invalid release profiles') end
+
+  if publishDirectory and verifyDirectory then error('publish and verify artifact modes are mutually exclusive') end
+
+  if verifyDirectory then
+    verifyArtifacts(verifyDirectory, settings)
+    print('PASS candidate artifacts match current preflight identity and checksums')
+    return
+  end
 
   if publishDirectory then
     publishArtifacts(publishDirectory, root, settings)
@@ -465,5 +488,5 @@ return table.freeze {
   buildArgs = buildArgs, depsArgs = depsArgs, buildOnlyArgs = buildOnlyArgs,
   smokeArgs = smokeArgs,
   isMainTarball = isMainTarball,
-  findOutputs = findOutputs, publishArtifacts = publishArtifacts, run = run,
+  findOutputs = findOutputs, verifyArtifacts = verifyArtifacts, publishArtifacts = publishArtifacts, run = run,
 }

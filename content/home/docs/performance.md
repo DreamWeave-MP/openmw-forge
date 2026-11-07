@@ -21,7 +21,16 @@ OpenMW compilation, and release verification. The fundamental optimization is
 | C/C++ object compilation | Ninja and mounted ccache | 2 GiB compressed ccache restored across hosted runs, saved even after failed packaging/smoke, per-day snapshots |
 | CMake buildtree | Reused for an unchanged local build root | Fresh per hosted run (too large to cache blindly without benchmarking) |
 | Dependency extraction | Full extracted-tree file/symlink hash avoids untrusted reuse; verified unchanged inputs skip decompression | Archive is extracted once into the fresh runner, then its root is **renamed**, not copied, into position |
-| Packaging + distro smoke | Always verified for releases | Always rerun, even if the source SHA is unchanged |
+| Qualified release identity | Not applicable | Full source and input fingerprint skips Docker, SDK, CMake, packaging and smoke when the release is complete |
+| Packaging + distro smoke | Always verified for releases | Rerun when a build is required; never treated as passed because a cache hit occurred |
+| Qualified candidate recovery | Not applicable | Republish a retained candidate only after its build, current identity, provenance and checksums validate |
+
+Clockwork summaries report SDK, vcpkg binary, Qt and ccache restore hits, the
+source fingerprint, selected work decision, OpenMW build/smoke duration, and
+ccache's own statistics. A republish candidate is kept for three days and is
+accepted only when its successful Clockwork build job and exact current
+provenance/checksums validate. It does not skip the qualification tests that
+produced it.
 
 ## Two distinct CI artifacts
 
