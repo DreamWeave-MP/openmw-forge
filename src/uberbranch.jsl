@@ -323,7 +323,9 @@ local function run(argv: { string })
   if not runId:match('^[%w%-]+$') or not attempt:match('^%d+$') then error('invalid CI run identity') end
   local output = root .. '/artifacts/' .. settings.artifactNamespace .. '/' .. runId .. '-' .. attempt
   local resolvedSha = process.env('FORGE_RESOLVED_SOURCE_SHA')
-  if resolvedSha and not resolvedSha:match('^[0-9a-f]{40}$') then error('invalid preflight source SHA') end
+  if resolvedSha and (#resolvedSha ~= 40 or not resolvedSha:match('^[0-9a-f]+$')) then
+    error('invalid preflight source SHA')
+  end
   local command = if depsOnly then depsArgs(settings) elseif buildOnly then buildOnlyArgs(settings, output, resolvedSha) else buildArgs(settings, output)
 
   print(`Release profile: {settings.id}`)

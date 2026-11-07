@@ -28,6 +28,14 @@ end
 local key = 'fallback-' .. source:sub(1, 20)
 local pinned = ''
 local toolchainId = ''
+local buildBase = ''
+local runnerOs = process.env('RUNNER_OS') or 'Linux'
+local runnerArch = process.env('RUNNER_ARCH') or 'X64'
+local architecture = if runnerArch == 'X64' then 'amd64' elseif runnerArch == 'ARM64' then 'arm64' else ''
+if runnerOs ~= 'Linux' or architecture == '' then
+  error('unsupported OCI toolchain runner platform: ' .. runnerOs .. '/' .. runnerArch)
+end
+
 local function manifestDigest(reference: string): string
   local result = process.run('docker', { 'manifest', 'inspect', '--verbose', reference }, {
     stdout = 'capture', stderr = 'capture',
@@ -35,7 +43,27 @@ local function manifestDigest(reference: string): string
 
   if not result or not result.success then return '' end
 
-  local parsed = process.run('jq', { '-r', '.Descriptor.digest' }, {
+  local query = [[
+    def valid_digest: type == "string" and test("^sha256:[0-9a-f]{64}$");
+    def platform: (.Descriptor.platform // .descriptor.platform // .platform // .Platform // {});
+    def entry_digest: (.Descriptor.digest // .descriptor.digest // .digest // .Digest);
+    def platform_digest(entries):
+      [entries[]
+        | select((platform.os // "") == $os and (platform.architecture // "") == $architecture)
+        | entry_digest
+        | select(valid_digest)]
+      | unique
+      | if length == 1 then .[0] else empty end;
+    if type == "array" then platform_digest(.)
+    elif type == "object" and (.manifests? | type) == "array" then platform_digest(.manifests)
+    elif type == "object" and ((platform.os? != null) or (platform.architecture? != null)) then
+      if (platform.os // "") == $os and (platform.architecture // "") == $architecture
+      then entry_digest else empty end
+    elif type == "object" then entry_digest
+    else empty end
+    | select(valid_digest)
+  ]]
+  local parsed = process.run('jq', { '-er', '--arg', 'os', 'linux', '--arg', 'architecture', architecture, query }, {
     stdin = result.stdout or '', stdout = 'capture', stderr = 'null',
   })
 
@@ -54,48 +82,33 @@ if preflight then
     print('PASS resolved OCI toolchain manifest without pulling layers: ' .. pinned)
   end
 else
-  local result = process.run('docker', { 'pull', image }, { stdout = 'capture', stderr = 'capture' })
-  if result and result.success then
-    local inspected = process.run('docker', { 'image', 'inspect', '--format', '{{index .RepoDigests 0}}', image }, {
-      stdout = 'capture', stderr = 'capture',
-    })
-
-    if inspected and inspected.success then
-      local ref = (inspected.stdout or ''):gsub('%s+$', '')
-      if ref:match('^ghcr%.io/[%w._/%-]+@sha256:[0-9a-f]+$') then
-        pinned = ref
-        toolchainId = ref
-        key = ref:match('sha256:([0-9a-f]+)') or key
-        print('PASS verified OCI toolchain image: ' .. pinned)
-      end
-    end
+  local digest = manifestDigest(image)
+  if digest ~= '' then
+    pinned = image:gsub(':[^:]+$', '') .. '@' .. digest
+    toolchainId = pinned
+    key = digest:sub(8)
+    local pulled = process.run('docker', { 'pull', pinned }, { stdout = 'capture', stderr = 'capture' })
+    if not pulled or not pulled.success then error('cannot pull resolved OCI toolchain image: ' .. pinned) end
+    print('PASS verified OCI toolchain image: ' .. pinned)
   end
 end
 
 if pinned == '' then
+  local base = 'almalinux/9-base:9.5-20250519'
+  local digest = manifestDigest(base)
+  if digest == '' then error('cannot resolve immutable AlmaLinux 9 builder base for ' .. runnerArch) end
+  local baseName = base:gsub(':[^:]+$', '')
+  local basePinned = baseName .. '@' .. digest
+  key = 'fallback-' .. source:sub(1, 12) .. '-' .. digest:sub(8, 23)
+  toolchainId = 'fallback:' .. source .. ':' .. digest:sub(8)
+
   if preflight then
-    local digest = manifestDigest('almalinux/9-base:9.5-20250519')
-    if digest ~= '' then
-      key = 'fallback-' .. source:sub(1, 12) .. '-' .. digest:sub(8, 23)
-      toolchainId = 'fallback:' .. source .. ':' .. digest:sub(8)
-    end
+    print('PASS resolved fallback builder base without pulling layers: ' .. basePinned)
   else
     print('WARN no published toolchain image; using local AlmaLinux 9 toolchain build (first run/fork)')
-    -- A pulled base digest distinguishes one cold bootstrap from another.
-    local base = process.run('docker', { 'pull', 'almalinux/9-base:9.5-20250519' }, { stdout = 'capture', stderr = 'capture' })
-    if base and base.success then
-      local inspected = process.run('docker', { 'image', 'inspect', '--format', '{{index .RepoDigests 0}}', 'almalinux/9-base:9.5-20250519' }, {
-        stdout = 'capture', stderr = 'capture',
-      })
-
-      if inspected and inspected.success then
-        local digest = (inspected.stdout or ''):match('@sha256:([0-9a-f]+)')
-        if digest and #digest == 64 then
-          key = 'fallback-' .. source:sub(1, 12) .. '-' .. digest:sub(1, 16)
-          toolchainId = 'fallback:' .. source .. ':' .. digest
-        end
-      end
-    end
+    local pulled = process.run('docker', { 'pull', basePinned }, { stdout = 'capture', stderr = 'capture' })
+    if not pulled or not pulled.success then error('cannot pull resolved AlmaLinux builder base: ' .. basePinned) end
+    buildBase = basePinned
   end
 end
 
@@ -110,6 +123,7 @@ end
 local envFile = process.env('GITHUB_ENV')
 if toolchainId ~= '' and envFile and envFile ~= '' then
   local environment = (if pinned ~= '' then 'FORGE_TOOLCHAIN_IMAGE=' .. pinned .. '\n' else '')
+    .. (if buildBase ~= '' then 'FORGE_TOOLCHAIN_BASE_IMAGE=' .. buildBase .. '\n' else '')
     .. 'FORGE_TOOLCHAIN_ID=' .. toolchainId .. '\n'
   local ok, problem = fs.writeFile(envFile, environment, { append = true })
   if not ok then error(problem or 'cannot set pinned OCI toolchain identity') end

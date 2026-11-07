@@ -24,16 +24,29 @@ WORKDIR /forge
 
 local function recipe(): string
   local base = process.env('FORGE_TOOLCHAIN_IMAGE')
+  local pinnedBase = process.env('FORGE_TOOLCHAIN_BASE_IMAGE')
   if base and base ~= '' then
     -- A named digest can be supplied by CI after resolving a qualified GHCR
     -- image. Refuse metacharacters or additional Dockerfile instructions.
     if not base:match('^[%w%._/@:%-]+$') or base:find('..', 1, true) then
       error('invalid FORGE_TOOLCHAIN_IMAGE reference')
     end
+
+    if pinnedBase and pinnedBase ~= '' then error('cannot set both a published toolchain and a fallback base image') end
     return 'FROM ' .. base .. '\n' .. RuntimeLayer
   end
   local toolchain = files['builder/Dockerfile']
   if not toolchain then error('embedded AlmaLinux 9 toolchain definition is missing') end
+
+  if pinnedBase and pinnedBase ~= '' then
+    if not pinnedBase:match('^[%w%._/@:%-]+$') or pinnedBase:find('..', 1, true) then
+      error('invalid FORGE_TOOLCHAIN_BASE_IMAGE reference')
+    end
+    local replaced, count = toolchain:gsub('FROM almalinux/9%-base:9%.5%-20250519', 'FROM ' .. pinnedBase, 1)
+    if count ~= 1 then error('pinned fallback base does not match the embedded builder recipe') end
+    toolchain = replaced
+  end
+
   return toolchain .. RuntimeLayer
 end
 

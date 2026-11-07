@@ -47,10 +47,13 @@ check(workflow:find('needs: preflight', 1, true) ~= nil
 check(workflow:find('force_rebuild:', 1, true) ~= nil
   and workflow:find('type: boolean', 1, true) ~= nil,
   'manual dispatch must expose an explicit boolean force_rebuild')
-check(preflight:find('sha256sum --strict --check SHA256SUMS', 1, true) ~= nil
+check(preflight:find('verify_asset_digests', 1, true) ~= nil
+  and preflight:find("--pattern 'openmw-*-Linux-64Bit.tar.gz'", 1, true) == nil
+  and preflight:find('.digest // empty', 1, true) ~= nil
   and preflight:find('input_fingerprint', 1, true) ~= nil
-  and preflight:find('refs/tags/$ref^{}', 1, true) ~= nil,
-  'release preflight must verify checksums, full identity, and peeled annotated tags')
+  and preflight:find('peeled="$ref^{}"', 1, true) ~= nil
+  and preflight:find('refs/heads/*', 1, true) ~= nil,
+  'release preflight must verify API asset digests, full identity, and peeled annotated tags without downloading archives')
 
 local releaseFixtures, releaseFixtureFailure = process.run('bash', { root .. '/tests/release_preflight.sh' }, {
   cwd = root, stdout = 'capture', stderr = 'capture',
@@ -422,6 +425,22 @@ end
 ]])
 local jessBin = process.env('JESS_BIN') or util.checked('which', { 'jess' }):gsub('%s+$', '')
 
+local resolvedSourceDryRun = process.run(jessBin, { 'run', '--trusted', '--package', '.',
+  'tools/uberbranch.jsl', '--dry-run' }, {
+  cwd = root, env = { FORGE_RESOLVED_SOURCE_SHA = string.rep('a', 40) },
+  stdout = 'capture', stderr = 'capture',
+})
+check(resolvedSourceDryRun ~= nil and resolvedSourceDryRun.success
+  and (resolvedSourceDryRun.stdout or ''):find('--ref master', 1, true) ~= nil,
+  'scheduled dry-run must accept and preserve a valid preflight SHA')
+local invalidSourceDryRun = process.run(jessBin, { 'run', '--trusted', '--package', '.',
+  'tools/uberbranch.jsl', '--dry-run' }, {
+  cwd = root, env = { FORGE_RESOLVED_SOURCE_SHA = string.rep('a', 39) .. 'z' },
+  stdout = 'capture', stderr = 'capture',
+})
+check(invalidSourceDryRun ~= nil and not invalidSourceDryRun.success,
+  'scheduled dry-run must reject malformed preflight SHA values')
+
 -- CI invokes Jess by command name, but the standalone packer requires a
 -- real filesystem path for --runtime.  Exercise both the PATH-only fallback
 -- and an invalid, relative JESS_BIN without relying on the host's shell.
@@ -626,6 +645,22 @@ check(fastRecipe:find('dnf install', 1, true) == nil,
   'pinned toolchain must skip costly DNF/Autoconf image provisioning')
 check(util.file(mockLog):find('FORGE_TOOLCHAIN_ID=' .. pinnedImage, 1, true) ~= nil,
   'dependency worker must receive the exact toolchain digest for cache identity')
+local fallbackBaseEnv = table.clone(mockEnv)
+local pinnedFallbackBase = 'almalinux/9-base@sha256:' .. string.rep('b', 64)
+fallbackBaseEnv.FORGE_TOOLCHAIN_BASE_IMAGE = pinnedFallbackBase
+fallbackBaseEnv.FORGE_TOOLCHAIN_ID = 'fallback:' .. string.rep('c', 64) .. ':' .. string.rep('b', 64)
+util.write(mockLog, '')
+local fallbackBaseRun = invoke({ 'deps' }, empty, fallbackBaseEnv)
+check(fallbackBaseRun.success, 'fallback toolchain must accept a digest-pinned base image')
+local fallbackRecipe = util.file(empty .. '/work/forge-assets/Dockerfile')
+check(fallbackRecipe:find('FROM ' .. pinnedFallbackBase .. '\n', 1, true) == 1,
+  'cold fallback builder must use the same base digest as its preflight identity')
+check(fallbackRecipe:find('dnf install', 1, true) ~= nil,
+  'pinned fallback base must retain the full AlmaLinux builder provisioning recipe')
+local invalidBaseEnv = table.clone(mockEnv)
+invalidBaseEnv.FORGE_TOOLCHAIN_BASE_IMAGE = 'almalinux:9\nRUN unexpected'
+check(not invoke({ 'deps' }, empty, invalidBaseEnv).success,
+  'invalid pinned fallback base must not permit Dockerfile injection')
 local invalidEnv = table.clone(mockEnv)
 invalidEnv.FORGE_TOOLCHAIN_IMAGE = 'almalinux:9\nRUN unexpected'
 local invalidImage = invoke({ 'deps' }, empty, invalidEnv)
