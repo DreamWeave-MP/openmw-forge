@@ -11,6 +11,7 @@ local nativeQt = require '@forge/native-qt'
 local nativeArchive = require '@forge/native-archive'
 local nativeAbi = require '@forge/native-abi'
 local nativeSmoke = require '@forge/native-smoke'
+local clockworkSmoke = require '@forge/native-clockwork-smoke'
 local nativePackage = require '@forge/native-package'
 local sdkCache = require '@forge/native-sdk-cache'
 local nativeDeps = require '@forge/native-deps'
@@ -21,6 +22,119 @@ local uber = require '@forge/uberbranch'
 local uberConfig = require '@forge/uberbranch-config'
 local releaseProfiles = require '@forge/release-profiles'
 local suite = test.new()
+
+suite.describe('Clockwork Vulkan frame qualification', function()
+  suite.it('uses Clockwork CI’s pinned example suite and immutable builder identity', function()
+    local root = '/tmp/clockwork-runtime-smoke-fixture'
+    util.remove(root)
+    util.mkdir(root)
+    util.write(root .. '/.gitlab-ci.yml', table.concat({
+      'EXAMPLE_SUITE_REVISION: a1ba6fc9d7315c2158ef4c60349fc4e71b7ca343',
+      'EXAMPLE_SUITE_REVISION: a1ba6fc9d7315c2158ef4c60349fc4e71b7ca343',
+      '',
+    }, '\n'))
+    local revision = clockworkSmoke.exampleSuiteRevision(root)
+    test.expect(revision).toBe('a1ba6fc9d7315c2158ef4c60349fc4e71b7ca343')
+    test.expect(clockworkSmoke.fullSha(revision)).toBeTruthy()
+    test.expect(clockworkSmoke.fullSha('c5e5a9a6362c35512823884753d2d5284af204fa')).toBeTruthy()
+    test.expect(clockworkSmoke.fullSha('c5e5a9a6')).toBeFalsy()
+    test.expect(clockworkSmoke.containerName('4239', revision)).toBe(
+      'forge-clockwork-vulkan-4239-a1ba6fc9d731')
+  end)
+
+  suite.it('builds a network-isolated runtime command over exact read-only build inputs', function()
+    local command = clockworkSmoke.command('docker', 'forge-runtime-test',
+      'forge-clockwork-vulkan-runtime:4239-a1ba6fc9d731',
+      '/tmp/source', '/tmp/build', '/tmp/package', '/tmp/deps', '/tmp/example-suite', '/tmp/runtime-evidence',
+      'a1ba6fc9d7315c2158ef4c60349fc4e71b7ca343')
+    local joined = table.concat(command, '\n')
+    test.expect(joined).toContain('--network\nnone')
+    test.expect(joined).toContain('/tmp/source:/source:ro')
+    test.expect(joined).toContain('/tmp/build:/build:ro')
+    test.expect(joined).toContain('/tmp/package:/package:ro')
+    test.expect(joined).toContain('/tmp/deps:/deps:ro')
+    test.expect(joined).toContain('/tmp/example-suite:/example-suite:ro')
+    test.expect(joined).toContain('/tmp/runtime-evidence:/output:rw')
+    test.expect(joined).toContain('run_renderer_startup.py')
+    test.expect(joined).toContain('/source/CI/run_vulkan_capture.py')
+    test.expect(joined).toContain('NativeCodeGenTest.DisabledOrUnavailableCodegenRunsInterpreted')
+    test.expect(joined).toContain('LuaUiContentTest.NestedContentChangesInvalidateParentContent')
+    test.expect(joined).toContain('LuaUiLayout.NestedContentChangesUpdateTheRetainedDescendant')
+    test.expect(joined).toContain('--headless')
+    test.expect(joined).toContain('VK_DRIVER_FILES')
+    -- Invalid moving tags must throw so runtime evidence cannot use an unpinned base.
+    local ok = pcall(function()
+      clockworkSmoke.command('docker', 'forge-runtime-test', 'ghcr.io/example/forge-builder:latest',
+        '/tmp/source', '/tmp/build', '/tmp/package', '/tmp/deps', '/tmp/example-suite', '/tmp/runtime-evidence',
+        'a1ba6fc9d7315c2158ef4c60349fc4e71b7ca343')
+    end)
+    test.expect(ok).toBeFalsy()
+    test.expect(table.concat(clockworkSmoke.boundedCommand('docker', 2400, command), '\n'))
+      .toContain('--kill-after=10s\n2400s\ndocker')
+    test.expect(clockworkSmoke.runtimeDockerfile(
+      'ghcr.io/example/forge-builder@sha256:' .. string.rep('b', 64)))
+      .toContain('mesa-vulkan-drivers-24.1.2-3.el9.alma.2')
+  end)
+
+  suite.it('accepts only complete Vulkan renderer and scene-capture evidence', function()
+    local root = '/tmp/clockwork-runtime-evidence'
+    util.remove(root)
+    util.mkdir(root .. '/runner/renderer_startup_output')
+    util.mkdir(root .. '/vulkan-capture/capture')
+    util.write(root .. '/runner/renderer_startup_output/result.json',
+      '{"timed_out":false,"returncode":0,"errors":[],"renderer":{"entry":"vulkan 1.3","requested":"vulkan 1.3"}}\n')
+    util.write(root .. '/vulkan-capture/capture.json',
+      '{"timed_out":false,"returncode":0,"errors":[],"captures":["capture.omwcap"],"icd":"lvp_icd.x86_64.json"}\n')
+    util.write(root .. '/vulkan-capture/capture/scene.omwcap', 'nonempty capture fixture')
+    util.write(root .. '/vulkaninfo.txt', 'deviceName = llvmpipe (LLVM 18.1.8, 256 bits)\n')
+    util.write(root .. '/vulkan-runtime-packages.txt', 'mesa-vulkan-drivers-24.1.2-3.el9.alma.2\n')
+    util.write(root .. '/luau-ui-tests.txt', table.concat({
+      '[       OK ] NativeCodeGenTest.DisabledOrUnavailableCodegenRunsInterpreted',
+      '[       OK ] LuaUiContentTest.NestedContentChangesInvalidateParentContent',
+      '[       OK ] LuaUiLayout.NestedContentChangesUpdateTheRetainedDescendant',
+      '[       OK ] LuaUiLayout.ResolvesRelativeChildSizeAndAnchoredPosition',
+    }, '\n') .. '\n')
+
+    local function fixtureJson(path: string, query: string): boolean
+      local data = util.file(path)
+      if path:find('renderer_startup_output', 1, true) then
+        return query:find('.renderer.entry', 1, true) ~= nil
+          and data:find('"timed_out":false', 1, true) ~= nil
+          and data:find('"errors":[]', 1, true) ~= nil
+          and data:find('"entry":"vulkan 1.3"', 1, true) ~= nil
+          and data:find('"requested":"vulkan 1.3"', 1, true) ~= nil
+      end
+      return query:find('.captures | length', 1, true) ~= nil
+        and data:find('"timed_out":false', 1, true) ~= nil
+        and data:find('"errors":[]', 1, true) ~= nil
+        and data:find('"captures":["capture.omwcap"]', 1, true) ~= nil
+        and data:find('"icd":"lvp_icd', 1, true) ~= nil
+    end
+
+    local function fixtureHashes(paths: { string }): string
+      test.expect(#paths).toBe(6)
+      return 'fixture-evidence-sha256\n'
+    end
+    local valid, reason = clockworkSmoke.validateEvidence(root,
+      'c5e5a9a6362c35512823884753d2d5284af204fa', 'a1ba6fc9d7315c2158ef4c60349fc4e71b7ca343',
+      'ghcr.io/example/forge-builder@sha256:' .. string.rep('b', 64), fixtureJson, fixtureHashes)
+    test.expect(valid).toBeTruthy()
+    test.expect(reason).toBeNil()
+    test.expect(util.file(root .. '/CLOCKWORK-VULKAN-QUALIFICATION.txt')).toContain('Renderer: vulkan 1.3')
+    test.expect(util.file(root .. '/CLOCKWORK-VULKAN-QUALIFICATION.txt'))
+      .toContain('Clockwork source SHA: c5e5a9a6362c35512823884753d2d5284af204fa')
+    test.expect(util.file(root .. '/CLOCKWORK-VULKAN-QUALIFICATION.txt'))
+      .toContain('Builder image: ghcr.io/example/forge-builder@sha256:')
+
+    util.write(root .. '/runner/renderer_startup_output/result.json',
+      '{"timed_out":false,"returncode":0,"errors":[],"renderer":{"entry":"opengl","requested":"vulkan 1.3"}}\n')
+    local rejected, failure = clockworkSmoke.validateEvidence(root,
+      'c5e5a9a6362c35512823884753d2d5284af204fa', 'a1ba6fc9d7315c2158ef4c60349fc4e71b7ca343',
+      'ghcr.io/example/forge-builder@sha256:' .. string.rep('b', 64), fixtureJson, fixtureHashes)
+    test.expect(rejected).toBeFalsy()
+    test.expect(failure).toContain('clean Vulkan 1.3 run')
+  end)
+end)
 
 suite.describe('bounded OpenMW GUI smoke startup', function()
   suite.it('accepts a live GUI only without fatal Qt or loader diagnostics', function()
@@ -1069,6 +1183,24 @@ suite.describe('scheduled das-uberbranch release contract', function()
     local clockworkSmoke = uber.smokeArgs(clockwork, '/tmp/clockwork.tar.gz')
     test.expect(has(clockworkSmoke or {}, '--require-feature')).toBeTruthy()
     test.expect(has(clockworkSmoke or {}, 'vulkan')).toBeTruthy()
+  end)
+
+  suite.it('requires exact-source Vulkan frame evidence before Clockwork provenance is qualified', function()
+    local root, failure = fs.cwd()
+    test.expect(root ~= nil and failure == nil).toBeTruthy()
+    if not root then return end
+    local orchestrator = util.file(root .. '/src/uberbranch.jsl')
+    local genericSmoke = orchestrator:find('local smoke = smokeArgs(settings, main)', 1, true)
+    local vulkanGate = orchestrator:find('clockworkSmoke.run(checkout', 1, true)
+    local provenance = orchestrator:find("local notes = output .. '/SOURCE.txt'", 1, true)
+    test.expect(genericSmoke ~= nil and vulkanGate ~= nil and provenance ~= nil).toBeTruthy()
+    if genericSmoke and vulkanGate and provenance then
+      test.expect(genericSmoke < vulkanGate and vulkanGate < provenance).toBeTruthy()
+    end
+    test.expect(orchestrator).toContain('if settings.features.vulkan then')
+    test.expect(orchestrator).toContain('FORGE_CLOCKWORK_EXAMPLE_SUITE')
+    test.expect(orchestrator).toContain("error('Clockwork runtime smoke requires exactly one staged OpenMW package')")
+    test.expect(orchestrator).toContain('clockworkSmoke.run(checkout, root .. \'/work/build\'')
   end)
 
   suite.it('keeps Clockwork flags and artifact namespace separate from upstream', function()

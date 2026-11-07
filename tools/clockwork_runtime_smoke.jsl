@@ -1,0 +1,16 @@
+#!/usr/bin/env -S jess run --trusted --package .
+--!strict
+local process = require '@dream/process'
+local smoke = require '@forge/native-clockwork-smoke'
+
+local sourceRoot, buildRoot, packageRoot, depsRoot, suiteRoot, outputRoot, sourceSha = ...
+if type(sourceRoot) ~= 'string' or type(buildRoot) ~= 'string' or type(packageRoot) ~= 'string'
+  or type(depsRoot) ~= 'string'
+  or type(suiteRoot) ~= 'string' or type(outputRoot) ~= 'string' or type(sourceSha) ~= 'string' then
+  error('usage: tools/clockwork_runtime_smoke.jsl SOURCE BUILD PACKAGE DEPS EXAMPLE_SUITE OUTPUT SOURCE_SHA')
+end
+
+local image = process.env('FORGE_TOOLCHAIN_IMAGE') or ''
+if image == '' then error('FORGE_TOOLCHAIN_IMAGE must identify the qualified builder image') end
+smoke.run(sourceRoot, buildRoot, packageRoot, depsRoot, suiteRoot, outputRoot, sourceSha, image,
+  process.env('FORGE_CONTAINER_ENGINE') or 'docker', process.env('GITHUB_RUN_ID') or 'local')

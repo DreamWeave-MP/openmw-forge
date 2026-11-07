@@ -4,6 +4,7 @@ local fs = require '@dream/fs'
 local process = require '@dream/process'
 local util = require '@forge/native-util'
 local source = require '@forge/source'
+local clockworkSmoke = require '@forge/native-clockwork-smoke'
 type Profile = {
   read id: string, read repository: string, read ref: string, read releaseTag: string,
   read releaseTitle: string, read jobs: number | string, read cmakeArgs: { string },
@@ -387,6 +388,23 @@ local function run(argv: { string })
 
   local smoke = smokeArgs(settings, main)
   if smoke then util.stream(binary, smoke, root) end
+
+  if settings.features.vulkan then
+    local suiteRoot = process.env('FORGE_CLOCKWORK_EXAMPLE_SUITE') or ''
+    if suiteRoot == '' then error('Clockwork profile requires FORGE_CLOCKWORK_EXAMPLE_SUITE for Vulkan runtime smoke') end
+    local staging = root .. '/work/build/package-staging'
+    local packageRoots: { string } = {}
+    for _, name in util.list(staging) do
+      if fs.isDir(staging .. '/' .. name) then table.insert(packageRoots, staging .. '/' .. name) end
+    end
+
+    if #packageRoots ~= 1 then error('Clockwork runtime smoke requires exactly one staged OpenMW package') end
+
+    local evidence = root .. '/work/vulkan-runtime-evidence/' .. runId .. '-' .. attempt
+    clockworkSmoke.run(checkout, root .. '/work/build', packageRoots[1], root .. '/work/deps',
+      suiteRoot, evidence, revision, process.env('FORGE_TOOLCHAIN_IMAGE') or '',
+      process.env('FORGE_CONTAINER_ENGINE') or 'docker', runId)
+  end
 
   local notes = output .. '/SOURCE.txt'
   local requestedRef = process.env('FORGE_REQUESTED_REF') or settings.ref
