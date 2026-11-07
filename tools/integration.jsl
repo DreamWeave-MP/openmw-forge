@@ -12,6 +12,7 @@ local nativeArchive = require '@forge/native-archive'
 local releaseArtifacts = require '@forge/native-release-artifacts'
 local sdkCache = require '@forge/native-sdk-cache'
 local config = require '@forge/config'
+local uberConfig = require '@forge/uberbranch-config'
 local assets = require '@forge/assets'
 local vcpkgPython = require '@forge/native-vcpkg-python'
 
@@ -39,6 +40,30 @@ check(util.resolveJobs(2) == 2, 'explicit parallelism must override auto detecti
 -- validation deliberately run after OpenMW compilation in one CI step.
 -- GitHub's automatic cache save requires a successful overall job.
 local workflow = util.file(root .. '/.github/workflows/das-uberbranch.yml')
+local preflight = util.file(root .. '/tools/release_preflight.sh')
+check(workflow:find('needs: preflight', 1, true) ~= nil
+  and workflow:find("if: needs.preflight.outputs.should_build == 'true'", 1, true) ~= nil,
+  'expensive build and publication jobs must depend on successful qualification preflight')
+check(workflow:find('force_rebuild:', 1, true) ~= nil
+  and workflow:find('type: boolean', 1, true) ~= nil,
+  'manual dispatch must expose an explicit boolean force_rebuild')
+check(preflight:find('verify_asset_digests', 1, true) ~= nil
+  and preflight:find("--pattern 'openmw-*-Linux-64Bit.tar.gz'", 1, true) == nil
+  and preflight:find('.digest // empty', 1, true) ~= nil
+  and preflight:find('input_fingerprint', 1, true) ~= nil
+  and preflight:find('peeled="$ref^{}"', 1, true) ~= nil
+  and preflight:find('refs/heads/*', 1, true) ~= nil,
+  'release preflight must verify API asset digests, full identity, and peeled annotated tags without downloading archives')
+
+local releaseFixtures, releaseFixtureFailure = process.run('bash', { root .. '/tests/release_preflight.sh' }, {
+  cwd = root, stdout = 'capture', stderr = 'capture',
+})
+
+if not releaseFixtures or not releaseFixtures.success then
+  error('release preflight fixtures failed: ' .. (releaseFixtureFailure or (releaseFixtures and releaseFixtures.stderr or 'unknown')))
+end
+check((releaseFixtures.stdout or ''):find('PASS release preflight fixtures', 1, true) ~= nil,
+  'release preflight fixture matrix must report its covered decisions')
 check(workflow:find('uses: actions/cache/restore@v6', 1, true) ~= nil,
   'hosted compiler cache must use an explicit restore-only action')
 check(workflow:find('uses: actions/cache/save@v6', 1, true) ~= nil,
@@ -141,10 +166,26 @@ end
 util.write(abiFixture .. '/header-only', '\127ELF')
 check(nativeAbi.isElf(abiFixture .. '/header-only'), 'four-byte ELF magic must be recognized')
 util.remove(abiFixture .. '/header-only')
-util.copy(binary, abiFixture .. '/real-forge-elf')
-check(nativeAbi.isElf(abiFixture .. '/real-forge-elf'), 'packed Forge executable must be recognized as ELF')
+local forgeElf = scratch .. '/real-forge-elf'
+util.copy(binary, forgeElf)
+check(nativeAbi.isElf(forgeElf), 'packed Forge executable must be recognized as ELF')
+
+-- The GLIBC_2.34 ceiling applies to packaged OpenMW, not this host-side Forge
+-- executable. Scan a valid static ELF fixture so host Jess GLIBC imports do
+-- not get mistaken for a regression in the OpenMW runtime ABI policy.
+local abiAssembly = abiFixture .. '/fixture.s'
+local abiElf = abiFixture .. '/abi-safe-fixture'
+util.write(abiAssembly, '.global _start\n.section .text\n_start:\n  xor %edi, %edi\n  mov $60, %eax\n  syscall\n')
+local compiledAbiFixture, compileFailure = process.run('cc', {
+  '-nostdlib', '-static', '-Wl,-e,_start', '-x', 'assembler', abiAssembly, '-o', abiElf,
+}, { stdout = 'capture', stderr = 'capture' })
+
+if not compiledAbiFixture or not compiledAbiFixture.success then
+  error('cannot compile ABI-safe ELF fixture: ' .. (compileFailure or (compiledAbiFixture and compiledAbiFixture.stderr or 'unknown')))
+end
+check(nativeAbi.isElf(abiElf), 'ABI scan fixture must be a valid ELF executable')
 nativeAbi.scanAbi(abiFixture)
-check(true, 'ABI scanner must traverse short files and audit a real ELF without crashing')
+check(true, 'ABI scanner must traverse short files and enforce OpenMW ceilings on its ELF fixture')
 
 -- Reproduce the glibc 9.5 false-positive and prove the frozen 9.7 symbol
 -- gate only matches dangerous *defined* exports, not mere version nodes.
@@ -384,6 +425,22 @@ end
 ]])
 local jessBin = process.env('JESS_BIN') or util.checked('which', { 'jess' }):gsub('%s+$', '')
 
+local resolvedSourceDryRun = process.run(jessBin, { 'run', '--trusted', '--package', '.',
+  'tools/uberbranch.jsl', '--dry-run' }, {
+  cwd = root, env = { FORGE_RESOLVED_SOURCE_SHA = string.rep('a', 40) },
+  stdout = 'capture', stderr = 'capture',
+})
+check(resolvedSourceDryRun ~= nil and resolvedSourceDryRun.success
+  and (resolvedSourceDryRun.stdout or ''):find('--ref master', 1, true) ~= nil,
+  'scheduled dry-run must accept and preserve a valid preflight SHA')
+local invalidSourceDryRun = process.run(jessBin, { 'run', '--trusted', '--package', '.',
+  'tools/uberbranch.jsl', '--dry-run' }, {
+  cwd = root, env = { FORGE_RESOLVED_SOURCE_SHA = string.rep('a', 39) .. 'z' },
+  stdout = 'capture', stderr = 'capture',
+})
+check(invalidSourceDryRun ~= nil and not invalidSourceDryRun.success,
+  'scheduled dry-run must reject malformed preflight SHA values')
+
 -- CI invokes Jess by command name, but the standalone packer requires a
 -- real filesystem path for --runtime.  Exercise both the PATH-only fallback
 -- and an invalid, relative JESS_BIN without relying on the host's shell.
@@ -588,6 +645,22 @@ check(fastRecipe:find('dnf install', 1, true) == nil,
   'pinned toolchain must skip costly DNF/Autoconf image provisioning')
 check(util.file(mockLog):find('FORGE_TOOLCHAIN_ID=' .. pinnedImage, 1, true) ~= nil,
   'dependency worker must receive the exact toolchain digest for cache identity')
+local fallbackBaseEnv = table.clone(mockEnv)
+local pinnedFallbackBase = 'almalinux/9-base@sha256:' .. string.rep('b', 64)
+fallbackBaseEnv.FORGE_TOOLCHAIN_BASE_IMAGE = pinnedFallbackBase
+fallbackBaseEnv.FORGE_TOOLCHAIN_ID = 'fallback:' .. string.rep('c', 64) .. ':' .. string.rep('b', 64)
+util.write(mockLog, '')
+local fallbackBaseRun = invoke({ 'deps' }, empty, fallbackBaseEnv)
+check(fallbackBaseRun.success, 'fallback toolchain must accept a digest-pinned base image')
+local fallbackRecipe = util.file(empty .. '/work/forge-assets/Dockerfile')
+check(fallbackRecipe:find('FROM ' .. pinnedFallbackBase .. '\n', 1, true) == 1,
+  'cold fallback builder must use the same base digest as its preflight identity')
+check(fallbackRecipe:find('dnf install', 1, true) ~= nil,
+  'pinned fallback base must retain the full AlmaLinux builder provisioning recipe')
+local invalidBaseEnv = table.clone(mockEnv)
+invalidBaseEnv.FORGE_TOOLCHAIN_BASE_IMAGE = 'almalinux:9\nRUN unexpected'
+check(not invoke({ 'deps' }, empty, invalidBaseEnv).success,
+  'invalid pinned fallback base must not permit Dockerfile injection')
 local invalidEnv = table.clone(mockEnv)
 invalidEnv.FORGE_TOOLCHAIN_IMAGE = 'almalinux:9\nRUN unexpected'
 local invalidImage = invoke({ 'deps' }, empty, invalidEnv)
@@ -752,6 +825,15 @@ for _, extra in {
 end
 
 check(fs.isFile(stage .. '/README.packagecontents.txt'), 'embedded package template missing')
+
+-- Package staging runs against the host to test Forge's filesystem logic. The
+-- real build runs inside AlmaLinux 9, so keep workstation XCB libraries out of
+-- this synthetic release fixture before exercising the archive smoke command.
+for _, name in util.list(stage .. '/lib') do
+  if name:match('^libxcb%-') or name:match('^libxkbcommon') then
+    util.remove(stage .. '/lib/' .. name)
+  end
+end
 
 -- The pair is compressed completely before either existing artifact changes.
 -- A crash after one rename is repaired from a small managed recovery journal.
@@ -1056,12 +1138,25 @@ local releaseMain = releaseDir .. '/' .. releaseName .. '.tar.gz'
 local releaseDebug = releaseDir .. '/' .. releaseName .. '-debug.tar.gz'
 util.copy(valid, releaseMain)
 util.copy(valid, releaseDebug)
+local inputIdentityPath = scratch .. '/release-inputs.json'
+local inputIdentity = util.checked('jq', { '-cnS', '--arg', 'repo', uberConfig.repository,
+  '--arg', 'ref', uberConfig.ref,
+  '{schema:"forge-release-inputs/v1",profile:"upstream",repository:$repo,requested_ref:$ref,target:"linux-X64",toolchain:"fixture",source_sha:"' .. fakeRevision .. '"}' }):gsub('%s+$', '')
+util.write(inputIdentityPath, inputIdentity)
+local inputFingerprint = util.checked('sha256sum', { inputIdentityPath }):match('^([0-9a-f]+)')
+if not inputFingerprint then error('could not fingerprint release identity fixture') end
 local sourceNotes = releaseDir .. '/SOURCE.txt'
-local sourceText = 'OpenMW repository: https://gitlab.com/OpenMW/openmw.git\n'
-  .. 'OpenMW requested ref: master\nOpenMW resolved SHA: ' .. fakeRevision .. '\n'
+local sourceText = 'OpenMW repository: ' .. uberConfig.repository .. '\n'
+  .. 'OpenMW requested ref: ' .. uberConfig.ref .. '\nOpenMW resolved SHA: ' .. fakeRevision .. '\n'
+  .. 'Build input fingerprint: ' .. inputFingerprint .. '\n'
 util.write(sourceNotes, sourceText)
+local provenance = util.checked('jq', { '-cnS', '--arg', 'fingerprint', inputFingerprint,
+  '--arg', 'sha', fakeRevision, '--arg', 'repo', uberConfig.repository, '--arg', 'ref', uberConfig.ref,
+  '--argjson', 'inputs', inputIdentity,
+  '{schema:"forge-qualified-release/v1",qualified:true,input_fingerprint:$fingerprint,source_sha:$sha,repository:$repo,requested_ref:$ref,inputs:$inputs}' })
+util.write(releaseDir .. '/PROVENANCE.json', provenance)
 local checksumLines: { string } = {}
-for _, path in { releaseMain, releaseDebug, sourceNotes } do
+for _, path in { releaseMain, releaseDebug, sourceNotes, releaseDir .. '/PROVENANCE.json' } do
   local hash = util.checked('sha256sum', { path }):match('^([0-9a-f]+)')
   if not hash then error('could not hash release fixture') end
   table.insert(checksumLines, hash .. '  ' .. (fs.fileName(path) or ''))
@@ -1072,6 +1167,9 @@ util.write(releaseDir .. '/SHA256SUMS', table.concat(checksumLines, '\n') .. '\n
 local publisherEnv = table.clone(mockEnv)
 publisherEnv.GITHUB_ACTIONS = 'true'
 publisherEnv.GH_TOKEN = 'fixture-only-not-a-secret'
+publisherEnv.FORGE_INPUT_FINGERPRINT = inputFingerprint
+publisherEnv.FORGE_RESOLVED_SOURCE_SHA = fakeRevision
+publisherEnv.FORGE_INPUTS_JSON = inputIdentity
 local function publishFixture(env: { [string]: string }): dream_process_Result
   local result, failure = process.run(jessBin, { 'run', '--trusted', '--package', '.',
     'tools/uberbranch.jsl', '--publish-artifacts', releaseDir }, {
@@ -1091,6 +1189,26 @@ check(published.success, 'verified release candidate should reach fake gh: ' .. 
 local releaseLog = util.file(mockLog)
 check(releaseLog:find('release\tupload\tdas-uberbranch', 1, true) ~= nil,
   'publisher must upload the validated artifacts to das-uberbranch')
+
+local mismatchedIdentity = table.clone(publisherEnv)
+mismatchedIdentity.FORGE_INPUT_FINGERPRINT = string.rep('b', 64)
+util.write(mockLog, '')
+local rejectedIdentity = publishFixture(mismatchedIdentity)
+check(not rejectedIdentity.success
+  and (rejectedIdentity.stderr or ''):find('human-readable release provenance does not match the full input fingerprint', 1, true) ~= nil,
+  'publisher must reject a candidate whose full fingerprint differs from preflight')
+check(util.file(mockLog) == '', 'identity mismatch must be rejected before invoking gh')
+
+local provenancePath = releaseDir .. '/PROVENANCE.json'
+local validProvenance = util.file(provenancePath)
+util.write(provenancePath, '{"schema":"forge-qualified-release/v1","qualified":false}\n')
+util.write(mockLog, '')
+local rejectedProvenance = publishFixture(publisherEnv)
+check(not rejectedProvenance.success
+  and (rejectedProvenance.stderr or ''):find('qualified release JSON does not match preflight identity', 1, true) ~= nil,
+  'publisher must reject invalid machine-readable release provenance')
+check(util.file(mockLog) == '', 'invalid provenance must be rejected before invoking gh')
+util.write(provenancePath, validProvenance)
 
 local updatingEnv = table.clone(publisherEnv)
 updatingEnv.FORGE_MOCK_GH_ASSETS = 'openmw-0.50.0-Linux-64Bit.tar.gz\nopenmw-0.50.0-Linux-64Bit-debug.tar.gz\nKEEP.bin'

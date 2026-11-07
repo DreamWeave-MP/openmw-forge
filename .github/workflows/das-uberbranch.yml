@@ -5,6 +5,12 @@ on:
   schedule:
     - cron: '23 */4 * * *'
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: Rebuild even when the published release is fully qualified
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -14,10 +20,59 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  preflight:
+    name: Resolve source and check qualified release identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      should_build: ${{ steps.preflight.outputs.should_build }}
+      reason: ${{ steps.preflight.outputs.reason }}
+      source_sha: ${{ steps.preflight.outputs.source_sha }}
+      input_fingerprint: ${{ steps.preflight.outputs.input_fingerprint }}
+      inputs_json: ${{ steps.preflight.outputs.inputs_json }}
+      toolchain_id: ${{ steps.toolchain.outputs.toolchain_id }}
+      repository: ${{ steps.config.outputs.repository }}
+      requested_ref: ${{ steps.config.outputs.ref }}
+      release_tag: ${{ steps.config.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-jess
+        with:
+          version: ${{ vars.JESS_RELEASE_TAG }}
+      - name: Read configured release profile
+        id: config
+        run: jess run --trusted --package . tools/release_preflight_config.jsl
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Resolve immutable builder identity
+        id: toolchain
+        run: jess run --trusted --package . tools/toolchain_image.jsl --preflight
+      - name: Resolve source and inspect published qualification
+        id: preflight
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OPENMW_REPOSITORY: ${{ steps.config.outputs.repository }}
+          OPENMW_REF: ${{ steps.config.outputs.ref }}
+          OPENMW_RELEASE_TAG: ${{ steps.config.outputs.release_tag }}
+          FORGE_TOOLCHAIN_ID: ${{ steps.toolchain.outputs.toolchain_id }}
+          RUNNER_ARCH: ${{ runner.arch }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || false }}
+        run: bash tools/release_preflight.sh
+
   build:
     name: Build OpenMW on GitHub-hosted Ubuntu (AlmaLinux 9 containers)
     runs-on: ubuntu-24.04
     timeout-minutes: 330
+    needs: preflight
+    if: needs.preflight.outputs.should_build == 'true'
     permissions:
       contents: read
       packages: read
@@ -36,6 +91,11 @@ jobs:
       - name: Resolve immutable, published AlmaLinux 9 builder (local fallback on first run)
         id: toolchain
         run: jess run --trusted --package . tools/toolchain_image.jsl
+      - name: Verify preflight toolchain identity
+        env:
+          EXPECTED_TOOLCHAIN_ID: ${{ needs.preflight.outputs.toolchain_id }}
+          ACTUAL_TOOLCHAIN_ID: ${{ steps.toolchain.outputs.toolchain_id }}
+        run: test "$EXPECTED_TOOLCHAIN_ID" = "$ACTUAL_TOOLCHAIN_ID"
       - name: Compute daily cache generation
         id: cache-key
         run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
@@ -89,6 +149,10 @@ jobs:
       - name: Build or verify pinned AlmaLinux 9 dependency SDK
         env:
           FORGE_BIN: ${{ github.workspace }}/build/openmw-forge-linux-x64
+          FORGE_RESOLVED_SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          FORGE_INPUT_FINGERPRINT: ${{ needs.preflight.outputs.input_fingerprint }}
+          FORGE_INPUTS_JSON: ${{ needs.preflight.outputs.inputs_json }}
+          FORGE_REQUESTED_REF: ${{ needs.preflight.outputs.requested_ref }}
         run: jess run --trusted --package . tools/uberbranch.jsl --prepare-deps
       - name: Preserve upstream vcpkg failure diagnostics
         if: failure()
@@ -135,6 +199,10 @@ jobs:
         id: openmw-build
         env:
           FORGE_BIN: ${{ github.workspace }}/build/openmw-forge-linux-x64
+          FORGE_RESOLVED_SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          FORGE_INPUT_FINGERPRINT: ${{ needs.preflight.outputs.input_fingerprint }}
+          FORGE_INPUTS_JSON: ${{ needs.preflight.outputs.inputs_json }}
+          FORGE_REQUESTED_REF: ${{ needs.preflight.outputs.requested_ref }}
         run: jess run --trusted --package . tools/uberbranch.jsl --build-only
       # Unlike actions/cache's automatic post-job save, this executes after a
       # packaging or distro smoke failure. Preserve successful C/C++ compiles
@@ -155,7 +223,8 @@ jobs:
 
   publish:
     name: Verify transferred files and publish das-uberbranch
-    needs: build
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should_build == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -174,4 +243,7 @@ jobs:
       - name: Verify SHA-256 and provenance; update GitHub prerelease
         env:
           GH_TOKEN: ${{ github.token }}
+          FORGE_INPUT_FINGERPRINT: ${{ needs.preflight.outputs.input_fingerprint }}
+          FORGE_RESOLVED_SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          FORGE_INPUTS_JSON: ${{ needs.preflight.outputs.inputs_json }}
         run: jess run --trusted --package . tools/uberbranch.jsl --publish-artifacts "$PWD/dist"

@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+scratch=$(mktemp -d)
+trap 'if [[ -f "$scratch/uberbranch.jsl" ]]; then cp "$scratch/uberbranch.jsl" "$root/src/uberbranch.jsl"; fi; rm -rf "$scratch"' EXIT
+mkdir -p "$scratch/bin" "$scratch/assets"
+real_git=$(command -v git)
+cat > "$scratch/bin/git" <<'MOCK'
+#!/usr/bin/env bash
+if [[ "$1" == ls-remote ]]; then
+  if [[ "${MOCK_GIT_FAIL:-false}" == true ]]; then exit 2; fi
+  sha=${MOCK_SOURCE_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
+  peeled=${MOCK_PEELED_SHA:-cccccccccccccccccccccccccccccccccccccccc}
+  mode=${MOCK_GIT_MODE:-branch}
+  shift 2
+  for query in "$@"; do
+    case "$query" in
+      refs/heads/*)
+        if [[ "$mode" == branch || "$mode" == collision ]]; then printf '%s\t%s\n' "$sha" "$query"; fi
+        ;;
+      refs/tags/*\^\{\})
+        if [[ "$mode" == tag || "$mode" == collision ]]; then printf '%s\t%s\n' "$peeled" "$query"; fi
+        ;;
+      refs/tags/*)
+        if [[ "$mode" == tag || "$mode" == collision ]]; then
+          printf '%s\t%s\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb "$query"
+        fi
+        ;;
+    esac
+  done
+else
+  exec "$REAL_GIT" "$@"
+fi
+MOCK
+cat > "$scratch/bin/gh" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${MOCK_GH_MODE:-missing}" == api-fail ]]; then exit 1; fi
+if [[ "$1" == release && "$2" == view ]]; then
+  if [[ "${MOCK_GH_MODE:-missing}" == missing ]]; then echo 'HTTP 404: Not Found' >&2; exit 1; fi
+  printf '%s\n' "$MOCK_RELEASE_JSON"
+elif [[ "$1" == release && "$2" == download ]]; then
+  patterns=()
+  while (($#)); do
+    if [[ "$1" == --dir ]]; then target="$2"; shift 2
+    elif [[ "$1" == --pattern ]]; then patterns+=("$2"); shift 2
+    else shift; fi
+  done
+  printf '%s\n' "${patterns[*]}" >> "$MOCK_DOWNLOAD_LOG"
+  for pattern in "${patterns[@]}"; do cp "$MOCK_ASSET_DIR/$pattern" "$target/"; done
+else exit 3; fi
+MOCK
+chmod +x "$scratch/bin/git" "$scratch/bin/gh"
+
+export PATH="$scratch/bin:$PATH" REAL_GIT="$real_git"
+export GITHUB_OUTPUT="$scratch/output" GITHUB_STEP_SUMMARY="$scratch/summary" GITHUB_TOKEN=fixture
+export OPENMW_REPOSITORY=https://example.invalid/openmw.git OPENMW_REF=master OPENMW_RELEASE_TAG=das-uberbranch
+export FORGE_TOOLCHAIN_ID=ghcr.io/example/forge-builder@sha256:$(printf 'b%.0s' {1..64}) RUNNER_ARCH=X64
+export MOCK_RELEASE_JSON='{}' MOCK_DOWNLOAD_LOG="$scratch/downloads.log"
+
+run_preflight() { : > "$GITHUB_OUTPUT"; : > "$GITHUB_STEP_SUMMARY"; bash "$root/tools/release_preflight.sh"; }
+output() { sed -n "s/^$1=//p" "$GITHUB_OUTPUT" | tail -n1; }
+
+refresh_release_json() {
+  local asset_list='[]' path name digest
+  for path in "$scratch/assets"/*; do
+    [[ -f "$path" ]] || continue
+    name=${path##*/}
+    digest=$(sha256sum "$path" | cut -d' ' -f1)
+    asset_list=$(jq -cn --argjson assets "$asset_list" --arg name "$name" --arg digest "$digest" \
+      '$assets + [{name:$name,digest:("sha256:" + $digest)}]')
+  done
+  MOCK_RELEASE_JSON=$(jq -cn --argjson assets "$asset_list" '{isPrerelease:true,assets:$assets}')
+  export MOCK_RELEASE_JSON
+}
+
+run_preflight
+[[ "$(output should_build)" == true && "$(output reason)" == release-missing ]] || exit 1
+MOCK_GIT_MODE=branch OPENMW_REF=refs/heads/master run_preflight
+[[ "$(output source_sha)" == aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ]] || exit 1
+MOCK_GIT_MODE=tag OPENMW_REF=refs/tags/v1.0 run_preflight
+[[ "$(output source_sha)" == cccccccccccccccccccccccccccccccccccccccc ]] || exit 1
+if MOCK_GIT_MODE=collision OPENMW_REF=master run_preflight >/dev/null 2>&1; then
+  echo 'unqualified branch/tag collision unexpectedly passed' >&2; exit 1
+fi
+if MOCK_GIT_MODE=tag OPENMW_REF=refs/tags/v1.0 run_preflight >/dev/null 2>&1; then :; else
+  echo 'qualified annotated tag unexpectedly failed' >&2; exit 1
+fi
+run_preflight
+fp=$(output input_fingerprint); sha=$(output source_sha); inputs=$(output inputs_json)
+mkdir -p "$scratch/assets"
+printf 'archive payload\n' > "$scratch/assets/openmw-0.53.0-g${sha:0:12}-Linux-64Bit.tar.gz"
+printf 'debug payload\n' > "$scratch/assets/openmw-0.53.0-g${sha:0:12}-Linux-64Bit-debug.tar.gz"
+printf 'OpenMW repository: %s\nOpenMW requested ref: %s\nOpenMW resolved SHA: %s\nBuild input fingerprint: %s\n' \
+  "$OPENMW_REPOSITORY" "$OPENMW_REF" "$sha" "$fp" > "$scratch/assets/SOURCE.txt"
+jq -cnS --arg fp "$fp" --arg sha "$sha" --arg repo "$OPENMW_REPOSITORY" --arg ref "$OPENMW_REF" \
+  --argjson inputs "$inputs" \
+  '{schema:"forge-qualified-release/v1",qualified:true,input_fingerprint:$fp,source_sha:$sha,repository:$repo,requested_ref:$ref,inputs:$inputs}' \
+  > "$scratch/assets/PROVENANCE.json"
+(cd "$scratch/assets" && sha256sum openmw-* SOURCE.txt PROVENANCE.json > SHA256SUMS)
+export MOCK_ASSET_DIR="$scratch/assets" MOCK_GH_MODE=present
+refresh_release_json
+run_preflight
+[[ "$(output should_build)" == false && "$(output reason)" == skipped-qualified ]] || exit 1
+grep -qx 'SHA256SUMS SOURCE.txt PROVENANCE.json' "$MOCK_DOWNLOAD_LOG" || exit 1
+if grep -q 'openmw-.*tar.gz' "$MOCK_DOWNLOAD_LOG"; then
+  echo 'preflight downloaded a large OpenMW archive' >&2; exit 1
+fi
+
+cp "$scratch/assets/PROVENANCE.json" "$scratch/provenance.json"
+jq '.qualified = false' "$scratch/assets/PROVENANCE.json" > "$scratch/provenance.invalid"
+mv "$scratch/provenance.invalid" "$scratch/assets/PROVENANCE.json"
+(cd "$scratch/assets" && sha256sum openmw-* SOURCE.txt PROVENANCE.json > SHA256SUMS)
+refresh_release_json
+run_preflight
+[[ "$(output should_build)" == true && "$(output reason)" == invalid-or-mismatched-provenance ]] || exit 1
+mv "$scratch/provenance.json" "$scratch/assets/PROVENANCE.json"
+(cd "$scratch/assets" && sha256sum openmw-* SOURCE.txt PROVENANCE.json > SHA256SUMS)
+refresh_release_json
+
+cp "$scratch/assets/SHA256SUMS" "$scratch/SHA256SUMS"
+rm "$scratch/assets/SHA256SUMS"
+refresh_release_json
+run_preflight
+[[ "$(output should_build)" == true && "$(output reason)" == incomplete-release-assets ]] || exit 1
+mv "$scratch/SHA256SUMS" "$scratch/assets/SHA256SUMS"
+refresh_release_json
+
+cp "$root/src/uberbranch.jsl" "$scratch/uberbranch.jsl"
+printf '\n-- fixture recipe change\n' >> "$root/src/uberbranch.jsl"
+run_preflight
+mv "$scratch/uberbranch.jsl" "$root/src/uberbranch.jsl"
+[[ "$(output should_build)" == true && "$(output reason)" == invalid-or-mismatched-provenance ]] || exit 1
+
+FORCE_REBUILD=true run_preflight
+[[ "$(output should_build)" == true && "$(output reason)" == manual-force-rebuild ]] || exit 1
+unset FORCE_REBUILD
+
+MOCK_SOURCE_SHA=cccccccccccccccccccccccccccccccccccccccc run_preflight
+[[ "$(output should_build)" == true ]] || exit 1
+unset MOCK_SOURCE_SHA
+
+FORGE_TOOLCHAIN_ID=ghcr.io/example/forge-builder@sha256:$(printf 'd%.0s' {1..64}) run_preflight
+[[ "$(output should_build)" == true && "$(output reason)" == invalid-or-mismatched-provenance ]] || exit 1
+
+printf 'corrupt\n' >> "$scratch/assets/SOURCE.txt"
+refresh_release_json
+MOCK_GH_MODE=present run_preflight
+[[ "$(output should_build)" == true && "$(output reason)" == missing-or-invalid-checksum-payload ]] || exit 1
+
+if MOCK_GH_MODE=api-fail run_preflight >/dev/null 2>&1; then
+  echo 'release API failure unexpectedly passed preflight' >&2; exit 1
+fi
+[[ "$(output should_build)" == true && "$(output reason)" == release-api-unavailable ]] || exit 1
+
+if MOCK_GIT_FAIL=true MOCK_GH_MODE=present run_preflight >/dev/null 2>&1; then
+  echo 'source API failure unexpectedly passed preflight' >&2; exit 1
+fi
+
+cat > "$scratch/bin/docker" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$MOCK_DOCKER_LOG"
+if [[ "$1 $2 $3" == 'manifest inspect --verbose' ]]; then
+  if [[ "${MOCK_IMAGE_MISSING:-false}" == true && "$4" == ghcr.io/* ]]; then exit 1; fi
+elif [[ "$1" == pull && ( "$2" == ghcr.io/*@sha256:* || "$2" == almalinux/9-base@sha256:* ) ]]; then exit 0
+else echo 'unexpected Docker command during toolchain resolution' >&2; exit 9; fi
+if [[ "$1" == pull ]]; then exit 0; fi
+case "${MOCK_MANIFEST_SHAPE:-descriptor}" in
+  index)
+    printf '[{"Descriptor":{"digest":"sha256:%s","platform":{"os":"linux","architecture":"amd64"}}},{"Descriptor":{"digest":"sha256:%s","platform":{"os":"linux","architecture":"arm64"}}}]\n' \
+      "$(printf 'a%.0s' {1..64})" "$(printf 'b%.0s' {1..64})"
+    ;;
+  digest)
+    printf '{"Digest":"sha256:%s"}\n' "$(printf 'c%.0s' {1..64})"
+    ;;
+  descriptor)
+    printf '{"Descriptor":{"digest":"sha256:%s"}}\n' "$(printf 'd%.0s' {1..64})"
+    ;;
+  *) exit 8 ;;
+esac
+MOCK
+chmod +x "$scratch/bin/docker"
+export GITHUB_REPOSITORY=DreamWeave-MP/openmw-forge
+export GITHUB_OUTPUT="$scratch/toolchain-output" GITHUB_ENV="$scratch/toolchain-env"
+export MOCK_DOCKER_LOG="$scratch/docker.log"
+run_toolchain_preflight() {
+  : > "$GITHUB_OUTPUT"; : > "$GITHUB_ENV"
+  (cd "$root" && jess run --trusted --package . tools/toolchain_image.jsl --preflight >/dev/null)
+}
+MOCK_MANIFEST_SHAPE=index run_toolchain_preflight
+grep -q "^toolchain_id=ghcr.io/dreamweave-mp/openmw-forge-builder@sha256:$(printf 'a%.0s' {1..64})$" "$GITHUB_OUTPUT" || exit 1
+MOCK_MANIFEST_SHAPE=digest run_toolchain_preflight
+grep -q "^toolchain_id=ghcr.io/dreamweave-mp/openmw-forge-builder@sha256:$(printf 'c%.0s' {1..64})$" "$GITHUB_OUTPUT" || exit 1
+MOCK_MANIFEST_SHAPE=descriptor run_toolchain_preflight
+grep -q '^toolchain_id=ghcr.io/dreamweave-mp/openmw-forge-builder@sha256:' "$GITHUB_OUTPUT" || exit 1
+if grep -Eq '(^| )(pull|build)( |$)' "$MOCK_DOCKER_LOG"; then
+  echo 'toolchain identity preflight downloaded or built an image' >&2; exit 1
+fi
+: > "$MOCK_DOCKER_LOG"
+: > "$GITHUB_OUTPUT"; : > "$GITHUB_ENV"
+export MOCK_MANIFEST_SHAPE=index
+(cd "$root" && jess run --trusted --package . tools/toolchain_image.jsl >/dev/null)
+expected_pinned="ghcr.io/dreamweave-mp/openmw-forge-builder@sha256:$(printf 'a%.0s' {1..64})"
+grep -qx "toolchain_id=$expected_pinned" "$GITHUB_OUTPUT" || exit 1
+grep -qx "FORGE_TOOLCHAIN_IMAGE=$expected_pinned" "$GITHUB_ENV" || exit 1
+grep -qx "pull $expected_pinned" "$MOCK_DOCKER_LOG" || exit 1
+export MOCK_IMAGE_MISSING=true MOCK_MANIFEST_SHAPE=descriptor
+run_toolchain_preflight
+fallback_preflight_id=$(sed -n 's/^toolchain_id=//p' "$GITHUB_OUTPUT")
+[[ "$fallback_preflight_id" == fallback:* ]] || exit 1
+: > "$MOCK_DOCKER_LOG"; : > "$GITHUB_OUTPUT"; : > "$GITHUB_ENV"
+(cd "$root" && jess run --trusted --package . tools/toolchain_image.jsl >/dev/null)
+fallback_actual_id=$(sed -n 's/^toolchain_id=//p' "$GITHUB_OUTPUT")
+[[ "$fallback_actual_id" == "$fallback_preflight_id" ]] || exit 1
+grep -q '^FORGE_TOOLCHAIN_BASE_IMAGE=almalinux/9-base@sha256:' "$GITHUB_ENV" || exit 1
+unset MOCK_IMAGE_MISSING MOCK_MANIFEST_SHAPE
+echo 'PASS release preflight fixtures: qualified refs, branch/tag collision, digest-only asset verification, source/profile/recipe/toolchain changes, force, API failures, OCI index and single-manifest toolchain identities'
