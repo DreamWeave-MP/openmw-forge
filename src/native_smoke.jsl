@@ -153,15 +153,15 @@ end
 -- through QtNetwork. Keep explicit runtime packages in minimal smoke images:
 -- dependency-closure preflight below catches further missing SONAMEs at once.
 local DistroImages: { [string]: { string } } = {
-  ['almalinux-9'] = { 'almalinux:9', 'dnf install -y mesa-libGL libglvnd-egl glib2 krb5-libs' },
-  ['debian-12'] = { 'debian:12', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0 libgssapi-krb5-2' },
-  ['debian-13'] = { 'debian:trixie', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0t64 libgssapi-krb5-2' },
-  ['ubuntu-22.04'] = { 'ubuntu:22.04', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0 libgssapi-krb5-2' },
-  ['ubuntu-24.04'] = { 'ubuntu:24.04', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0t64 libgssapi-krb5-2' },
-  ['fedora-latest'] = { 'fedora:latest', 'dnf install -y mesa-libGL libglvnd-egl glib2 krb5-libs' },
-  ['archlinux'] = { 'archlinux:latest', 'pacman -Sy --noconfirm --needed libglvnd glib2 krb5' },
-  ['opensuse-tumbleweed'] = { 'opensuse/tumbleweed', 'zypper --non-interactive install Mesa-libGL1 Mesa-libEGL1 libglib-2_0-0 krb5' },
-  ['voidlinux'] = { 'ghcr.io/void-linux/void-glibc-full:latest', 'xbps-install -Sy libglvnd glib mit-krb5-libs' },
+  ['almalinux-9'] = { 'almalinux:9', 'dnf install -y mesa-libGL libglvnd-egl glib2 krb5-libs libwayland-cursor libwayland-egl' },
+  ['debian-12'] = { 'debian:12', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1' },
+  ['debian-13'] = { 'debian:trixie', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0t64 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1' },
+  ['ubuntu-22.04'] = { 'ubuntu:22.04', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1' },
+  ['ubuntu-24.04'] = { 'ubuntu:24.04', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0t64 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1' },
+  ['fedora-latest'] = { 'fedora:latest', 'dnf install -y mesa-libGL libglvnd-egl glib2 krb5-libs libwayland-cursor libwayland-egl' },
+  ['archlinux'] = { 'archlinux:latest', 'pacman -Sy --noconfirm --needed libglvnd glib2 krb5 wayland' },
+  ['opensuse-tumbleweed'] = { 'opensuse/tumbleweed', 'zypper --non-interactive install Mesa-libGL1 Mesa-libEGL1 libglib-2_0-0 krb5 libwayland-cursor0 libwayland-egl1' },
+  ['voidlinux'] = { 'ghcr.io/void-linux/void-glibc-full:latest', 'xbps-install -Sy libglvnd glib mit-krb5-libs wayland' },
 }
 
 local function imageDockerfile(tag: string): string
@@ -197,6 +197,7 @@ end
 local function closureProblems(stdout: string, stderr: string, code: number?): { string }
   local problems: { string } = {}
   local current = '(unknown ELF)'
+  local seen: { [string]: boolean } = {}
   for line in (stdout .. '\n' .. stderr):gmatch('[^\r\n]+') do
     local header = line:match('^(/pkg/[^:]+):%s*$')
     if header then current = header end
@@ -207,7 +208,11 @@ local function closureProblems(stdout: string, stderr: string, code: number?): {
       or lower:find('symbol lookup error', 1, true)
       or lower:find('undefined symbol', 1, true)
       or lower:find('inconsistency detected', 1, true) then
-      table.insert(problems, current .. ': ' .. line:gsub('^%s+', ''))
+      local message = current .. ': ' .. line:gsub('^%s+', '')
+      if not seen[message] then
+        seen[message] = true
+        table.insert(problems, message)
+      end
     end
   end
 
@@ -216,6 +221,39 @@ local function closureProblems(stdout: string, stderr: string, code: number?): {
     table.insert(problems, `ldd failed (exit {tostring(code)}): {details}`)
   end
   return problems
+end
+
+-- ldd repeats the same missing SONAME for every consumer. Group by distro
+-- and SONAME while preserving one affected ELF for diagnosis. Non-library
+-- failures (such as GLIBC symbol-version errors) remain verbatim.
+local function summarizeClosureFailures(missing: { string }): { string }
+  local groups: { [string]: { count: number, example: string } } = {}
+  local order: { string }, unusual: { string } = {}, {}
+  local seenOther: { [string]: boolean } = {}
+  for _, diagnostic in missing do
+    local distro, path, soname = diagnostic:match('^([^:]+): (/pkg/[^:]+): ([^%s]+) => not found')
+    if distro and path and soname then
+      local key = distro .. ': ' .. soname
+      if not groups[key] then
+        groups[key] = { count = 0, example = path }
+        table.insert(order, key)
+      end
+      groups[key].count += 1
+    elseif not seenOther[diagnostic] then
+      seenOther[diagnostic] = true
+      table.insert(unusual, diagnostic)
+    end
+  end
+
+  table.sort(order)
+  local output: { string } = {}
+  for _, key in order do
+    local group = groups[key]
+    table.insert(output, `{key} => not found ({group.count} affected ELF reports; example {group.example})`)
+  end
+
+  for _, diagnostic in unusual do table.insert(output, diagnostic) end
+  return output
 end
 
 local function closureCommand(imageTag: string, volume: string,
@@ -386,8 +424,9 @@ local function multiSmoke(options: Options, staging: string)
   end
 
   if #missing > 0 then
-    error(`runtime dependency closure failed ({#missing} diagnostics):\n`
-      .. table.concat(missing, '\n'))
+    local summary = summarizeClosureFailures(missing)
+    error(`runtime dependency closure failed ({#missing} raw diagnostics, {#summary} grouped diagnostics):\n`
+      .. table.concat(summary, '\n'))
   end
 
   for _, tag in selected do
@@ -469,4 +508,5 @@ return table.freeze {
   runDistroCommand = runDistroCommand, smokeInvocationArgs = smokeInvocationArgs,
   closureEntries = closureEntries, closureProblems = closureProblems,
   closureCommand = closureCommand, auditDistroClosure = auditDistroClosure,
+  summarizeClosureFailures = summarizeClosureFailures,
 }

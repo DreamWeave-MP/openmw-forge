@@ -69,6 +69,34 @@ local function splitDebug(stage: string, debugRoot: string)
   end
 end
 
+-- Ship only Qt runtime plugin families relevant to OpenMW. The aqt SDK also
+-- contains optional printing, GTK theme and external database backends; those
+-- are not automatically part of an OpenMW deployment, and several require
+-- proprietary or unrelated client libraries (for example Mimer SQL).
+-- Keep XCB, native Wayland and headless platform plugins, along with runtime
+-- image, input, TLS and graphics integrations. Every shipped ELF is audited.
+local QtRuntimePluginTypes = {
+  'platforms', 'egldeviceintegrations', 'xcbglintegrations',
+  'wayland-decoration-client', 'wayland-graphics-integration-client',
+  'wayland-shell-integration', 'imageformats', 'iconengines', 'styles',
+  'generic', 'platforminputcontexts', 'networkinformation', 'tls',
+}
+
+local function stageQtPlugins(source: string, target: string)
+  for _, kind in QtRuntimePluginTypes do
+    local directory = source .. '/' .. kind
+    if fs.isDir(directory) then util.tree(directory, target .. '/' .. kind) end
+  end
+
+  -- The embedded Qt installation may contain SQL drivers for proprietary
+  -- servers. SQLite is the only database driver we intentionally distribute.
+  local sqlite = source .. '/sqldrivers/libqsqlite.so'
+  if fs.isFile(sqlite) then
+    util.mkdir(target .. '/sqldrivers')
+    util.copy(sqlite, target .. '/sqldrivers/libqsqlite.so')
+  end
+end
+
 local function package(options: Options)
   local version = binaryVersion(options.source)
   local provenance = ''
@@ -114,8 +142,7 @@ local function package(options: Options)
     return name:match('^libQt6.+%.so') ~= nil or name:match('^libicu.+%.so') ~= nil
   end)
 
-  util.tree(qtRoot .. '/plugins', stage .. '/plugins')
-  util.remove(stage .. '/plugins/designer')
+  stageQtPlugins(qtRoot .. '/plugins', stage .. '/plugins')
   local system = if fs.isDir('/usr/lib64') then '/usr/lib64' elseif fs.isDir('/usr/lib/x86_64-linux-gnu') then '/usr/lib/x86_64-linux-gnu' else '/usr/lib'
   addLibraries(system, stage .. '/lib', function(name: string): boolean
     return name:match('^libxcb%-.*%.so') ~= nil or name:match('^libxkbcommon.*%.so') ~= nil
