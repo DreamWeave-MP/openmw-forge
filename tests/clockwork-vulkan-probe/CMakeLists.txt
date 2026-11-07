@@ -8,14 +8,14 @@ if (NOT EXISTS "${CLOCKWORK_SOURCE_DIR}/cmake/OpenMWVulkan.cmake")
     message(FATAL_ERROR "CLOCKWORK_SOURCE_DIR must name the pinned Clockwork checkout")
 endif()
 execute_process(
-    COMMAND git -C "${CLOCKWORK_SOURCE_DIR}" rev-parse HEAD
+    COMMAND git -c "safe.directory=${CLOCKWORK_SOURCE_DIR}" -C "${CLOCKWORK_SOURCE_DIR}" rev-parse HEAD
     RESULT_VARIABLE revision_result
     OUTPUT_VARIABLE actual_revision
     OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 if (NOT revision_result EQUAL 0 OR NOT "${actual_revision}" STREQUAL "${CLOCKWORK_EXPECTED_REVISION}")
     message(FATAL_ERROR
-        "Clockwork checkout must be ${CLOCKWORK_EXPECTED_REVISION}; got '${actual_revision}'")
+        "Clockwork checkout must resolve to ${CLOCKWORK_EXPECTED_REVISION}; got '${actual_revision}'")
 endif()
 
 set(OPENMW_USE_VULKAN ON CACHE BOOL "" FORCE)
