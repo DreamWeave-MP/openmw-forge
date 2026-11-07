@@ -83,6 +83,8 @@ resolve_source() {
 verify_asset_digests() {
   local release_json="$1" directory="$2" marker_digest marker_actual
   local source_sha provenance_sha sha filename digest count main_name debug_name
+  local expected_count=4
+  if [[ "$OPENMW_PROFILE" == clockwork ]]; then expected_count=5; fi
   local entry_count=0
   local -A checksums=()
   local manifest="$directory/SHA256SUMS"
@@ -108,18 +110,25 @@ verify_asset_digests() {
     ((entry_count += 1))
   done < "$manifest"
 
-  [[ "$entry_count" -eq 4 ]] || return 1
+  [[ "$entry_count" -eq "$expected_count" ]] || return 1
   [[ -n "${checksums[$main_name]:-}" && -n "${checksums[$debug_name]:-}" ]] || return 1
   source_sha=${checksums[SOURCE.txt]:-}
   provenance_sha=${checksums[PROVENANCE.json]:-}
   [[ -n "$source_sha" && -n "$provenance_sha" ]] || return 1
   [[ "$(sha256sum "$directory/SOURCE.txt" | cut -d' ' -f1)" == "$source_sha" ]] || return 1
   [[ "$(sha256sum "$directory/PROVENANCE.json" | cut -d' ' -f1)" == "$provenance_sha" ]] || return 1
+  if [[ "$OPENMW_PROFILE" == clockwork ]]; then
+    [[ -s "$directory/VULKAN-QUALIFICATION.txt" ]] || return 1
+    [[ -n "${checksums[VULKAN-QUALIFICATION.txt]:-}" ]] || return 1
+    [[ "$(sha256sum "$directory/VULKAN-QUALIFICATION.txt" | cut -d' ' -f1)" == "${checksums[VULKAN-QUALIFICATION.txt]}" ]] || return 1
+  fi
   return 0
 }
 
 source_sha=$(resolve_source "$OPENMW_REPOSITORY" "$OPENMW_REF")
-recipe_hash=$(git ls-files -z .github/workflows/das-uberbranch.yml .github/actions/setup-jess/action.yml src tools vendor/builder vendor/deps jess.toml \
+recipe_files=(.github/workflows/das-uberbranch.yml .github/actions/setup-jess/action.yml src tools vendor/builder vendor/deps jess.toml)
+if [[ "$OPENMW_PROFILE" == clockwork ]]; then recipe_files+=(.github/workflows/das-uberbranch-clockwork.yml); fi
+recipe_hash=$(git ls-files -z "${recipe_files[@]}" \
   | sort -z | xargs -0 -r sha256sum | sha256sum | cut -d' ' -f1)
 inputs=$(jq -cnS \
   --arg schema 'forge-release-inputs/v1' \
@@ -158,16 +167,26 @@ elif release_json=$(GH_TOKEN="$GITHUB_TOKEN" gh release view "$OPENMW_RELEASE_TA
   names=$(jq -r '.assets[].name' <<<"$release_json")
   main_count=$(grep -Ec '^openmw-.*-Linux-64Bit\.tar\.gz$' <<<"$names" || true)
   debug_count=$(grep -Ec '^openmw-.*-Linux-64Bit-debug\.tar\.gz$' <<<"$names" || true)
+  qualification_count=$(grep -xc 'VULKAN-QUALIFICATION.txt' <<<"$names" || true)
+  qualification_valid=true
+  if [[ "$OPENMW_PROFILE" == clockwork ]]; then
+    [[ "$qualification_count" -eq 1 ]] || qualification_valid=false
+  elif [[ "$qualification_count" -ne 0 ]]; then qualification_valid=false; fi
   if [[ "$(jq -r '.isPrerelease' <<<"$release_json")" == true ]] \
     && grep -qx 'SHA256SUMS' <<<"$names" && grep -qx 'SOURCE.txt' <<<"$names" \
     && grep -qx 'PROVENANCE.json' <<<"$names" \
-    && [[ "$main_count" -eq 1 && "$debug_count" -eq 1 ]] \
+    && [[ "$main_count" -eq 1 && "$debug_count" -eq 1 ]] && [[ "$qualification_valid" == true ]] \
     && grep -Fq -- "-g${source_sha:0:12}-Linux-64Bit.tar.gz" <<<"$names" \
     && grep -Fq -- "-g${source_sha:0:12}-Linux-64Bit-debug.tar.gz" <<<"$names"; then
-    if GH_TOKEN="$GITHUB_TOKEN" gh release download "$OPENMW_RELEASE_TAG" \
-      --pattern SHA256SUMS --pattern SOURCE.txt --pattern PROVENANCE.json \
+    download_patterns=(--pattern SHA256SUMS --pattern SOURCE.txt --pattern PROVENANCE.json)
+    expected_downloads=3
+    if [[ "$OPENMW_PROFILE" == clockwork ]]; then
+      download_patterns+=(--pattern VULKAN-QUALIFICATION.txt)
+      expected_downloads=4
+    fi
+    if GH_TOKEN="$GITHUB_TOKEN" gh release download "$OPENMW_RELEASE_TAG" "${download_patterns[@]}" \
       --dir "$temp" >/dev/null 2>&1 \
-      && [[ "$(find "$temp" -maxdepth 1 -type f | wc -l)" -eq 3 ]] \
+      && [[ "$(find "$temp" -maxdepth 1 -type f | wc -l)" -eq "$expected_downloads" ]] \
       && verify_asset_digests "$release_json" "$temp"; then
       provenance="$temp/PROVENANCE.json"
       source="$temp/SOURCE.txt"
@@ -181,7 +200,12 @@ elif release_json=$(GH_TOKEN="$GITHUB_TOKEN" gh release view "$OPENMW_RELEASE_TA
         && grep -Fqx "OpenMW repository: $OPENMW_REPOSITORY" "$source" \
         && grep -Fqx "OpenMW requested ref: $OPENMW_REF" "$source" \
         && grep -Fqx "OpenMW resolved SHA: $source_sha" "$source" \
-        && grep -Fqx "Build input fingerprint: $fingerprint" "$source"; then
+        && grep -Fqx "Build input fingerprint: $fingerprint" "$source" \
+        && { [[ "$OPENMW_PROFILE" != clockwork ]] \
+          || { grep -Fqx 'Profile: clockwork' "$temp/VULKAN-QUALIFICATION.txt" \
+            && grep -Fqx 'Renderer: vulkan 1.3' "$temp/VULKAN-QUALIFICATION.txt" \
+            && grep -Fqx "Clockwork source SHA: $source_sha" "$temp/VULKAN-QUALIFICATION.txt" \
+            && grep -Fqx "Builder image: $FORGE_TOOLCHAIN_ID" "$temp/VULKAN-QUALIFICATION.txt"; }; }; then
         should_build=false
         reason='skipped-qualified'
       else reason='invalid-or-mismatched-provenance'; fi

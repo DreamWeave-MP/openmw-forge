@@ -1,0 +1,339 @@
+name: OpenMW Clockwork experimental prerelease
+
+# Manual only until the full Clockwork build and Vulkan runtime are qualified.
+on:
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: Rebuild even when the published release is fully qualified
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openmw-forge-das-uberbranch-clockwork
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Resolve source and check qualified release identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      should_build: ${{ steps.preflight.outputs.should_build }}
+      reason: ${{ steps.preflight.outputs.reason }}
+      source_sha: ${{ steps.preflight.outputs.source_sha }}
+      input_fingerprint: ${{ steps.preflight.outputs.input_fingerprint }}
+      inputs_json: ${{ steps.preflight.outputs.inputs_json }}
+      profile_settings_json: ${{ steps.config.outputs.profile_settings_json }}
+      jess_identity: ${{ steps.jess.outputs.identity }}
+      toolchain_id: ${{ steps.toolchain.outputs.toolchain_id }}
+      repository: ${{ steps.config.outputs.repository }}
+      requested_ref: ${{ steps.config.outputs.ref }}
+      release_tag: ${{ steps.config.outputs.release_tag }}
+      profile: ${{ steps.config.outputs.profile }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-jess
+        id: jess
+        with:
+          version: ${{ vars.JESS_RELEASE_TAG }}
+      - name: Exercise release and toolchain preflight failure matrix
+        run: bash tests/release_preflight.sh
+      - name: Read configured release profile
+        id: config
+        env:
+          FORGE_RELEASE_PROFILE: clockwork
+        run: jess run --trusted --package . tools/release_preflight_config.jsl
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Resolve immutable builder identity
+        id: toolchain
+        run: jess run --trusted --package . tools/toolchain_image.jsl --preflight
+      - name: Require the separately qualified immutable Clockwork builder
+        env:
+          TOOLCHAIN_ID: ${{ steps.toolchain.outputs.toolchain_id }}
+        run: |
+          [[ "$TOOLCHAIN_ID" =~ ^ghcr\.io/.+@sha256:[0-9a-f]{64}$ ]] || {
+            echo 'Clockwork builds require the published, digest-pinned Vulkan-qualified builder; refusing fallback toolchains.' >&2
+            exit 1
+          }
+      - name: Resolve source and inspect published qualification
+        id: preflight
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OPENMW_REPOSITORY: ${{ steps.config.outputs.repository }}
+          OPENMW_REF: ${{ steps.config.outputs.ref }}
+          OPENMW_RELEASE_TAG: ${{ steps.config.outputs.release_tag }}
+          OPENMW_PROFILE: ${{ steps.config.outputs.profile }}
+          FORGE_PROFILE_SETTINGS_JSON: ${{ steps.config.outputs.profile_settings_json }}
+          FORGE_JESS_IDENTITY: ${{ steps.jess.outputs.identity }}
+          FORGE_TOOLCHAIN_ID: ${{ steps.toolchain.outputs.toolchain_id }}
+          RUNNER_ARCH: ${{ runner.arch }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || false }}
+        run: bash tools/release_preflight.sh
+
+  build:
+    name: Build and qualify Clockwork on GitHub-hosted Ubuntu (AlmaLinux 9 containers)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    needs: preflight
+    if: needs.preflight.outputs.should_build == 'true'
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-jess
+        id: jess
+        with:
+          version: ${{ vars.JESS_RELEASE_TAG }}
+      - name: Verify immutable Jess runtime identity
+        env:
+          EXPECTED_JESS_IDENTITY: ${{ needs.preflight.outputs.jess_identity }}
+          ACTUAL_JESS_IDENTITY: ${{ steps.jess.outputs.identity }}
+        run: test "$EXPECTED_JESS_IDENTITY" = "$ACTUAL_JESS_IDENTITY"
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Resolve immutable, published AlmaLinux 9 builder
+        id: toolchain
+        run: jess run --trusted --package . tools/toolchain_image.jsl
+      - name: Require the separately qualified immutable Clockwork builder
+        env:
+          TOOLCHAIN_ID: ${{ steps.toolchain.outputs.toolchain_id }}
+        run: |
+          [[ "$TOOLCHAIN_ID" =~ ^ghcr\.io/.+@sha256:[0-9a-f]{64}$ ]] || {
+            echo 'Clockwork builds require the published, digest-pinned Vulkan-qualified builder; refusing fallback toolchains.' >&2
+            exit 1
+          }
+      - name: Verify preflight toolchain identity
+        env:
+          EXPECTED_TOOLCHAIN_ID: ${{ needs.preflight.outputs.toolchain_id }}
+          ACTUAL_TOOLCHAIN_ID: ${{ steps.toolchain.outputs.toolchain_id }}
+        run: test "$EXPECTED_TOOLCHAIN_ID" = "$ACTUAL_TOOLCHAIN_ID"
+      - name: Fetch Clockwork-pinned example suite with LFS assets
+        id: example-suite
+        env:
+          CLOCKWORK_SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://gitlab.com/OursCodeur/openmw/-/raw/${CLOCKWORK_SOURCE_SHA}/.gitlab-ci.yml" \
+            --output work-clockwork-ci.yml
+          mapfile -t suite_revisions < <(
+            grep -Eo 'EXAMPLE_SUITE_REVISION:[[:space:]]*[0-9a-f]+' work-clockwork-ci.yml \
+              | awk '{ print $2 }' | sort -u
+          )
+          [[ "${#suite_revisions[@]}" -eq 1 && "${suite_revisions[0]}" =~ ^[0-9a-f]{40}$ ]] || {
+            echo 'Clockwork CI must pin exactly one full example-suite commit.' >&2
+            exit 1
+          }
+          suite_sha="${suite_revisions[0]}"
+          sudo apt-get update
+          sudo apt-get install --yes git-lfs
+          mkdir -p work/example-suite
+          git -C work/example-suite init
+          git -C work/example-suite remote add origin https://gitlab.com/OpenMW/example-suite.git
+          git -C work/example-suite lfs install --local
+          git -C work/example-suite fetch --depth=1 origin "$suite_sha"
+          git -C work/example-suite checkout --detach FETCH_HEAD
+          git -C work/example-suite lfs pull origin "$suite_sha"
+          test "$(git -C work/example-suite rev-parse HEAD)" = "$suite_sha"
+          if grep -RIl '^version https://git-lfs.github.com/spec/v1$' work/example-suite \
+            --exclude-dir=.git | grep -q .; then
+            echo 'Example-suite LFS objects were not hydrated.' >&2
+            exit 1
+          fi
+          echo "suite_sha=$suite_sha" >> "$GITHUB_OUTPUT"
+          echo "FORGE_CLOCKWORK_EXAMPLE_SUITE=$GITHUB_WORKSPACE/work/example-suite" >> "$GITHUB_ENV"
+          echo "Fetched example suite $suite_sha for Clockwork source $CLOCKWORK_SOURCE_SHA (including LFS objects)."
+      - name: Compute daily cache generation
+        id: cache-key
+        run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+      # The complete verified SDK is the highest-payoff cache: on an exact
+      # input hit vcpkg install/export is skipped, not merely recompilation.
+      - name: Restore qualified vcpkg SDK export
+        id: sdk
+        uses: actions/cache/restore@v6
+        with:
+          path: artifacts/deps
+          key: forge-sdk-v3-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ hashFiles('vendor/deps/**', 'src/native_deps.jsl', 'src/native_sdk_cache.jsl', 'src/native_archive.jsl', 'src/config.jsl', 'src/assets.jsl') }}
+          # Validator-only source changes must not discard the previously
+          # exported 150-port SDK. Forge independently checks full SHA-256,
+          # the pinned input fingerprint, and archive structure before reuse.
+          restore-keys: |
+            forge-sdk-v3-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-
+      - name: Restore bounded ccache
+        id: ccache
+        uses: actions/cache/restore@v6
+        with:
+          path: work/cache/ccache
+          key: forge-ccache-clockwork-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ steps.cache-key.outputs.day }}
+          restore-keys: forge-ccache-clockwork-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-
+      # Only pay for the larger per-port binary cache when the complete SDK
+      # is not available. A corrupted SDK is caught by the worker and rebuilt.
+      - name: Restore vcpkg binary packages when SDK is missing
+        if: steps.sdk.outputs.cache-hit != 'true'
+        id: vcpkg
+        uses: actions/cache/restore@v6
+        with:
+          path: work/cache/vcpkg-binaries
+          key: forge-vcpkg-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ hashFiles('vendor/deps/**', 'src/config.jsl') }}-${{ steps.cache-key.outputs.day }}
+          restore-keys: forge-vcpkg-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-
+      - name: Restore versioned Qt installation
+        uses: actions/cache@v6
+        with:
+          path: work/deps/QT
+          key: forge-qt-linux-gcc64-6.6.3-v1
+      - name: Validate Jess source before expensive compilation
+        run: |
+          jess run --trusted tools/embed_assets.jsl --check
+          jess package check .
+          jess run --trusted tools/style.jsl
+          jess package test .
+          docker info
+          df -h .
+      - name: Compile Forge ELF
+        run: |
+          mkdir -p build
+          jess run --trusted tools/release.jsl "$PWD/build/openmw-forge-linux-x64"
+      - name: Build or verify pinned AlmaLinux 9 dependency SDK
+        env:
+          FORGE_BIN: ${{ github.workspace }}/build/openmw-forge-linux-x64
+          FORGE_RESOLVED_SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          FORGE_INPUT_FINGERPRINT: ${{ needs.preflight.outputs.input_fingerprint }}
+          FORGE_INPUTS_JSON: ${{ needs.preflight.outputs.inputs_json }}
+          FORGE_REQUESTED_REF: ${{ needs.preflight.outputs.requested_ref }}
+          FORGE_RELEASE_PROFILE: clockwork
+        run: jess run --trusted --package . tools/uberbranch.jsl --prepare-deps
+      - name: Preserve upstream vcpkg failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: forge-vcpkg-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            work/vcpkg/buildtrees/**/pip-install-packages-*-err.log
+            work/vcpkg/buildtrees/**/pip-install-packages-*-out.log
+            work/vcpkg/buildtrees/**/venv-setup-*-err.log
+            work/vcpkg/buildtrees/**/venv-setup-*-out.log
+          if-no-files-found: warn
+          retention-days: 7
+      # A failed 150-port build has already generated valuable binary cache
+      # entries. Preserve them under a unique key so the next hosted runner can
+      # resume without recompiling successful ports. It must share the normal
+      # restore-key prefix or this save would have no effect.
+      - name: Save partial vcpkg binaries on failed dependency build
+        if: failure() && steps.sdk.outputs.cache-hit != 'true' && steps.vcpkg.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: work/cache/vcpkg-binaries
+          key: forge-vcpkg-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ hashFiles('vendor/deps/**', 'src/config.jsl') }}-failed-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save qualified SDK even if subsequent OpenMW compilation fails
+        if: steps.sdk.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: artifacts/deps
+          key: forge-sdk-v3-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ hashFiles('vendor/deps/**', 'src/native_deps.jsl', 'src/native_sdk_cache.jsl', 'src/native_archive.jsl', 'src/config.jsl', 'src/assets.jsl') }}
+      - name: Save rebuilt vcpkg binary packages before reclaiming disk
+        if: steps.sdk.outputs.cache-hit != 'true' && steps.vcpkg.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: work/cache/vcpkg-binaries
+          key: forge-vcpkg-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ hashFiles('vendor/deps/**', 'src/config.jsl') }}-${{ steps.cache-key.outputs.day }}
+      # Standard hosted runners have limited disk. The SDK is already sealed;
+      # retaining vcpkg buildtrees here would crowd out CMake and packaging.
+      - name: Reclaim dependency buildtrees and report remaining disk
+        run: jess run --trusted --package . tools/ci_resources.jsl --before-build
+      - name: Build configured OpenMW, run GoogleTests, verify archive and distro launchers
+        id: openmw-build
+        env:
+          FORGE_BIN: ${{ github.workspace }}/build/openmw-forge-linux-x64
+          FORGE_RESOLVED_SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          FORGE_INPUT_FINGERPRINT: ${{ needs.preflight.outputs.input_fingerprint }}
+          FORGE_INPUTS_JSON: ${{ needs.preflight.outputs.inputs_json }}
+          FORGE_REQUESTED_REF: ${{ needs.preflight.outputs.requested_ref }}
+          FORGE_RELEASE_PROFILE: clockwork
+          FORGE_CLOCKWORK_EXAMPLE_SUITE: ${{ github.workspace }}/work/example-suite
+        run: jess run --trusted --package . tools/uberbranch.jsl --build-only
+      - name: Report OpenMW build capacity even on failure
+        if: ${{ always() && !cancelled() && steps.openmw-build.outcome != 'skipped' }}
+        continue-on-error: true
+        run: jess run --trusted --package . tools/ci_resources.jsl --after-build
+      # Unlike actions/cache's automatic post-job save, this executes after a
+      # packaging or distro smoke failure. Preserve successful C/C++ compiles
+      # on the same mounted cache volume so the next CI run can reuse them.
+      - name: Preserve ccache after OpenMW build even on smoke failure
+        if: ${{ always() && !cancelled() && steps.openmw-build.outcome != 'skipped' && steps.ccache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: work/cache/ccache
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
+      - name: Upload Clockwork Vulkan qualification diagnostics
+        if: always() && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clockwork-vulkan-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: work/vulkan-runtime-evidence/${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: warn
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openmw-das-uberbranch-clockwork-candidate
+          path: artifacts/uberbranch-clockwork/${{ github.run_id }}-${{ github.run_attempt }}/*
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    name: Verify transferred files and publish Clockwork prerelease
+    needs: [preflight, build]
+    if: needs.preflight.outputs.should_build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-jess
+        id: jess
+        with:
+          version: ${{ vars.JESS_RELEASE_TAG }}
+      - name: Verify immutable Jess runtime identity
+        env:
+          EXPECTED_JESS_IDENTITY: ${{ needs.preflight.outputs.jess_identity }}
+          ACTUAL_JESS_IDENTITY: ${{ steps.jess.outputs.identity }}
+        run: test "$EXPECTED_JESS_IDENTITY" = "$ACTUAL_JESS_IDENTITY"
+      - uses: actions/download-artifact@v4
+        with:
+          name: openmw-das-uberbranch-clockwork-candidate
+          path: dist
+      - name: Verify SHA-256 and provenance; update GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORGE_INPUT_FINGERPRINT: ${{ needs.preflight.outputs.input_fingerprint }}
+          FORGE_RESOLVED_SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+          FORGE_INPUTS_JSON: ${{ needs.preflight.outputs.inputs_json }}
+          FORGE_RELEASE_PROFILE: clockwork
+          FORGE_TOOLCHAIN_IMAGE: ${{ needs.preflight.outputs.toolchain_id }}
+        run: jess run --trusted --package . tools/uberbranch.jsl --publish-artifacts "$PWD/dist"

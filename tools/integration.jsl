@@ -56,7 +56,9 @@ check(preflight:find('verify_asset_digests', 1, true) ~= nil
   'release preflight must verify API asset digests, full identity, and peeled annotated tags without downloading archives')
 check(preflight:find('profile_settings:$profile_settings', 1, true) ~= nil
   and preflight:find('jess_runtime:$jess_runtime', 1, true) ~= nil
-  and preflight:find('git ls-files -z .github/workflows/das-uberbranch.yml .github/actions/setup-jess/action.yml src tools', 1, true) ~= nil
+  and preflight:find('recipe_files=(.github/workflows/das-uberbranch.yml .github/actions/setup-jess/action.yml src tools', 1, true) ~= nil
+  and preflight:find('recipe_files+=(.github/workflows/das-uberbranch-clockwork.yml)', 1, true) ~= nil
+  and preflight:find('git ls-files -z "${recipe_files[@]}"', 1, true) ~= nil
   and preflight:find('git ls-files -z .github/workflows ci src tools', 1, true) == nil,
   'release fingerprint must include selected profile settings and pinned Jess identity without hashing every profile')
 local setupJessAction = util.file(root .. '/.github/actions/setup-jess/action.yml')

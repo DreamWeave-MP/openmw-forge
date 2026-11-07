@@ -222,6 +222,7 @@ local function publishArtifacts(directory: string, root: string, settings: Profi
   local notes = directory .. '/SOURCE.txt'
   local checksums = directory .. '/SHA256SUMS'
   local provenancePath = directory .. '/PROVENANCE.json'
+  local qualificationPath = directory .. '/VULKAN-QUALIFICATION.txt'
   local content = util.file(notes)
   if not content:find('Profile: ' .. settings.id .. '\n', 1, true)
     or not content:find('GitHub release: ' .. settings.releaseTag .. '\n', 1, true)
@@ -258,11 +259,28 @@ local function publishArtifacts(directory: string, root: string, settings: Profi
 
   if not verified or not verified.success then error('qualified release JSON does not match preflight identity') end
 
+  if settings.features.vulkan then
+    if not fs.isFile(qualificationPath) then error('Clockwork release is missing Vulkan runtime qualification evidence') end
+    local expectedBuilder = process.env('FORGE_TOOLCHAIN_IMAGE') or ''
+    local builderDigest = expectedBuilder:match('@sha256:([0-9a-f]+)$')
+    if not expectedBuilder:match('^[%w%._%-/]+@sha256:[0-9a-f]+$') or not builderDigest or #builderDigest ~= 64 then
+      error('Clockwork publish requires the exact immutable builder image from preflight')
+    end
+    local qualification = util.file(qualificationPath)
+    if not qualification:find('Profile: clockwork\n', 1, true)
+      or not qualification:find('Renderer: vulkan 1.3\n', 1, true)
+      or not qualification:find('Clockwork source SHA: ' .. revision .. '\n', 1, true)
+      or not qualification:find('Builder image: ' .. expectedBuilder .. '\n', 1, true) then
+      error('Vulkan runtime qualification evidence does not match the qualified Clockwork source')
+    end
+  elseif fs.exists(qualificationPath) then error('non-Vulkan release contains Clockwork qualification evidence') end
+
   if not main:find('-g' .. revision:sub(1, 12) .. '-', 1, true) then
     error('release tarball filename does not match source provenance')
   end
   local allowed: { [string]: string } = {}
   for _, path in { main, debug, notes, provenancePath } do allowed[fs.fileName(path) or ''] = path end
+  if settings.features.vulkan then allowed['VULKAN-QUALIFICATION.txt'] = qualificationPath end
   local expected: { [string]: boolean } = {}
   for line in util.file(checksums):gmatch('[^\r\n]+') do
     local hash, filename = line:match('^([0-9a-f]+)  ([^/\\]+)$')
@@ -277,7 +295,10 @@ local function publishArtifacts(directory: string, root: string, settings: Profi
   for filename in allowed do
     if not expected[filename] then error('missing checksum for ' .. filename) end
   end
-  publish(settings, root, { main, debug, notes, provenancePath, checksums }, notes)
+  local publishFiles = { main, debug, notes, provenancePath }
+  if settings.features.vulkan then table.insert(publishFiles, qualificationPath) end
+  table.insert(publishFiles, checksums)
+  publish(settings, root, publishFiles, notes)
 end
 
 local function run(argv: { string })
@@ -404,6 +425,9 @@ local function run(argv: { string })
     clockworkSmoke.run(checkout, root .. '/work/build', packageRoots[1], root .. '/work/deps',
       suiteRoot, evidence, revision, process.env('FORGE_TOOLCHAIN_IMAGE') or '',
       process.env('FORGE_CONTAINER_ENGINE') or 'docker', runId)
+    local qualification = evidence .. '/CLOCKWORK-VULKAN-QUALIFICATION.txt'
+    if not fs.isFile(qualification) then error('Clockwork Vulkan smoke passed without writing its qualification report') end
+    util.write(output .. '/VULKAN-QUALIFICATION.txt', util.file(qualification))
   end
 
   local notes = output .. '/SOURCE.txt'
@@ -424,7 +448,10 @@ local function run(argv: { string })
   util.write(provenancePath, provenance .. '\n')
   local checksums = output .. '/SHA256SUMS'
   local lines: { string } = {}
-  for _, path in { main, debug, notes, provenancePath } do
+  local qualifiedFiles = { main, debug, notes, provenancePath }
+  if settings.features.vulkan then table.insert(qualifiedFiles, output .. '/VULKAN-QUALIFICATION.txt') end
+
+  for _, path in qualifiedFiles do
     local checksum = util.checked('sha256sum', { path }):match('^([0-9a-f]+)')
     if not checksum or #checksum ~= 64 then error('failed to compute artifact SHA-256: ' .. path) end
     table.insert(lines, checksum .. '  ' .. (fs.fileName(path) or path))
