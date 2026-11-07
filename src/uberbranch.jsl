@@ -216,7 +216,9 @@ local function run(argv: { string })
   if not runId:match('^[%w%-]+$') or not attempt:match('^%d+$') then error('invalid CI run identity') end
   local output = root .. '/artifacts/uberbranch/' .. runId .. '-' .. attempt
   local resolvedSha = process.env('FORGE_RESOLVED_SOURCE_SHA')
-  if resolvedSha and not resolvedSha:match('^[0-9a-f]{40}$') then error('invalid preflight source SHA') end
+  if resolvedSha and (#resolvedSha ~= 40 or not resolvedSha:match('^[0-9a-f]+$')) then
+    error('invalid preflight source SHA')
+  end
   local command = if depsOnly then depsArgs(config) elseif buildOnly then buildOnlyArgs(config, output, resolvedSha) else buildArgs(config, output)
 
   print(`Scheduled OpenMW source: {config.repository} @ {config.ref}`)
