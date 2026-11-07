@@ -12,6 +12,7 @@ default_target = "forge"
 "@forge/args" = "src/args.jsl"
 "@forge/source" = "src/source.jsl"
 "@forge/uberbranch-config" = "ci/uberbranch-config.jsl"
+"@forge/release-profiles" = "ci/release-profiles.jsl"
 "@forge/uberbranch" = "src/uberbranch.jsl"
 "@forge/plan" = "src/plan.jsl"
 "@forge/execute" = "src/execute.jsl"
@@ -34,7 +35,7 @@ default_target = "forge"
 
 [[layer]]
 id = "openmw.forge"
-exports = ["@forge/uberbranch-config", "@forge/uberbranch", "@forge/source", "@forge/args", "@forge/plan", "@forge/execute", "@forge/config", "@forge/native-util", "@forge/native-assets", "@forge/assets", "@forge/native", "@forge/native-deps", "@forge/native-vcpkg-python", "@forge/native-sdk-cache", "@forge/native-tree-integrity", "@forge/native-openmw", "@forge/native-qt", "@forge/native-package", "@forge/native-release-artifacts", "@forge/native-smoke", "@forge/native-archive", "@forge/native-abi"]
+exports = ["@forge/uberbranch-config", "@forge/release-profiles", "@forge/uberbranch", "@forge/source", "@forge/args", "@forge/plan", "@forge/execute", "@forge/config", "@forge/native-util", "@forge/native-assets", "@forge/assets", "@forge/native", "@forge/native-deps", "@forge/native-vcpkg-python", "@forge/native-sdk-cache", "@forge/native-tree-integrity", "@forge/native-openmw", "@forge/native-qt", "@forge/native-package", "@forge/native-release-artifacts", "@forge/native-smoke", "@forge/native-archive", "@forge/native-abi"]
 
 [targets.forge]
 kind = "command"

@@ -1,0 +1,53 @@
+--!strict
+-- Named release profiles. Keep shared builder/dependency settings reusable;
+-- profile differences describe only source, feature, release and artifact inputs.
+type Features = { read vulkan: boolean, read luau: boolean, read luaUi: boolean }
+type TestPolicy = { read googleTests: boolean, read packageSmoke: boolean, read qtSmoke: boolean }
+type ReleaseProfile = {
+  read id: string, read repository: string, read ref: string, read releaseTag: string,
+  read releaseTitle: string, read jobs: string, read cmakeArgs: { string },
+  read artifactNamespace: string, read distros: string, read runTests: boolean,
+  read features: Features, read testPolicy: TestPolicy,
+}
+
+local upstreamCmakeArgs: { string } = {}
+local upstream: ReleaseProfile = {
+    id = 'upstream',
+    repository = 'https://gitlab.com/OpenMW/openmw.git',
+    ref = 'master',
+    releaseTag = 'das-uberbranch',
+    releaseTitle = 'OpenMW das-uberbranch',
+    jobs = 'auto',
+    cmakeArgs = table.freeze(upstreamCmakeArgs),
+    artifactNamespace = 'uberbranch',
+    distros = 'almalinux-9,ubuntu-24.04',
+    runTests = true,
+    features = table.freeze { vulkan = false, luau = false, luaUi = false },
+    testPolicy = table.freeze { googleTests = true, packageSmoke = true, qtSmoke = true },
+  }
+
+local clockwork: ReleaseProfile = {
+    id = 'clockwork',
+    repository = 'https://gitlab.com/OursCodeur/openmw.git',
+    ref = 'clockwork-alpha',
+    releaseTag = 'das-uberbranch-clockwork',
+    releaseTitle = 'OpenMW Clockwork experimental',
+    jobs = 'auto',
+    cmakeArgs = table.freeze {
+      '-DOPENMW_USE_VULKAN=ON',
+      '-DOPENMW_USE_SYSTEM_GLSLANG=OFF',
+      '-DOPENMW_USE_SYSTEM_VULKAN_HEADERS=OFF',
+      '-DOPENMW_USE_SYSTEM_VMA=OFF',
+    },
+    artifactNamespace = 'uberbranch-clockwork',
+    distros = 'almalinux-9,ubuntu-24.04',
+    runTests = true,
+    features = table.freeze { vulkan = true, luau = true, luaUi = true },
+    testPolicy = table.freeze { googleTests = true, packageSmoke = true, qtSmoke = true },
+  }
+
+local Profiles: { [string]: ReleaseProfile } = {
+  upstream = table.freeze(upstream),
+  clockwork = table.freeze(clockwork),
+}
+return table.freeze(Profiles)
