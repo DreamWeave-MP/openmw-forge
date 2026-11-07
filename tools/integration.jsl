@@ -80,6 +80,10 @@ check(workflow:find('uses: actions/cache/restore@v6', 1, true) ~= nil,
   'hosted compiler cache must use an explicit restore-only action')
 check(workflow:find('uses: actions/cache/save@v6', 1, true) ~= nil,
   'hosted compiler cache must have an explicit save action')
+check(workflow:find("forge-vcpkg-alma9-${{ runner.arch }}-${{ hashFiles('vendor/deps/**', 'src/config.jsl') }}-${{ steps.toolchain.outputs.cache_key }}-${{ steps.cache-key.outputs.day }}", 1, true) ~= nil
+  and workflow:find("forge-vcpkg-alma9-${{ runner.arch }}-${{ hashFiles('vendor/deps/**', 'src/config.jsl') }}-", 1, true) ~= nil
+  and workflow:find('snapshots from a compatible previous image', 1, true) ~= nil,
+  'vcpkg binary cache must restore cross-image snapshots while keeping writes image-scoped and ABI-validated by vcpkg')
 check(workflow:find("steps.openmw-build.outcome != 'skipped'", 1, true) ~= nil
   and workflow:find('always() && !cancelled()', 1, true) ~= nil,
   'hosted compiler cache save must still run after failed OpenMW smoke tests')
