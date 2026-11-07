@@ -8,6 +8,7 @@ local archiveSafety = require '@forge/native-archive'
 local packaging = require '@forge/native-package'
 local qt = require '@forge/native-qt'
 local treeIntegrity = require '@forge/native-tree-integrity'
+local featureGate = require '@forge/native-feature-gate'
 
 type Options = args.Options
 
@@ -192,8 +193,22 @@ local function configure(options: Options)
     table.insert(flags, '-DBUILD_COMPONENTS_TESTS=ON')
   end
 
+  if #options.requiredFeatures > 0 or options.runTests then
+    table.insert(flags, '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON')
+  end
+
   for _, value in options.cmakeArgs do table.insert(flags, value) end
   util.stream('cmake', flags, nil, setTools(options))
+
+  if #options.requiredFeatures > 0 or options.runTests then
+    local valid, reason = featureGate.validate(
+      util.file(options.build .. '/CMakeCache.txt'),
+      util.file(options.build .. '/compile_commands.json'),
+      options.requiredFeatures,
+      options.runTests)
+    if not valid then error('configured build does not satisfy its requested feature/test policy: ' .. (reason or 'unknown')) end
+    print('PASS configured feature and GoogleTest sources are present')
+  end
 end
 
 local function build(options: Options)

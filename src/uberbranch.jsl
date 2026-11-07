@@ -90,6 +90,19 @@ local function appendBuildSettings(command: { string }, settings: Profile, outpu
   end
 
   if settings.testPolicy.googleTests then table.insert(command, '--run-tests') end
+
+  local features = {
+    { name = 'vulkan', enabled = settings.features.vulkan },
+    { name = 'luau', enabled = settings.features.luau },
+    { name = 'lua-ui', enabled = settings.features.luaUi },
+  }
+
+  for _, feature in features do
+    if feature.enabled then
+      table.insert(command, '--require-feature')
+      table.insert(command, feature.name)
+    end
+  end
   table.insert(command, '--output-dir')
   table.insert(command, output)
 end

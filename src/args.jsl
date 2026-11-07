@@ -23,6 +23,7 @@ export type Options = {
   distros: string,
   gtestFilter: string,
   cmakeArgs: { string },
+  requiredFeatures: { string },
   dryRun: boolean,
   clean: boolean,
   stageOnly: boolean,
@@ -108,6 +109,7 @@ local function defaults(root: string): Options
     distros = '',
     gtestFilter = '*',
     cmakeArgs = {},
+    requiredFeatures = {},
     dryRun = false,
     clean = false,
     stageOnly = false,
@@ -172,7 +174,7 @@ local function parse(argv: { string }, root: string): (Options?, string?)
       elseif booleanKey == 'noSmoke' then options.noSmoke = true
       elseif booleanKey == 'withQt' then options.withQt = true
       end
-    elseif flag == '--cmake-arg' or flag == '--jobs' then
+    elseif flag == '--cmake-arg' or flag == '--jobs' or flag == '--require-feature' then
       local value = inline
       if value == nil then
         position += 1
@@ -193,6 +195,15 @@ local function parse(argv: { string }, root: string): (Options?, string?)
           end
           options.jobs = jobCount
         end
+      elseif flag == '--require-feature' then
+        if value ~= 'vulkan' and value ~= 'luau' and value ~= 'lua-ui' then
+          return nil, '--require-feature must be vulkan, luau, or lua-ui'
+        end
+
+        if table.find(options.requiredFeatures, value) then
+          return nil, 'duplicate required feature: ' .. value
+        end
+        table.insert(options.requiredFeatures, value)
       else
         table.insert(options.cmakeArgs, value)
       end

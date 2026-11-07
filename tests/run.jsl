@@ -5,6 +5,7 @@ local planning = require '@forge/plan'
 local profile = require '@forge/config'
 local util = require '@forge/native-util'
 local nativeOpenmw = require '@forge/native-openmw'
+local nativeFeatureGate = require '@forge/native-feature-gate'
 local nativeQt = require '@forge/native-qt'
 local nativeArchive = require '@forge/native-archive'
 local nativeAbi = require '@forge/native-abi'
@@ -315,6 +316,13 @@ suite.describe('profile and CLI', function()
   suite.it('preserves arbitrary CMake arguments as values', function()
     local options = parsed({ 'build', '--cmake-arg', '-DHELLO=a b', '--cmake-arg=-DX=$HOME' })
     test.expect(options.cmakeArgs).toEqual({ '-DHELLO=a b', '-DX=$HOME' })
+  end)
+
+  suite.it('accepts only unique required feature assertions', function()
+    local options = parsed({ 'build', '--require-feature', 'vulkan', '--require-feature=luau' })
+    test.expect(options.requiredFeatures).toEqual({ 'vulkan', 'luau' })
+    fails({ 'build', '--require-feature', 'opengl' }, '--require-feature must be')
+    fails({ 'build', '--require-feature', 'vulkan', '--require-feature', 'vulkan' }, 'duplicate required feature')
   end)
 
   suite.it('accepts both --flag=value and --flag value', function()
@@ -963,8 +971,67 @@ suite.describe('scheduled das-uberbranch release contract', function()
     test.expect(has(command, '-DOPENMW_USE_SYSTEM_GLSLANG=OFF')).toBeTruthy()
     test.expect(has(command, '-DOPENMW_USE_SYSTEM_VULKAN_HEADERS=OFF')).toBeTruthy()
     test.expect(has(command, '-DOPENMW_USE_SYSTEM_VMA=OFF')).toBeTruthy()
+    test.expect(has(command, '--require-feature')).toBeTruthy()
+    test.expect(has(command, 'vulkan')).toBeTruthy()
+    test.expect(has(command, 'luau')).toBeTruthy()
+    test.expect(has(command, 'lua-ui')).toBeTruthy()
     test.expect(clockwork.artifactNamespace).toBe('uberbranch-clockwork')
     test.expect(clockwork.releaseTag == uberConfig.releaseTag).toBeFalsy()
+  end)
+
+  suite.it('rejects missing Clockwork feature configuration or compiled source entries', function()
+    local cache = [=[
+OPENMW_USE_VULKAN:BOOL=ON
+OPENMW_USE_SYSTEM_GLSLANG:BOOL=OFF
+OPENMW_USE_SYSTEM_VULKAN_HEADERS:BOOL=OFF
+OPENMW_USE_SYSTEM_VMA:BOOL=OFF
+CMAKE_EXPORT_COMPILE_COMMANDS:BOOL=ON
+BUILD_OPENMW:BOOL=ON
+BUILD_OPENMW_TESTS:BOOL=ON
+BUILD_COMPONENTS_TESTS:BOOL=ON
+]=]
+    local compileCommands = [=[
+"file": "/src/components/vulkan/device.cpp"
+"file": "/build/components/devicetable.cpp"
+"file": "/src/components/lua/nativecodegen.cpp"
+"file": "/build/extern/fetched/luau/VM/src/lvmexecute.cpp"
+"file": "/build/extern/fetched/luau/Compiler/src/Compiler.cpp"
+"file": "/build/extern/fetched/luau/CodeGen/src/CodeGen.cpp"
+"file": "/src/components/lua_ui/content.cpp"
+"file": "/src/apps/openmw/mwlua/uibindings.cpp"
+"file": "/src/apps/components_tests/lua/testluaunativecodegen.cpp"
+"file": "/src/apps/components_tests/lua/testuicontent.cpp"
+]=]
+    local valid = nativeFeatureGate.validate(cache, compileCommands, { 'vulkan', 'luau', 'lua-ui' }, true)
+    test.expect(valid).toBeTruthy()
+
+    local upstreamCache = [=[
+CMAKE_EXPORT_COMPILE_COMMANDS:BOOL=ON
+BUILD_OPENMW_TESTS:BOOL=ON
+BUILD_COMPONENTS_TESTS:BOOL=ON
+]=]
+    local upstream, upstreamReason = nativeFeatureGate.validate(upstreamCache,
+      'apps/components_tests/testcomponents.cpp', {}, true)
+    test.expect(upstream).toBeTruthy()
+    test.expect(upstreamReason).toBeNil()
+
+    local disabledVulkan = cache:gsub('OPENMW_USE_VULKAN:BOOL=ON', 'OPENMW_USE_VULKAN:BOOL=OFF')
+    local disabled, reason = nativeFeatureGate.validate(disabledVulkan, compileCommands,
+      { 'vulkan', 'luau', 'lua-ui' }, true)
+    test.expect(disabled).toBeFalsy()
+    test.expect(reason).toContain('OPENMW_USE_VULKAN must be ON')
+
+    local missingLuauSource = compileCommands:gsub('/CodeGen/src/CodeGen%.cpp', '/CodeGen/src/not-built.cpp')
+    local absent, sourceReason = nativeFeatureGate.validate(cache, missingLuauSource,
+      { 'vulkan', 'luau', 'lua-ui' }, true)
+    test.expect(absent).toBeFalsy()
+    test.expect(sourceReason).toContain('/CodeGen/src/CodeGen.cpp')
+
+    local testsDisabled = cache:gsub('BUILD_COMPONENTS_TESTS:BOOL=ON', 'BUILD_COMPONENTS_TESTS:BOOL=OFF')
+    local noTests, testsReason = nativeFeatureGate.validate(testsDisabled, compileCommands,
+      { 'vulkan', 'luau', 'lua-ui' }, true)
+    test.expect(noTests).toBeFalsy()
+    test.expect(testsReason).toContain('GoogleTests must be enabled')
   end)
 
   suite.it('separates verified SDK preparation from release compilation', function()
