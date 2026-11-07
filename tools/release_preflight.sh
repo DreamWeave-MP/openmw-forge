@@ -6,11 +6,26 @@ set -euo pipefail
 : "${GITHUB_OUTPUT:?}" "${GITHUB_STEP_SUMMARY:?}" "${GITHUB_TOKEN:?}"
 : "${OPENMW_REPOSITORY:?}" "${OPENMW_REF:?}" "${OPENMW_RELEASE_TAG:?}"
 : "${FORGE_TOOLCHAIN_ID:?}" "${RUNNER_ARCH:?}"
+: "${FORGE_PROFILE_SETTINGS_JSON:?}" "${FORGE_JESS_IDENTITY:?}"
 OPENMW_PROFILE="${OPENMW_PROFILE:-upstream}"
 if [[ ! "$OPENMW_PROFILE" =~ ^[a-z][a-z0-9-]*$ ]]; then
   echo "Invalid release profile id: $OPENMW_PROFILE" >&2
   exit 1
 fi
+
+if [[ ! "$FORGE_JESS_IDENTITY" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]]; then
+  echo "Cannot establish immutable Jess runtime identity: $FORGE_JESS_IDENTITY" >&2
+  exit 1
+fi
+
+profile_settings=$(jq -cS --arg profile "$OPENMW_PROFILE" --arg repo "$OPENMW_REPOSITORY" \
+  --arg ref "$OPENMW_REF" --arg tag "$OPENMW_RELEASE_TAG" '
+  if type == "object" and .schema == "forge-profile-settings/v1" and .profile == $profile
+    and .repository == $repo and .ref == $ref and .release_tag == $tag
+    and (.cmake_args | type) == "array" and (.features | type) == "object"
+    and (.test_policy | type) == "object"
+  then . else error("release profile settings do not match selected source") end' \
+  <<<"$FORGE_PROFILE_SETTINGS_JSON")
 
 if [[ ! "$FORGE_TOOLCHAIN_ID" =~ ^(ghcr\.io/.+@sha256:[0-9a-f]{64}|fallback:[0-9a-f]{64}:[0-9a-f]{64})$ ]]; then
   echo "Cannot establish immutable toolchain identity: $FORGE_TOOLCHAIN_ID" >&2
@@ -104,11 +119,12 @@ verify_asset_digests() {
 }
 
 source_sha=$(resolve_source "$OPENMW_REPOSITORY" "$OPENMW_REF")
-recipe_hash=$(git ls-files -z .github/workflows ci src tools vendor/builder vendor/deps jess.toml \
+recipe_hash=$(git ls-files -z .github/workflows/das-uberbranch.yml .github/actions/setup-jess/action.yml src tools vendor/builder vendor/deps jess.toml \
   | sort -z | xargs -0 -r sha256sum | sha256sum | cut -d' ' -f1)
 inputs=$(jq -cnS \
   --arg schema 'forge-release-inputs/v1' \
   --arg profile "$OPENMW_PROFILE" \
+  --arg jess_runtime "$FORGE_JESS_IDENTITY" \
   --arg repository "$OPENMW_REPOSITORY" \
   --arg requested_ref "$OPENMW_REF" \
   --arg release_tag "$OPENMW_RELEASE_TAG" \
@@ -118,9 +134,9 @@ inputs=$(jq -cnS \
   --arg dependencies "$(git ls-files -z vendor/deps src/native_deps.jsl src/native_sdk_cache.jsl | xargs -0 -r sha256sum | sha256sum | cut -d' ' -f1)" \
   --arg qt '6.6.3' \
   --arg compiler 'GCC Toolset 13; CMake from immutable AlmaLinux 9 builder' \
-  --arg cmake_flags 'Forge scheduled defaults; --run-tests; jobs=auto' \
+  --argjson profile_settings "$profile_settings" \
   --arg recipe_hash "$recipe_hash" \
-  '{schema:$schema,profile:$profile,repository:$repository,requested_ref:$requested_ref,release_tag:$release_tag,source_sha:$source_sha,target:$target,toolchain:$toolchain,dependency_sdk_fingerprint:$dependencies,qt:$qt,compiler_configuration:$compiler,cmake_flags:$cmake_flags,forge_recipe_sha256:$recipe_hash}')
+  '{schema:$schema,profile:$profile,repository:$repository,requested_ref:$requested_ref,release_tag:$release_tag,source_sha:$source_sha,target:$target,toolchain:$toolchain,dependency_sdk_fingerprint:$dependencies,qt:$qt,compiler_configuration:$compiler,cmake_flags:$profile_settings.cmake_args,profile_settings:$profile_settings,jess_runtime:$jess_runtime,forge_recipe_sha256:$recipe_hash}')
 fingerprint=$(printf '%s' "$inputs" | sha256sum | cut -d' ' -f1)
 printf 'source_sha=%s\ninput_fingerprint=%s\ninputs_json=%s\n' \
   "$source_sha" "$fingerprint" "$inputs" >> "$GITHUB_OUTPUT"

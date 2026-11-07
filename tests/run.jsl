@@ -884,7 +884,7 @@ suite.describe('scheduled das-uberbranch release contract', function()
       id = clockwork.id, repository = clockwork.repository, ref = clockwork.ref,
       releaseTag = releaseProfiles.upstream.releaseTag, releaseTitle = clockwork.releaseTitle,
       jobs = clockwork.jobs, cmakeArgs = clockwork.cmakeArgs, artifactNamespace = clockwork.artifactNamespace,
-      distros = clockwork.distros, runTests = clockwork.runTests, features = clockwork.features,
+      distros = clockwork.distros, features = clockwork.features,
       testPolicy = clockwork.testPolicy,
     }
     local tagValid, tagError = uber.validateProfiles({ upstream = releaseProfiles.upstream, clockwork = duplicateTag })
@@ -904,7 +904,7 @@ suite.describe('scheduled das-uberbranch release contract', function()
       id = clockwork.id, repository = clockwork.repository, ref = clockwork.ref,
       releaseTag = clockwork.releaseTag, releaseTitle = clockwork.releaseTitle,
       jobs = clockwork.jobs, cmakeArgs = {}, artifactNamespace = clockwork.artifactNamespace,
-      distros = clockwork.distros, runTests = clockwork.runTests, features = clockwork.features,
+      distros = clockwork.distros, features = clockwork.features,
       testPolicy = clockwork.testPolicy,
     }
     local valid, reason = uber.validate(invalid)
@@ -923,6 +923,34 @@ suite.describe('scheduled das-uberbranch release contract', function()
     test.expect(has(command, '--jobs')).toBeTruthy()
     test.expect(has(command, 'auto')).toBeTruthy()
     test.expect(has(command, '/tmp/forge-uber-fixture')).toBeTruthy()
+  end)
+
+  suite.it('honors profile GoogleTest, package smoke, and Qt smoke policies', function()
+    local base = releaseProfiles.upstream
+    local upstream = {
+      id = base.id, repository = base.repository, ref = base.ref,
+      releaseTag = base.releaseTag, releaseTitle = base.releaseTitle, jobs = base.jobs,
+      cmakeArgs = base.cmakeArgs, artifactNamespace = base.artifactNamespace,
+      distros = base.distros, features = base.features,
+      testPolicy = { googleTests = false, packageSmoke = true, qtSmoke = false },
+    }
+    local valid, reason = uber.validate(upstream)
+    test.expect(valid).toBeTruthy()
+    test.expect(reason).toBeNil()
+    local command = uber.buildArgs(upstream, '/tmp/forge-policy-fixture')
+    test.expect(has(command, '--run-tests')).toBeFalsy()
+    local smoke = uber.smokeArgs(upstream, '/tmp/openmw.tar.gz')
+    test.expect(smoke ~= nil).toBeTruthy()
+    test.expect(has(smoke or {}, '--with-qt')).toBeFalsy()
+
+    upstream.testPolicy = { googleTests = true, packageSmoke = false, qtSmoke = false }
+    local testsOnly = uber.buildArgs(upstream, '/tmp/forge-policy-fixture')
+    test.expect(has(testsOnly, '--run-tests')).toBeTruthy()
+    test.expect(uber.smokeArgs(upstream, '/tmp/openmw.tar.gz')).toBeNil()
+
+    upstream.testPolicy = { googleTests = true, packageSmoke = true, qtSmoke = true }
+    local fullSmoke = uber.smokeArgs(upstream, '/tmp/openmw.tar.gz')
+    test.expect(has(fullSmoke or {}, '--with-qt')).toBeTruthy()
   end)
 
   suite.it('keeps Clockwork flags and artifact namespace separate from upstream', function()

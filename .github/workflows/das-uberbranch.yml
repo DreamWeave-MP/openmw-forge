@@ -33,6 +33,8 @@ jobs:
       source_sha: ${{ steps.preflight.outputs.source_sha }}
       input_fingerprint: ${{ steps.preflight.outputs.input_fingerprint }}
       inputs_json: ${{ steps.preflight.outputs.inputs_json }}
+      profile_settings_json: ${{ steps.config.outputs.profile_settings_json }}
+      jess_identity: ${{ steps.jess.outputs.identity }}
       toolchain_id: ${{ steps.toolchain.outputs.toolchain_id }}
       repository: ${{ steps.config.outputs.repository }}
       requested_ref: ${{ steps.config.outputs.ref }}
@@ -43,10 +45,13 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-jess
+        id: jess
         with:
           version: ${{ vars.JESS_RELEASE_TAG }}
       - name: Read configured release profile
         id: config
+        env:
+          FORGE_RELEASE_PROFILE: upstream
         run: jess run --trusted --package . tools/release_preflight_config.jsl
       - uses: docker/login-action@v4
         with:
@@ -64,6 +69,8 @@ jobs:
           OPENMW_REF: ${{ steps.config.outputs.ref }}
           OPENMW_RELEASE_TAG: ${{ steps.config.outputs.release_tag }}
           OPENMW_PROFILE: ${{ steps.config.outputs.profile }}
+          FORGE_PROFILE_SETTINGS_JSON: ${{ steps.config.outputs.profile_settings_json }}
+          FORGE_JESS_IDENTITY: ${{ steps.jess.outputs.identity }}
           FORGE_TOOLCHAIN_ID: ${{ steps.toolchain.outputs.toolchain_id }}
           RUNNER_ARCH: ${{ runner.arch }}
           FORCE_REBUILD: ${{ inputs.force_rebuild || false }}
@@ -83,8 +90,14 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-jess
+        id: jess
         with:
           version: ${{ vars.JESS_RELEASE_TAG }}
+      - name: Verify immutable Jess runtime identity
+        env:
+          EXPECTED_JESS_IDENTITY: ${{ needs.preflight.outputs.jess_identity }}
+          ACTUAL_JESS_IDENTITY: ${{ steps.jess.outputs.identity }}
+        run: test "$EXPECTED_JESS_IDENTITY" = "$ACTUAL_JESS_IDENTITY"
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -238,8 +251,14 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-jess
+        id: jess
         with:
           version: ${{ vars.JESS_RELEASE_TAG }}
+      - name: Verify immutable Jess runtime identity
+        env:
+          EXPECTED_JESS_IDENTITY: ${{ needs.preflight.outputs.jess_identity }}
+          ACTUAL_JESS_IDENTITY: ${{ steps.jess.outputs.identity }}
+        run: test "$EXPECTED_JESS_IDENTITY" = "$ACTUAL_JESS_IDENTITY"
       - uses: actions/download-artifact@v4
         with:
           name: openmw-das-uberbranch-candidate
