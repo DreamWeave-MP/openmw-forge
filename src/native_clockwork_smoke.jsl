@@ -107,7 +107,8 @@ local function command(engine: string, name: string, image: string, sourceRoot: 
   -- mounted from the exact qualified build inputs.
   return {
     'run', '--name', name, '--network', 'none',
-    '-v', sourceRoot .. ':/source:ro', '-v', buildRoot .. ':/build:ro',
+    '-v', sourceRoot .. ':/source:ro', '-v', sourceRoot .. ':/src:ro',
+    '-v', buildRoot .. ':/build:ro',
     '-v', packageRoot .. ':/package:ro',
     '-v', depsRoot .. ':/deps:ro', '-v', suiteRoot .. ':/example-suite:ro',
     '-v', outputRoot .. ':/output:rw',
@@ -263,6 +264,12 @@ local function run(sourceRoot: string, buildRoot: string, packageRoot: string, d
 
   local actualSuiteSha = util.checked('git', { '-C', suiteRoot, 'rev-parse', 'HEAD' }):gsub('%s+$', '')
   if actualSuiteSha ~= expectedSuiteSha then error('example-suite checkout does not match Clockwork CI pin') end
+
+  -- CMake compiled components-tests with /src as the source root. The
+  -- release-runtime container also needs that path for settings-default.cfg.
+  if not fs.isFile(sourceRoot .. '/files/settings-default.cfg') then
+    error('Clockwork runtime test input is missing: /files/settings-default.cfg')
+  end
 
   for _, relative in { '/CI/vulkan_ci.py', '/CI/run_vulkan_capture.py', '/CI/run_renderer_startup.py' } do
     if not fs.isFile(sourceRoot .. relative) then error('Clockwork runtime test input is missing: ' .. relative) end

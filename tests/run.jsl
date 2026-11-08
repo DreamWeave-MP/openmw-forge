@@ -58,6 +58,9 @@ suite.describe('Clockwork Vulkan frame qualification', function()
     local joined = table.concat(command, '\n')
     test.expect(joined).toContain('--network\nnone')
     test.expect(joined).toContain('/tmp/source:/source:ro')
+    -- Built test executables retain CMake's /src source path for default settings.
+    -- /source remains necessary for the pinned CI runner scripts.
+    test.expect(joined).toContain('/tmp/source:/src:ro')
     test.expect(joined).toContain('/tmp/build:/build:ro')
     test.expect(joined).toContain('/tmp/package:/package:ro')
     test.expect(joined).toContain('/tmp/deps:/deps:ro')
