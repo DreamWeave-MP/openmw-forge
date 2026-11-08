@@ -1,5 +1,5 @@
 --!strict
--- Compatibility alias for existing upstream workflow/configuration consumers.
+-- Compatibility alias for the primary scheduled Das UberBranch source.
 -- Profiles are defined once in release-profiles.jsl.
 local profiles = require '@forge/release-profiles'
-return profiles.upstream
+return profiles.clockwork

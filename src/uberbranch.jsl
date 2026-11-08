@@ -1,12 +1,10 @@
 --!strict
--- CI release orchestrator. Source/ref live in ci/uberbranch-config.jsl.
+-- CI release orchestrator. Source/ref come from the selected release profile.
 local fs = require '@dream/fs'
 local process = require '@dream/process'
 local json = require '@jess/json'
 local util = require '@forge/native-util'
 local source = require '@forge/source'
-local clockworkSmoke = require '@forge/native-clockwork-smoke'
-local nativeSmoke = require '@forge/native-smoke'
 type Profile = {
   read id: string, read repository: string, read ref: string, read releaseTag: string,
   read releaseTitle: string, read jobs: number | string, read cmakeArgs: { string },
@@ -76,7 +74,7 @@ local function validateProfiles(profileSet: { [string]: Profile }?): (boolean, s
 end
 
 local function profile(id: string?): Profile
-  local name = id or 'upstream'
+  local name = id or 'clockwork'
   local selected = (profiles :: { [string]: Profile })[name]
   if not selected then error('unknown release profile: ' .. name) end
   return selected
@@ -205,6 +203,18 @@ local function publish(settings: Profile, root: string, files: { string }, notes
     if markerCount == 1 then
       util.stream('gh', { 'release', 'delete-asset', tag, 'SHA256SUMS', '--yes' }, root, env)
     end
+    -- Old Clockwork releases may still carry renderer proof from the retired
+    -- gate. Remove this obsolete asset rather than leaving a false claim.
+    local legacyProofCount = 0
+    for _, asset in release.assets do
+      if asset.name == 'VULKAN-QUALIFICATION.txt' then legacyProofCount += 1 end
+    end
+
+    if legacyProofCount > 1 then error('existing release has duplicate obsolete Vulkan evidence') end
+
+    if legacyProofCount == 1 then
+      util.stream('gh', { 'release', 'delete-asset', tag, 'VULKAN-QUALIFICATION.txt', '--yes' }, root, env)
+    end
   end
 
   -- A rolling GitHub release cannot update several assets atomically. Upload
@@ -252,7 +262,6 @@ local function verifyArtifacts(directory: string, settings: Profile): { string }
   local notes = directory .. '/SOURCE.txt'
   local checksums = directory .. '/SHA256SUMS'
   local provenancePath = directory .. '/PROVENANCE.json'
-  local qualificationPath = directory .. '/VULKAN-QUALIFICATION.txt'
   local content = util.file(notes)
   if not content:find('Profile: ' .. settings.id .. '\n', 1, true)
     or not content:find('GitHub release: ' .. settings.releaseTag .. '\n', 1, true)
@@ -296,29 +305,12 @@ local function verifyArtifacts(directory: string, settings: Profile): { string }
 
   if not verified then error('qualified release JSON does not match preflight identity') end
 
-  if settings.features.vulkan then
-    if not fs.isFile(qualificationPath) then error('Clockwork release is missing Vulkan runtime qualification evidence') end
-    local expectedBuilder = process.env('FORGE_TOOLCHAIN_IMAGE') or ''
-    local builderDigest = expectedBuilder:match('@sha256:([0-9a-f]+)$')
-    if not expectedBuilder:match('^[%w%._%-/]+@sha256:[0-9a-f]+$') or not builderDigest or #builderDigest ~= 64 then
-      error('Clockwork publish requires the exact immutable builder image from preflight')
-    end
-    local qualification = util.file(qualificationPath)
-    if not qualification:find('Profile: clockwork\n', 1, true)
-      or not qualification:find('Renderer: vulkan 1.3\n', 1, true)
-      or not qualification:find('Clockwork source SHA: ' .. revision .. '\n', 1, true)
-      or not qualification:find('Builder image: ' .. expectedBuilder .. '\n', 1, true) then
-      error('Vulkan runtime qualification evidence does not match the qualified Clockwork source')
-    end
-  elseif fs.exists(qualificationPath) then error('non-Vulkan release contains Clockwork qualification evidence') end
-
   local expectedDebug = main:gsub('%.tar%.gz$', '-debug.tar.gz')
   if not main:find('-g' .. revision:sub(1, 12) .. '-', 1, true) or debug ~= expectedDebug then
     error('release tarball filename does not match source provenance')
   end
   local allowed: { [string]: string } = {}
   for _, path in { main, debug, notes, provenancePath } do allowed[fs.fileName(path) or ''] = path end
-  if settings.features.vulkan then allowed['VULKAN-QUALIFICATION.txt'] = qualificationPath end
   local expected: { [string]: boolean } = {}
   for line in util.file(checksums):gmatch('[^\r\n]+') do
     local hash, filename = line:match('^([0-9a-f]+)  ([^/\\]+)$')
@@ -334,7 +326,6 @@ local function verifyArtifacts(directory: string, settings: Profile): { string }
     if not expected[filename] then error('missing checksum for ' .. filename) end
   end
   local publishFiles = { main, debug, notes, provenancePath }
-  if settings.features.vulkan then table.insert(publishFiles, qualificationPath) end
   table.insert(publishFiles, checksums)
   return publishFiles
 end
@@ -474,40 +465,6 @@ local function run(argv: { string })
   local smoke = smokeArgs(settings, main)
   if smoke then util.stream(binary, smoke, root) end
 
-  if settings.features.vulkan then
-    local suiteRoot = process.env('FORGE_CLOCKWORK_EXAMPLE_SUITE') or ''
-    if suiteRoot == '' then error('Clockwork profile requires FORGE_CLOCKWORK_EXAMPLE_SUITE for Vulkan runtime smoke') end
-    -- Native package staging is transient and is removed after export. Vulkan
-    -- qualification must consume the exact release archive that passed distro
-    -- smoke, never a build-internal directory that may no longer exist.
-    local packageName = (fs.fileName(main) or ''):gsub('%.tar%.gz$', '')
-    local packageRoot = nativeSmoke.extractPackage(main,
-      root .. '/work/clockwork-runtime-package/' .. runId .. '-' .. attempt)
-    if fs.fileName(packageRoot) ~= packageName then
-      error('Clockwork runtime package root does not match the qualified archive')
-    end
-
-    if not fs.isFile(packageRoot .. '/openmw.x86_64')
-      or not fs.isFile(packageRoot .. '/openmw')
-      or not fs.isDir(packageRoot .. '/resources/vfs') then
-      error('qualified Clockwork release archive is missing required runtime contents')
-    end
-
-    -- The --repo build planner keys the CMake build root by repository AND
-    -- requested ref. In CI, --build-only uses the preflight-pinned SHA.
-    -- Never pass the default work/build directory to the runtime harness:
-    -- it would look for test binaries and the renderer probe in the wrong tree.
-    local buildRef = if buildOnly then (resolvedSha or settings.ref) else settings.ref
-    local buildRoot = source.buildPath(root, settings.repository, buildRef)
-    local evidence = root .. '/work/vulkan-runtime-evidence/' .. runId .. '-' .. attempt
-    clockworkSmoke.run(checkout, buildRoot, packageRoot, root .. '/work/deps',
-      suiteRoot, evidence, revision, process.env('FORGE_TOOLCHAIN_IMAGE') or '',
-      process.env('FORGE_CONTAINER_ENGINE') or 'docker', runId)
-    local qualification = evidence .. '/CLOCKWORK-VULKAN-QUALIFICATION.txt'
-    if not fs.isFile(qualification) then error('Clockwork Vulkan smoke passed without writing its qualification report') end
-    util.write(output .. '/VULKAN-QUALIFICATION.txt', util.file(qualification))
-  end
-
   local notes = output .. '/SOURCE.txt'
   local requestedRef = process.env('FORGE_REQUESTED_REF') or settings.ref
   local fingerprint = process.env('FORGE_INPUT_FINGERPRINT') or ''
@@ -534,7 +491,6 @@ local function run(argv: { string })
   local checksums = output .. '/SHA256SUMS'
   local lines: { string } = {}
   local qualifiedFiles = { main, debug, notes, provenancePath }
-  if settings.features.vulkan then table.insert(qualifiedFiles, output .. '/VULKAN-QUALIFICATION.txt') end
 
   for _, path in qualifiedFiles do
     local checksum = util.sha256(path)

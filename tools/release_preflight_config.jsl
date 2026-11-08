@@ -7,7 +7,7 @@ local source = require '@forge/source'
 local uber = require '@forge/uberbranch'
 local root, failure = fs.cwd()
 if not root then error(failure or 'cannot determine repository root') end
-local requestedProfile = process.env('FORGE_RELEASE_PROFILE') or 'upstream'
+local requestedProfile = process.env('FORGE_RELEASE_PROFILE') or 'clockwork'
 local profilesValid, profilesFailure = uber.validateProfiles()
 if not profilesValid then error(profilesFailure or 'invalid configured release profiles') end
 local selected = uber.profile(requestedProfile)
@@ -47,6 +47,6 @@ if profileSettingsJson == '' then error('release profile settings serialized to 
 local output = process.env('GITHUB_OUTPUT')
 if not output or output == '' then error('GITHUB_OUTPUT is required') end
 local values = 'profile=' .. selected.id .. '\nrepository=' .. selected.repository .. '\nref=' .. selected.ref
-  .. '\nrelease_tag=' .. selected.releaseTag .. '\nprofile_settings_json=' .. profileSettingsJson .. '\n'
+  .. '\nrelease_tag=' .. selected.releaseTag .. '\nartifact_namespace=' .. selected.artifactNamespace .. '\nprofile_settings_json=' .. profileSettingsJson .. '\n'
 local ok, problem = fs.writeFile(output, values, { append = true })
 if not ok then error(problem or 'cannot write release configuration outputs') end

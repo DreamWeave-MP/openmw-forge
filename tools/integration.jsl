@@ -13,7 +13,7 @@ local nativeArchive = require '@forge/native-archive'
 local releaseArtifacts = require '@forge/native-release-artifacts'
 local sdkCache = require '@forge/native-sdk-cache'
 local config = require '@forge/config'
-local uberConfig = require '@forge/uberbranch-config'
+local uberConfig = require '@forge/release-profiles'.upstream
 local assets = require '@forge/assets'
 local vcpkgPython = require '@forge/native-vcpkg-python'
 
@@ -59,9 +59,8 @@ check(preflight:find('verifyAssetDigests', 1, true) ~= nil
 check(preflight:find('profile_settings = settings', 1, true) ~= nil
   and preflight:find('jess_runtime = jessIdentity', 1, true) ~= nil
   and preflight:find("'.github/workflows/das-uberbranch.yml', '.github/actions/setup-jess/action.yml',", 1, true) ~= nil
-  and preflight:find("'.github/workflows/das-uberbranch-clockwork.yml'", 1, true) ~= nil
   and preflight:find("'.github/workflows', 'ci'", 1, true) == nil,
-  'release fingerprint must include selected profile settings and pinned Jess identity without hashing every profile')
+  'release fingerprint must include selected profile settings and pinned Jess identity without hashing unrelated profiles')
 local setupJessAction = util.file(root .. '/.github/actions/setup-jess/action.yml')
 check(setupJessAction:find('steps.runtime.outputs.identity', 1, true) ~= nil
   and setupJessAction:find('sha256sum --check', 1, true) ~= nil,
@@ -488,7 +487,7 @@ local resolvedSourceDryRun = process.run(jessBin, { 'run', '--trusted', '--packa
   stdout = 'capture', stderr = 'capture',
 })
 check(resolvedSourceDryRun ~= nil and resolvedSourceDryRun.success
-  and (resolvedSourceDryRun.stdout or ''):find('--ref master', 1, true) ~= nil,
+  and (resolvedSourceDryRun.stdout or ''):find('--ref clockwork-alpha', 1, true) ~= nil,
   'scheduled dry-run must accept and preserve a valid preflight SHA')
 local invalidSourceDryRun = process.run(jessBin, { 'run', '--trusted', '--package', '.',
   'tools/uberbranch.jsl', '--dry-run' }, {

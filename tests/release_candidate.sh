@@ -27,8 +27,8 @@ export CANDIDATE_JOBS_JSON="$scratch/jobs.json"
 export CANDIDATE_ARTIFACTS_JSON="$scratch/artifacts.json"
 export GITHUB_OUTPUT="$scratch/output"
 
-CLOCKWORK_PATH=.github/workflows/das-uberbranch-clockwork.yml
-CLOCKWORK_JOB='Build and qualify Clockwork on GitHub-hosted Ubuntu (AlmaLinux 9 containers)'
+CLOCKWORK_PATH=.github/workflows/das-uberbranch.yml
+CLOCKWORK_JOB='Build OpenMW on GitHub-hosted Ubuntu (AlmaLinux 9 containers)'
 
 # Fixtures are literal GitHub API shapes, one function per document.
 write_run() {
@@ -85,7 +85,7 @@ grep -qx 'usable=false' "$GITHUB_OUTPUT"
 UPSTREAM_JOB='Build OpenMW on GitHub-hosted Ubuntu (AlmaLinux 9 containers)'
 write_run .github/workflows/das-uberbranch.yml schedule
 write_jobs "$UPSTREAM_JOB" success
-write_artifacts openmw-das-uberbranch-candidate-12345-1 false
-run_check 12345 .github/workflows/das-uberbranch.yml "$UPSTREAM_JOB" openmw-das-uberbranch-candidate-
+write_artifacts openmw-das-uberbranch-upstream-candidate-12345-1 false
+run_check 12345 .github/workflows/das-uberbranch.yml "$UPSTREAM_JOB" openmw-das-uberbranch-upstream-candidate-
 grep -qx 'usable=true' "$GITHUB_OUTPUT"
 echo 'PASS candidate recovery fixtures: prior publish failure with successful build, wrong workflow, failed build, expired artifact, malformed run ID'

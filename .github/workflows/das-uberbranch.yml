@@ -1,11 +1,21 @@
-name: OpenMW das-uberbranch (four-hour build)
+name: OpenMW Das UberBranch (Clockwork primary)
 
-# Scheduled runs come from the default branch; execution may be delayed by GitHub.
+# Clockwork is the scheduled build target. Upstream master is a selectable
+# second profile running through the exact same steps and artifact verification.
+# Push qualifications on PR 04 are explicitly opt-in and never publish.
 on:
   schedule:
     - cron: '23 */4 * * *'
+  push:
+    branches: [pr-04-clockwork-full-build]
   workflow_dispatch:
     inputs:
+      release_profile:
+        description: OpenMW source selection (Clockwork is the default)
+        required: true
+        type: choice
+        options: [clockwork, upstream]
+        default: clockwork
       force_rebuild:
         description: Rebuild even when the published release is fully qualified
         required: false
@@ -17,7 +27,7 @@ on:
         type: boolean
         default: false
       candidate_run_id:
-        description: Prior upstream workflow run ID containing a successful build candidate
+        description: Prior same-profile workflow run ID containing a successful build candidate
         required: false
         type: string
         default: ''
@@ -26,11 +36,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: openmw-forge-das-uberbranch
+  group: openmw-forge-das-uberbranch-${{ github.ref }}-${{ inputs.release_profile || 'clockwork' }}
   cancel-in-progress: false
 
 jobs:
   preflight:
+    # Ordinary PR pushes never start an expensive build; the opt-in marker
+    # runs build qualification only, without publication permission.
+    if: >-
+      github.event_name != 'push' ||
+      contains(github.event.head_commit.message, '[qualify-clockwork]')
     name: Resolve source and check qualified release identity
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -50,6 +65,7 @@ jobs:
       requested_ref: ${{ steps.config.outputs.ref }}
       release_tag: ${{ steps.config.outputs.release_tag }}
       profile: ${{ steps.config.outputs.profile }}
+      artifact_namespace: ${{ steps.config.outputs.artifact_namespace }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -58,12 +74,17 @@ jobs:
         id: jess
         with:
           version: ${{ vars.JESS_RELEASE_TAG }}
-      - name: Exercise candidate recovery failure matrix
-        run: bash tests/release_candidate.sh
+      - name: Validate Forge before release preflight
+        run: |
+          jess package check .
+          jess run --trusted tools/style.jsl
+          jess package test .
+          bash tests/release_preflight.sh
+          bash tests/release_candidate.sh
       - name: Read configured release profile
         id: config
         env:
-          FORGE_RELEASE_PROFILE: upstream
+          FORGE_RELEASE_PROFILE: ${{ inputs.release_profile || 'clockwork' }}
         run: jess run --trusted --package . tools/release_preflight_config.jsl
       - uses: docker/login-action@v4
         with:
@@ -85,16 +106,16 @@ jobs:
           FORGE_JESS_IDENTITY: ${{ steps.jess.outputs.identity }}
           FORGE_TOOLCHAIN_ID: ${{ steps.toolchain.outputs.toolchain_id }}
           RUNNER_ARCH: ${{ runner.arch }}
-          FORCE_REBUILD: ${{ inputs.force_rebuild || false }}
+          FORCE_REBUILD: ${{ github.event_name == 'push' || inputs.force_rebuild || false }}
         run: jess run --trusted --package . tools/release_preflight.jsl
 
   recover-candidate:
-    name: Verify retained candidate from a prior upstream run
+    name: Verify retained candidate from a prior same-profile run
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     needs: preflight
     if: >-
-      needs.preflight.result == 'success' && inputs.candidate_run_id != '' && !inputs.force_rebuild &&
+      github.event_name != 'push' && needs.preflight.result == 'success' && inputs.candidate_run_id != '' && !inputs.force_rebuild &&
       (needs.preflight.outputs.should_build == 'true' || inputs.force_republish)
     permissions:
       actions: read
@@ -119,7 +140,7 @@ jobs:
           jess run --trusted --package . tools/release_candidate.jsl "$CANDIDATE_RUN_ID" \
             .github/workflows/das-uberbranch.yml \
             'Build OpenMW on GitHub-hosted Ubuntu (AlmaLinux 9 containers)' \
-            openmw-das-uberbranch-candidate-
+            openmw-das-uberbranch-${{ needs.preflight.outputs.profile }}-candidate-
       - name: Download the retained artifact from the selected run
         id: download
         if: steps.inspect.outputs.usable == 'true'
@@ -139,7 +160,7 @@ jobs:
           FORGE_RESOLVED_SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
           FORGE_INPUT_FINGERPRINT: ${{ needs.preflight.outputs.input_fingerprint }}
           FORGE_INPUTS_JSON: ${{ needs.preflight.outputs.inputs_json }}
-          FORGE_RELEASE_PROFILE: upstream
+          FORGE_RELEASE_PROFILE: ${{ needs.preflight.outputs.profile }}
         run: jess run --trusted --package . tools/uberbranch.jsl --verify-artifacts "$PWD/recovered-candidate"
       - name: Re-transfer only a verified candidate into this workflow run
         id: transfer
@@ -147,7 +168,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: openmw-das-uberbranch-recovered-${{ github.run_id }}-${{ github.run_attempt }}
+          name: openmw-das-uberbranch-${{ needs.preflight.outputs.profile }}-recovered-${{ github.run_id }}-${{ github.run_attempt }}
           path: recovered-candidate/*
           if-no-files-found: error
           retention-days: 3
@@ -237,8 +258,8 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: work/cache/ccache
-          key: forge-ccache-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ steps.cache-key.outputs.day }}
-          restore-keys: forge-ccache-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-
+          key: forge-ccache-${{ needs.preflight.outputs.profile }}-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ steps.cache-key.outputs.day }}
+          restore-keys: forge-ccache-${{ needs.preflight.outputs.profile }}-alma9-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-
       # Only pay for the larger per-port binary cache when the complete SDK
       # is not available. vcpkg validates each restored archive against its
       # compiler/port ABI hash, so snapshots from a compatible previous image
@@ -349,10 +370,10 @@ jobs:
         with:
           path: work/cache/ccache
           key: ${{ steps.ccache.outputs.cache-primary-key }}
-      - name: Report upstream build, qualification, cache, and resource summary
+      - name: Report selected OpenMW build, cache, and resource summary
         if: always()
         env:
-          PROFILE: upstream
+          PROFILE: ${{ needs.preflight.outputs.profile }}
           SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
           INPUT_FINGERPRINT: ${{ needs.preflight.outputs.input_fingerprint }}
           RELEASE_URL: https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.release_tag }}
@@ -376,7 +397,7 @@ jobs:
           elif [[ "$SDK_CACHE_HIT" == true || "$VCPKG_CACHE_HIT" == true || "$QT_CACHE_HIT" == true || "$CCACHE_CACHE_HIT" == true ]]; then decision=cache-assisted
           else decision=cold-build; fi
           {
-            echo '## Upstream qualification run'
+            echo "## Das UberBranch build: $PROFILE"
             echo "- Profile: \`$PROFILE\`"
             echo "- Source SHA: \`$SOURCE_SHA\`"
             echo "- Input fingerprint: \`$INPUT_FINGERPRINT\`"
@@ -406,8 +427,8 @@ jobs:
           fi
       - uses: actions/upload-artifact@v4
         with:
-          name: openmw-das-uberbranch-candidate-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifacts/uberbranch/${{ github.run_id }}-${{ github.run_attempt }}/*
+          name: openmw-das-uberbranch-${{ needs.preflight.outputs.profile }}-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/${{ needs.preflight.outputs.artifact_namespace }}/${{ github.run_id }}-${{ github.run_attempt }}/*
           if-no-files-found: error
           retention-days: 3
 
@@ -415,7 +436,7 @@ jobs:
     name: Verify transferred files and publish das-uberbranch
     needs: [preflight, recover-candidate, build]
     if: >-
-      always() && needs.preflight.result == 'success'
+      github.event_name != 'push' && always() && needs.preflight.result == 'success'
       && (needs.preflight.outputs.should_build == 'true' || inputs.force_republish)
       && (needs.build.result == 'success' || needs.recover-candidate.outputs.candidate_valid == 'true')
     runs-on: ubuntu-24.04
@@ -439,13 +460,13 @@ jobs:
         if: needs.recover-candidate.outputs.candidate_valid == 'true'
         uses: actions/download-artifact@v4
         with:
-          name: openmw-das-uberbranch-recovered-${{ github.run_id }}-${{ github.run_attempt }}
+          name: openmw-das-uberbranch-${{ needs.preflight.outputs.profile }}-recovered-${{ github.run_id }}-${{ github.run_attempt }}
           path: dist
       - name: Download candidate from this run's successful build
         if: needs.recover-candidate.outputs.candidate_valid != 'true'
         uses: actions/download-artifact@v4
         with:
-          name: openmw-das-uberbranch-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          name: openmw-das-uberbranch-${{ needs.preflight.outputs.profile }}-candidate-${{ github.run_id }}-${{ github.run_attempt }}
           path: dist
       - name: Verify SHA-256 and provenance; update GitHub prerelease
         env:
@@ -462,9 +483,9 @@ jobs:
           RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
         run: |
           {
-            echo '## Upstream publication'
-            if gh release view "$RELEASE_TAG" --json url -q .url >/tmp/upstream-release-url 2>/dev/null; then
-              echo "- Release URL: $(cat /tmp/upstream-release-url)"
+            echo '## Das UberBranch publication'
+            if gh release view "$RELEASE_TAG" --json url -q .url >/tmp/uberbranch-release-url 2>/dev/null; then
+              echo "- Release URL: $(cat /tmp/uberbranch-release-url)"
             else
               echo '- Release URL: unavailable; publication has not completed.'
             fi

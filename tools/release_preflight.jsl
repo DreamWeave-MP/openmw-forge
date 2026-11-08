@@ -151,7 +151,7 @@ end
 
 -- A downloaded payload is reusable only when every asset's digest, the SHA256SUMS
 -- marker, and the SOURCE and PROVENANCE checksums agree with the bytes on disk.
-local function verifyAssetDigests(release: Release, directory: string, clockwork: boolean): boolean
+local function verifyAssetDigests(release: Release, directory: string): boolean
   local manifest = directory .. '/SHA256SUMS'
   if not (nonEmptyFile(manifest) and nonEmptyFile(directory .. '/SOURCE.txt')
     and nonEmptyFile(directory .. '/PROVENANCE.json')) then
@@ -183,7 +183,7 @@ local function verifyAssetDigests(release: Release, directory: string, clockwork
     entryCount += 1
   end
 
-  if entryCount ~= (if clockwork then 5 else 4) then return false end
+  if entryCount ~= 4 then return false end
   local mainName, debugName = mainNames[1], debugNames[1]
   if not checksums[mainName] or not checksums[debugName] then return false end
   local sourceSha = checksums['SOURCE.txt']
@@ -191,13 +191,6 @@ local function verifyAssetDigests(release: Release, directory: string, clockwork
   if not sourceSha or not provenanceSha then return false end
   if util.sha256(directory .. '/SOURCE.txt') ~= sourceSha then return false end
   if util.sha256(directory .. '/PROVENANCE.json') ~= provenanceSha then return false end
-
-  -- The Clockwork marker is accepted only with its Vulkan evidence asset and checksum.
-  if clockwork then
-    local qualificationSha = checksums['VULKAN-QUALIFICATION.txt']
-    if not qualificationSha or not nonEmptyFile(directory .. '/VULKAN-QUALIFICATION.txt') then return false end
-    if util.sha256(directory .. '/VULKAN-QUALIFICATION.txt') ~= qualificationSha then return false end
-  end
 
   return true
 end
@@ -271,8 +264,6 @@ local function main()
   local sourceSha = resolveSource(repository, ref)
   local recipePaths: { string } = {}
   for _, path in RecipeInputs do table.insert(recipePaths, path) end
-  -- Clockwork's workflow is a build input for Clockwork only, not for upstream identity.
-  if profileId == 'clockwork' then table.insert(recipePaths, '.github/workflows/das-uberbranch-clockwork.yml') end
   local recipeHash = digestOfDigests(trackedFiles(recipePaths))
   local dependencies = digestOfDigests(trackedFiles(DependencyInputs))
 
@@ -328,34 +319,26 @@ local function main()
       end
       local mainCount = 0
       local debugCount = 0
-      local qualificationCount = 0
       for _, name in names do
         if name:match('^openmw%-.*%-Linux%-64Bit%.tar%.gz$') then mainCount += 1 end
         if name:match('^openmw%-.*%-Linux%-64Bit%-debug%.tar%.gz$') then debugCount += 1 end
-        if name == 'VULKAN-QUALIFICATION.txt' then qualificationCount += 1 end
       end
-      local qualificationValid = if profileId == 'clockwork' then qualificationCount == 1 else qualificationCount == 0
       local twelve = sourceSha:sub(1, 12)
 
       if release.isPrerelease == true and hasName('SHA256SUMS') and hasName('SOURCE.txt')
-        and hasName('PROVENANCE.json') and mainCount == 1 and debugCount == 1 and qualificationValid
+        and hasName('PROVENANCE.json') and mainCount == 1 and debugCount == 1
         and nameContains('-g' .. twelve .. '-Linux-64Bit.tar.gz')
         and nameContains('-g' .. twelve .. '-Linux-64Bit-debug.tar.gz') then
         local temp = root .. '/work/preflight-' .. bytes.toHex(bytes.random(8))
         fs.mkdir(temp, { recursive = true })
-        local clockwork = profileId == 'clockwork'
         local downloadArgs = { 'release', 'download', releaseTag, '--pattern', 'SHA256SUMS', '--pattern', 'SOURCE.txt', '--pattern', 'PROVENANCE.json' }
-        if clockwork then
-          table.insert(downloadArgs, '--pattern')
-          table.insert(downloadArgs, 'VULKAN-QUALIFICATION.txt')
-        end
         table.insert(downloadArgs, '--dir')
         table.insert(downloadArgs, temp)
-        local expectedDownloads = if clockwork then 4 else 3
+        local expectedDownloads = 3
         local download = process.run('gh', downloadArgs, { env = { GH_TOKEN = token }, stdout = 'null', stderr = 'null' })
         local downloaded = download ~= nil and download.success
           and #(fs.list(temp) or {}) == expectedDownloads
-          and verifyAssetDigests(release, temp, clockwork)
+          and verifyAssetDigests(release, temp)
         if not downloaded then
           reason = 'missing-or-invalid-checksum-payload'
         else
@@ -373,16 +356,8 @@ local function main()
             'Build input fingerprint: ' .. fingerprint,
           }
 
-          local qualificationLines = {
-            'Profile: clockwork',
-            'Renderer: vulkan 1.3',
-            'Clockwork source SHA: ' .. sourceSha,
-            'Builder image: ' .. toolchainId,
-          }
-
           if provenanceMatches(temp .. '/PROVENANCE.json', expected)
-            and sourceNotesMatch(temp .. '/SOURCE.txt', sourceLines)
-            and (not clockwork or sourceNotesMatch(temp .. '/VULKAN-QUALIFICATION.txt', qualificationLines)) then
+            and sourceNotesMatch(temp .. '/SOURCE.txt', sourceLines) then
             shouldBuild = false
             reason = 'skipped-qualified'
           else

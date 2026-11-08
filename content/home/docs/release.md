@@ -16,152 +16,80 @@ on:
   workflow_dispatch:
 ```
 
-## Change the OpenMW fork or branch
+## Select the OpenMW source
 
-Edit one source-controlled file: **`ci/uberbranch-config.jsl`**.
+The scheduled **Das UberBranch** workflow builds **Clockwork Vulkan** from
+`https://gitlab.com/OursCodeur/openmw.git` at `clockwork-alpha`. A manual
+`workflow_dispatch` can choose `clockwork` (default) or `upstream` (official
+`https://gitlab.com/OpenMW/openmw.git` at `master`). Both profiles execute
+**the same** Forge build, GoogleTests, package, distro smoke, and publication
+logic. The only source-specific parameters are encoded in
+`ci/release-profiles.jsl`: source repository/ref, required CMake features,
+release identity, and package namespace. Dependencies and builder-image
+selection remain independent of renderer validation.
 
-```luau
-return table.freeze {
-  repository = 'https://gitlab.com/OpenMW/openmw.git',
-  ref = 'master',
-  releaseTag = 'das-uberbranch',
-  jobs = 'auto', -- all CPUs available inside the build container
-}
-```
+The two profiles currently publish to separate prereleases:
+`das-uberbranch-clockwork` and `das-uberbranch`, respectively. Keeping both
+namespaces distinct avoids overwriting an existing upstream release while the
+Clockwork branch is still under validation. When the upstream branch is merged,
+we can promote the desired source without cloning the build machinery.
 
-`jobs = 'auto'` is the default. Forge runs `nproc` inside its AlmaLinux
-container to pick the current runner's available CPUs, and passes that count
-explicitly to both CMake build invocations and vcpkg. To cap memory pressure,
-set `jobs` to an integer from 1 to 1024 instead; explicit counts always win.
+Each run resolves its selected source to a full commit SHA and records that
+revision in its archives, `SOURCE.txt`, and `PROVENANCE.json`. `jobs = 'auto'`
+uses the available build-container CPUs; the release profile can instead cap
+parallelism with an integer.
 
-The initial source is official OpenMW `master`. To build a fork, change only
-`repository` and `ref` to the desired HTTPS/SSH clone URL and branch, tag, or
-commit. No workflow YAML edit and no separate OpenMW checkout are required.
-The managed checkout records the resolved **full Git SHA** and Forge records
-that revision in the tarball name and `SOURCE.txt` provenance.
+## What qualifies a build
 
-## Successful release criteria
+1. Verify the source, immutable builder, Jess runtime, and versioned build-input
+   fingerprint; use a complete existing release when its identity matches.
+2. Compile the engine with the selected profile's flags; run GoogleTests.
+3. Produce matching runtime and debug archives and audit packaged ELF/ABI and
+   dependency closure.
+4. Execute package/launcher smoke tests on AlmaLinux 9 and Ubuntu 24.04.
+   These test binary and package viability; **there is no renderer startup,
+   frame-rate, Lavapipe, example-suite, or Vulkan capture test**.
+5. Upload the candidate with `SOURCE.txt`, `PROVENANCE.json`, and `SHA256SUMS`;
+   the publish job revalidates the full identity and all SHA-256 entries before
+   updating the selected prerelease. `SHA256SUMS` is uploaded last as a
+   completion marker.
 
-1. Check out Forge without leaving GitHub credentials in Git config.
-2. Resolve the digest-pinned GHCR builder image (or a safe first-run local fallback); restore the verified SDK export, Qt and compiler caches.
-3. Run Jess strict/style and source/JPK tests, compile the standalone ELF.
-4. Verify/reuse the pinned SDK or build/ABI-qualify it on a cache miss. Save it immediately; reclaim temporary vcpkg buildtrees. Compile OpenMW in AlmaLinux 9 with GoogleTests.
-5. Produce the main `.tar.gz` and matching `-debug.tar.gz`.
-6. Audit the closure of every packaged ELF and supported Qt runtime plugin
-   inside each target smoke distribution. The package omits unused Qt SDK
-   database, GTK theme, and print plugins, but retains XCB, Wayland and
-   offscreen GUI support. Then inspect ABI ceilings and execute **packaged launchers and raw ELF binaries**
-   in AlmaLinux 9 and Ubuntu 24.04 smoke containers.
-7. Transfer files through a short-lived Actions artifact; a separate job
-   validates SHA-256 and the configured repository/ref/full SHA before using
-   `contents: write` to update the `das-uberbranch` prerelease.
+No `VULKAN-QUALIFICATION.txt` asset is generated or required for either source.
+Vulkan support is still checked at configuration/compiled-feature/package
+level for Clockwork, as appropriate for a build pipeline.
 
-The rolling prerelease includes the main package, matching debug package,
-`SOURCE.txt`, and `SHA256SUMS`. Its previous Forge tarballs are pruned after
-success while unrelated assets remain. GitHub Release assets are independent
-objects, not an atomic multi-asset transaction. Before updating an existing
-release, Forge removes the previous `SHA256SUMS` completion marker; it then
-uploads the new payload and writes `SHA256SUMS` **last**. Failed or interrupted
-updates therefore leave a visibly unqualified release, rather than a stale
-checksum marker alongside a partially replaced payload. Consumers should verify
-the checksums and matching source revision before using a rolling release.
+## Running qualification on the PR branch
 
-## Clockwork experimental release and publish recovery
+Push a commit whose message contains `[qualify-clockwork]` to
+`pr-04-clockwork-full-build`. The one shared workflow runs a full Clockwork
+build with `force_rebuild=true`, but **skips the write-permissioned publication
+job** for push events. Ordinary pushes do not launch a build.
 
-Clockwork is published only through the separate
-`das-uberbranch-clockwork` experimental prerelease. Its workflow remains
-`workflow_dispatch` only until the real Vulkan frame, Luau/UI behavior, package,
-GoogleTest, ABI, and distribution gates have passed. The upstream four-hour
-schedule and release tag are independent.
+For a deliberate publishing run, dispatch `das-uberbranch.yml` with
+`release_profile=clockwork` (or `upstream`) from a GitHub-registered workflow.
+GitHub scheduled workflows always run from the default branch, so the changed
+four-hour schedule will not take effect until this branch is merged. Do not
+activate release publishing on a PR by giving the push trigger write access.
 
-Preflight records the full Clockwork source SHA and versioned build-input
-fingerprint. If that identity already has a complete checksummed release, the
-workflow exits without restoring SDK or compiler caches. Use `force_rebuild`
-only when a new compilation is intended. Cache hits are reported separately;
-they never qualify a release.
+A failed publishing job can be retried via `candidate_run_id` and, when needed,
+`force_republish`. Candidate recovery requires the **same profile, source SHA,
+recipe fingerprint, and checksum-verified release payload** as the current
+preflight. A failed build never generates a publishable candidate.
 
-If a build and its qualification tests succeeded but the publication job
-failed, dispatch the Clockwork workflow again with the prior run's numeric
-`candidate_run_id`. Set `force_republish` when the existing release is already
-qualified but the operator explicitly wants to publish that candidate again.
-Recovery checks that the run belongs to this workflow and repository, its
-Clockwork build job succeeded, and its candidate artifact is still retained.
-Forge then compares its full source SHA, fingerprint, structured provenance,
-Clockwork Vulkan report, and every SHA-256 entry against the new preflight
-identity before transferring it to the write-scoped publisher. A missing,
-expired, malformed, or mismatched candidate falls back to a cold build when
-preflight says one is needed. A failed build, GoogleTest, ABI, or smoke gate
-does not upload a candidate. Candidate artifacts are retained for three days;
-they are not a compilation cache and do not bypass qualification.
-
-The run summary records the profile, full source SHA, fingerprint, preflight and
-recovery decision, cache restore results, builder digest, total build/smoke
-duration, CMake compile wall time, completed per-launcher distro smoke results
-and failures, ccache statistics, and release URL when one is available. Verify the published
-release by checking `SOURCE.txt`, `PROVENANCE.json`,
-`VULKAN-QUALIFICATION.txt`, and `SHA256SUMS` together.
-
-The upstream `das-uberbranch` manual workflow accepts the same run-ID recovery
-inputs for a qualified upstream candidate. Its scheduled runs remain unchanged;
-recovery is an operator-triggered dispatch.
-
-## Promoting the stacked Clockwork pull requests
-
-The current experimental stack is built from PR 04 (Clockwork full build),
-followed by PRs 05 (packaging), 06 (runtime), 07 (release workflow), and 08
-(candidate recovery). Reconcile the latest heads into the descendant branches
-before merging: a previous merge of an earlier PR head does **not** automatically
-include commits made to that PR afterward. Verify the ancestry using
-`git merge-base --is-ancestor` for each predecessor and descendant.
-
-Merge and validate the stack from the tip downward into PR 04, then run the
-**non-publishing** Clockwork qualification on the resulting PR 04 commit. That
-workflow accepts a push to `pr-04-clockwork-full-build` whose head commit message
-includes `[qualify-clockwork]`; it does not publish a release. All Jess, CMake,
-GoogleTest, package, distribution, and Vulkan runtime gates must pass before
-PR 04 is merged to `main`.
-
-GitHub only accepts manual `workflow_dispatch` for workflows registered on the
-default branch. The **publishing** `das-uberbranch-clockwork.yml` workflow comes
-from PR 07 and is not manually dispatchable until that workflow has reached
-`main` as part of the merged stack. After the qualification succeeds and the
-stack is merged to `main`, invoke the Clockwork release workflow explicitly;
-its default behavior must remain manual-only. Never work around the registration
-rule by adding an unreviewed write-scoped push trigger to a PR branch.
-
-## Offline dry runs for the two scheduled stages
+## Local dry run
 
 ```sh
-jess run --trusted --package . tools/uberbranch.jsl --prepare-deps --dry-run
-jess run --trusted --package . tools/uberbranch.jsl --build-only --dry-run
+jess run --trusted --package . tools/uberbranch.jsl --release-profile clockwork --dry-run
+jess run --trusted --package . tools/uberbranch.jsl --release-profile upstream --dry-run
 ```
 
-The split matters: the SDK export can be cached immediately when qualified,
-even if a later upstream OpenMW commit fails to compile. The default local
-`tools/uberbranch.jsl` invocation still executes the combined pipeline. Never
-publish a release on the strength of the dependency stage alone.
-
-## First-time activation
-
-1. Merge the new workflows onto the Forge repository's **default branch**.
-2. Enable GitHub Actions and allow workflows to create releases using the
-   repository's `GITHUB_TOKEN` (`contents: write` is granted only to the
-   publication job). No personal access token is required for public OpenMW.
-3. Optionally pin `JESS_RELEASE_TAG` under repository variables.
-4. Run **Forge AlmaLinux 9 toolchain image** on the default branch and check that the GHCR package is readable to the scheduled build. This preprovisions DNF/Autoconf once instead of wasting every four-hour run.
-
-5. Select Settings → Pages → Source **GitHub Actions** for the documentation.
-6. Trigger **OpenMW das-uberbranch (four-hour build)** manually; check output,
-   cache hit rates, peak disk usage, test results and the final release assets.
-7. Only after that successful qualification rely on the periodic schedule.
-
-Dry-run the selection without touching Git or compiling:
+The standalone toolchain/SDK preparation and build-only paths remain available:
 
 ```sh
-jess run --trusted --package . tools/uberbranch.jsl --dry-run
+jess run --trusted --package . tools/uberbranch.jsl --release-profile clockwork --prepare-deps --dry-run
+jess run --trusted --package . tools/uberbranch.jsl --release-profile clockwork --build-only --dry-run
 ```
 
-GitHub schedules can be delayed or dropped under load. Two runs do not overlap;
-when a previous build occupies the runner beyond four hours, scheduled runs
-may coalesce. The hard limit is 330 minutes per build job. See
-[CI](@/home/docs/ci.md), [performance](@/home/docs/performance.md) and [release readiness](@/home/docs/release-readiness.md).
+The split lets a verified SDK remain cached even if a later engine build fails.
+No profile-specific renderer qualification stage or duplicate CI build path is
+maintained.
