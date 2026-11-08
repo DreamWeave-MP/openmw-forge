@@ -1220,6 +1220,19 @@ suite.describe('scheduled das-uberbranch release contract', function()
     test.expect(clockwork.releaseTag == uberConfig.releaseTag).toBeFalsy()
   end)
 
+  suite.it('forwards required features into the in-container build', function()
+    local result = plan({ 'build', '--source', Source, '--deps-archive', '/tmp/deps.7z',
+      '--require-feature', 'vulkan', '--require-feature', 'lua-ui' })
+    local inner: { string }? = nil
+    for _, item in result.steps do
+      if has(item.args, '__build') then inner = item.args end
+    end
+    test.expect(inner ~= nil).toBeTruthy()
+    test.expect(has(inner or {}, '--require-feature')).toBeTruthy()
+    test.expect(has(inner or {}, 'vulkan')).toBeTruthy()
+    test.expect(has(inner or {}, 'lua-ui')).toBeTruthy()
+  end)
+
   suite.it('rejects missing Clockwork feature configuration or compiled source entries', function()
     local cache = [=[
 OPENMW_USE_VULKAN:BOOL=ON
