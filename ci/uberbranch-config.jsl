@@ -1,9 +1,5 @@
 --!strict
--- This is the only repository-level selection for the four-hour OpenMW build.
--- Change repository and ref here when moving to a different fork/branch.
-return table.freeze {
-  repository = 'https://gitlab.com/OpenMW/openmw.git',
-  ref = 'master',
-  releaseTag = 'das-uberbranch',
-  jobs = 'auto', -- use all CPUs available inside the AlmaLinux build container
-}
+-- Compatibility alias for existing upstream workflow/configuration consumers.
+-- Profiles are defined once in release-profiles.jsl.
+local profiles = require '@forge/release-profiles'
+return profiles.upstream

@@ -1,5 +1,6 @@
 --!strict
 local test = require '@jess/test'
+local fs = require '@dream/fs'
 local args = require '@forge/args'
 local planning = require '@forge/plan'
 local profile = require '@forge/config'
@@ -16,6 +17,7 @@ local assets = require '@forge/assets'
 local source = require '@forge/source'
 local uber = require '@forge/uberbranch'
 local uberConfig = require '@forge/uberbranch-config'
+local releaseProfiles = require '@forge/release-profiles'
 local suite = test.new()
 
 suite.describe('bounded OpenMW GUI smoke startup', function()
@@ -820,6 +822,7 @@ suite.describe('embedded assets, versions, and archive names', function()
     end
     test.expect(dockerfile).toContain('vault.almalinux.org/9.5/extras/')
     test.expect(dockerfile).toContain('gcc-toolset-13')
+    test.expect(dockerfile).toContain('vulkan-loader-devel')
     test.expect(dockerfile).toContain('rpm -q glibc glibc-common')
     test.expect(dockerfile).toContain('nm -D --defined-only')
     test.expect(dockerfile).toContain('__memcmpeq|_dl_find_object|epoll_pwait2')
@@ -833,6 +836,27 @@ suite.describe('embedded assets, versions, and archive names', function()
       test.expect(early < heavy and heavy < late).toBeTruthy()
     end
     test.expect(profile.sdkRecipe).toContain('alma95')
+  end)
+
+  suite.it('runs the exact-revision Clockwork Vulkan probe in CI against the built image', function()
+    local root, failure = fs.cwd()
+    test.expect(root ~= nil and failure == nil).toBeTruthy()
+    if not root then return end
+    local workflow = util.file(root .. '/.github/workflows/forge-toolchain.yml')
+    local probe = util.file(root .. '/tests/clockwork-vulkan-probe/CMakeLists.txt')
+    local linkProbe = util.file(root .. '/tests/clockwork-vulkan-probe/vulkan_link_probe.cpp')
+    test.expect(workflow).toContain('Build builder image and qualify Clockwork Vulkan')
+    test.expect(workflow).toContain('docker/build-push-action@v7')
+    test.expect(workflow).toContain('docker run --rm')
+    test.expect(workflow).toContain('clockwork_vulkan_link_probe')
+    test.expect(workflow).toContain('git ls-remote https://gitlab.com/OursCodeur/openmw.git refs/heads/clockwork-alpha')
+    test.expect(probe).toContain('CACHE STRING')
+    test.expect(probe).toContain('safe.directory=')
+    test.expect(probe).toContain('TARGET Vulkan::Vulkan')
+    test.expect(probe).toContain('vk_mem_alloc.h')
+    test.expect(probe).toContain('clockwork_vulkan_link_probe vulkan_link_probe.cpp')
+    test.expect(linkProbe).toContain('#define VMA_IMPLEMENTATION')
+    test.expect(linkProbe).toContain('vkCreateInstance')
   end)
 
   suite.it('compares ABI versions numerically', function()
@@ -866,17 +890,49 @@ suite.describe('scheduled das-uberbranch release contract', function()
     test.expect(uberConfig.jobs).toBe('auto')
   end)
 
-  suite.it('only accepts safe repository references and the expected release tag', function()
-    for _, record in {
-      { repository = 'http://not-https.invalid/openmw', ref = 'master', releaseTag = 'das-uberbranch', jobs = 8 },
-      { repository = uberConfig.repository, ref = '../escape', releaseTag = 'das-uberbranch', jobs = 8 },
-      { repository = uberConfig.repository, ref = 'master', releaseTag = 'stable', jobs = 8 },
-      { repository = uberConfig.repository, ref = 'master', releaseTag = 'das-uberbranch', jobs = 0 },
-      { repository = uberConfig.repository, ref = 'master', releaseTag = 'das-uberbranch', jobs = 'all' },
-    } do
-      local valid = uber.validate(record)
-      test.expect(valid).toBeFalsy()
-    end
+  suite.it('validates both profiles and rejects unknown profile ids', function()
+    local valid, reason = uber.validateProfiles()
+    test.expect(valid).toBeTruthy()
+    test.expect(reason).toBeNil()
+    local known = uber.profile('clockwork')
+    test.expect(known.releaseTag).toBe('das-uberbranch-clockwork')
+    -- Unknown ids throw intentionally; this fixture verifies the diagnostic instead of aborting the suite.
+    local ok = pcall(uber.profile, 'unknown')
+    test.expect(ok).toBeFalsy()
+  end)
+
+  suite.it('rejects release tag and artifact namespace collisions', function()
+    local clockwork = releaseProfiles.clockwork
+    local duplicateTag = {
+      id = clockwork.id, repository = clockwork.repository, ref = clockwork.ref,
+      releaseTag = releaseProfiles.upstream.releaseTag, releaseTitle = clockwork.releaseTitle,
+      jobs = clockwork.jobs, cmakeArgs = clockwork.cmakeArgs, artifactNamespace = clockwork.artifactNamespace,
+      distros = clockwork.distros, features = clockwork.features,
+      testPolicy = clockwork.testPolicy,
+    }
+    local tagValid, tagError = uber.validateProfiles({ upstream = releaseProfiles.upstream, clockwork = duplicateTag })
+    test.expect(tagValid).toBeFalsy()
+    test.expect(tagError).toBe('release tag collision between clockwork and upstream')
+
+    duplicateTag.releaseTag = clockwork.releaseTag
+    duplicateTag.artifactNamespace = releaseProfiles.upstream.artifactNamespace
+    local namespaceValid, namespaceError = uber.validateProfiles({ upstream = releaseProfiles.upstream, clockwork = duplicateTag })
+    test.expect(namespaceValid).toBeFalsy()
+    test.expect(namespaceError).toBe('artifact namespace collision between clockwork and upstream')
+  end)
+
+  suite.it('requires Vulkan-enabled CMake configuration when a profile requires Vulkan', function()
+    local clockwork = releaseProfiles.clockwork
+    local invalid = {
+      id = clockwork.id, repository = clockwork.repository, ref = clockwork.ref,
+      releaseTag = clockwork.releaseTag, releaseTitle = clockwork.releaseTitle,
+      jobs = clockwork.jobs, cmakeArgs = {}, artifactNamespace = clockwork.artifactNamespace,
+      distros = clockwork.distros, features = clockwork.features,
+      testPolicy = clockwork.testPolicy,
+    }
+    local valid, reason = uber.validate(invalid)
+    test.expect(valid).toBeFalsy()
+    test.expect(reason).toBe('profile requires Vulkan but OPENMW_USE_VULKAN is not ON')
   end)
 
   suite.it('uses a separate Docker pipeline with GoogleTests and selected source', function()
@@ -890,6 +946,47 @@ suite.describe('scheduled das-uberbranch release contract', function()
     test.expect(has(command, '--jobs')).toBeTruthy()
     test.expect(has(command, 'auto')).toBeTruthy()
     test.expect(has(command, '/tmp/forge-uber-fixture')).toBeTruthy()
+  end)
+
+  suite.it('honors profile GoogleTest, package smoke, and Qt smoke policies', function()
+    local base = releaseProfiles.upstream
+    local upstream = {
+      id = base.id, repository = base.repository, ref = base.ref,
+      releaseTag = base.releaseTag, releaseTitle = base.releaseTitle, jobs = base.jobs,
+      cmakeArgs = base.cmakeArgs, artifactNamespace = base.artifactNamespace,
+      distros = base.distros, features = base.features,
+      testPolicy = { googleTests = false, packageSmoke = true, qtSmoke = false },
+    }
+    local valid, reason = uber.validate(upstream)
+    test.expect(valid).toBeTruthy()
+    test.expect(reason).toBeNil()
+    local command = uber.buildArgs(upstream, '/tmp/forge-policy-fixture')
+    test.expect(has(command, '--run-tests')).toBeFalsy()
+    local smoke = uber.smokeArgs(upstream, '/tmp/openmw.tar.gz')
+    test.expect(smoke ~= nil).toBeTruthy()
+    test.expect(has(smoke or {}, '--with-qt')).toBeFalsy()
+
+    upstream.testPolicy = { googleTests = true, packageSmoke = false, qtSmoke = false }
+    local testsOnly = uber.buildArgs(upstream, '/tmp/forge-policy-fixture')
+    test.expect(has(testsOnly, '--run-tests')).toBeTruthy()
+    test.expect(uber.smokeArgs(upstream, '/tmp/openmw.tar.gz')).toBeNil()
+
+    upstream.testPolicy = { googleTests = true, packageSmoke = true, qtSmoke = true }
+    local fullSmoke = uber.smokeArgs(upstream, '/tmp/openmw.tar.gz')
+    test.expect(has(fullSmoke or {}, '--with-qt')).toBeTruthy()
+  end)
+
+  suite.it('keeps Clockwork flags and artifact namespace separate from upstream', function()
+    local clockwork = uber.profile('clockwork')
+    local command = uber.buildArgs(clockwork, '/tmp/clockwork-output')
+    test.expect(has(command, clockwork.repository)).toBeTruthy()
+    test.expect(has(command, clockwork.ref)).toBeTruthy()
+    test.expect(has(command, '-DOPENMW_USE_VULKAN=ON')).toBeTruthy()
+    test.expect(has(command, '-DOPENMW_USE_SYSTEM_GLSLANG=OFF')).toBeTruthy()
+    test.expect(has(command, '-DOPENMW_USE_SYSTEM_VULKAN_HEADERS=OFF')).toBeTruthy()
+    test.expect(has(command, '-DOPENMW_USE_SYSTEM_VMA=OFF')).toBeTruthy()
+    test.expect(clockwork.artifactNamespace).toBe('uberbranch-clockwork')
+    test.expect(clockwork.releaseTag == uberConfig.releaseTag).toBeFalsy()
   end)
 
   suite.it('separates verified SDK preparation from release compilation', function()

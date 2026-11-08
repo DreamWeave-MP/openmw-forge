@@ -4,42 +4,118 @@ local fs = require '@dream/fs'
 local process = require '@dream/process'
 local util = require '@forge/native-util'
 local source = require '@forge/source'
-local config = require '@forge/uberbranch-config'
+type Profile = {
+  read id: string, read repository: string, read ref: string, read releaseTag: string,
+  read releaseTitle: string, read jobs: number | string, read cmakeArgs: { string },
+  read artifactNamespace: string, read distros: string,
+  read features: { read vulkan: boolean, read luau: boolean, read luaUi: boolean },
+  read testPolicy: { read googleTests: boolean, read packageSmoke: boolean, read qtSmoke: boolean },
+}
+local profiles = require '@forge/release-profiles' :: { [string]: Profile }
 
-type Config = { read repository: string, read ref: string, read releaseTag: string, read jobs: number | string }
-
-local function validate(settings: Config): (boolean, string?)
-  if not source.validRepo(settings.repository) then return false, 'invalid scheduled OpenMW repository' end
-  if not source.validRef(settings.ref) then return false, 'invalid scheduled OpenMW ref' end
-  if settings.releaseTag ~= 'das-uberbranch' then return false, 'scheduled release must be das-uberbranch' end
+local function validate(settings: Profile): (boolean, string?)
+  if not settings.id:match('^[a-z][a-z0-9%-]*$') then return false, 'invalid release profile id' end
+  if not source.validRepo(settings.repository) then return false, 'invalid release profile repository' end
+  if not source.validRef(settings.ref) then return false, 'invalid release profile ref' end
+  if not source.validRef(settings.releaseTag) then return false, 'invalid release profile tag' end
+  if settings.releaseTitle == '' or settings.releaseTitle:find('%c') then return false, 'invalid release profile title' end
+  if not settings.artifactNamespace:match('^[a-z][a-z0-9%-]*$') then return false, 'invalid artifact namespace' end
 
   if settings.jobs ~= 'auto' then
     if type(settings.jobs) ~= 'number' or settings.jobs < 1 or settings.jobs > 1024 or settings.jobs % 1 ~= 0 then
-      return false, 'scheduled jobs must be auto or an integer between 1 and 1024'
+      return false, 'profile jobs must be auto or an integer between 1 and 1024'
     end
+  end
+
+  local cmake: { [string]: string } = {}
+  for _, arg in settings.cmakeArgs do
+    local key, value = arg:match('^%-D([%w_]+)=(.*)$')
+    if not key then return false, 'profile CMake arguments must use -DNAME=VALUE form' end
+    if cmake[key] then return false, 'duplicate profile CMake option: ' .. key end
+    cmake[key] = value
+  end
+
+  if settings.features.vulkan and cmake.OPENMW_USE_VULKAN ~= 'ON' then
+    return false, 'profile requires Vulkan but OPENMW_USE_VULKAN is not ON'
+  end
+
+  if not settings.features.vulkan and cmake.OPENMW_USE_VULKAN == 'ON' then
+    return false, 'profile disables Vulkan but OPENMW_USE_VULKAN is ON'
+  end
+
+  if settings.testPolicy.qtSmoke and not settings.testPolicy.packageSmoke then
+    return false, 'profile Qt smoke policy requires package smoke'
+  end
+
+  return true, nil
+end
+
+local function validateProfiles(profileSet: { [string]: Profile }?): (boolean, string?)
+  local tags: { [string]: string }, namespaces: { [string]: string } = {}, {}
+  local selectedProfiles = profileSet or profiles
+  local ids: { string } = {}
+  for id in selectedProfiles do table.insert(ids, id) end
+  table.sort(ids)
+
+  for _, id in ids do
+    local settings = selectedProfiles[id]
+    local valid, reason = validate(settings)
+    if not valid then return false, id .. ': ' .. (reason or 'invalid profile') end
+    if tags[settings.releaseTag] then return false, 'release tag collision between ' .. tags[settings.releaseTag] .. ' and ' .. id end
+
+    if namespaces[settings.artifactNamespace] then
+      return false, 'artifact namespace collision between ' .. namespaces[settings.artifactNamespace] .. ' and ' .. id
+    end
+    tags[settings.releaseTag] = id
+    namespaces[settings.artifactNamespace] = id
   end
   return true, nil
 end
 
-local function buildArgs(settings: Config, output: string): { string }
-  return {
-    'pipeline', '--repo', settings.repository, '--ref', settings.ref,
-    '--engine', 'docker', '--jobs', tostring(settings.jobs),
-    '--run-tests', '--output-dir', output,
-  }
+local function profile(id: string?): Profile
+  local name = id or 'upstream'
+  local selected = (profiles :: { [string]: Profile })[name]
+  if not selected then error('unknown release profile: ' .. name) end
+  return selected
 end
 
-local function depsArgs(settings: Config): { string }
+local function appendBuildSettings(command: { string }, settings: Profile, output: string)
+  table.insert(command, '--engine')
+  table.insert(command, 'docker')
+  table.insert(command, '--jobs')
+  table.insert(command, tostring(settings.jobs))
+  for _, arg in settings.cmakeArgs do
+    table.insert(command, '--cmake-arg')
+    table.insert(command, arg)
+  end
+
+  if settings.testPolicy.googleTests then table.insert(command, '--run-tests') end
+  table.insert(command, '--output-dir')
+  table.insert(command, output)
+end
+
+local function buildArgs(settings: Profile, output: string): { string }
+  local command = { 'pipeline', '--repo', settings.repository, '--ref', settings.ref }
+  appendBuildSettings(command, settings, output)
+  return command
+end
+
+local function depsArgs(settings: Profile): { string }
   return { 'deps', '--engine', 'docker', '--jobs', tostring(settings.jobs) }
 end
 
-local function buildOnlyArgs(settings: Config, output: string, resolvedSha: string?): { string }
+local function buildOnlyArgs(settings: Profile, output: string, resolvedSha: string?): { string }
   local ref = resolvedSha or settings.ref
-  return {
-    'build', '--repo', settings.repository, '--ref', ref,
-    '--engine', 'docker', '--jobs', tostring(settings.jobs),
-    '--run-tests', '--output-dir', output,
-  }
+  local command = { 'build', '--repo', settings.repository, '--ref', ref }
+  appendBuildSettings(command, settings, output)
+  return command
+end
+
+local function smokeArgs(settings: Profile, archive: string): { string }?
+  if not settings.testPolicy.packageSmoke then return nil end
+  local command = { 'smoke', '--archive', archive, '--engine', 'docker', '--distros', settings.distros }
+  if settings.testPolicy.qtSmoke then table.insert(command, '--with-qt') end
+  return command
 end
 
 local function isMainTarball(name: string): boolean
@@ -69,14 +145,15 @@ local function findOutputs(directory: string): (string, string)
   return main :: string, debug :: string
 end
 
-local function publish(tag: string, root: string, files: { string }, notes: string)
+local function publish(settings: Profile, root: string, files: { string }, notes: string)
   local env = { GH_PROMPT_DISABLED = '1' }
+  local tag = settings.releaseTag
   local view = process.run('gh', { 'release', 'view', tag }, { cwd = root, env = env, stdout = 'capture', stderr = 'capture' })
   if not view or not view.success then
     -- A network/authentication error must not be mistaken for permission to
     -- overwrite an existing release; create will fail safely if it exists.
     local target = process.env('GITHUB_SHA') or 'HEAD'
-    util.stream('gh', { 'release', 'create', tag, '--target', target, '--title', 'OpenMW das-uberbranch',
+    util.stream('gh', { 'release', 'create', tag, '--target', target, '--title', settings.releaseTitle,
       '--prerelease', '--notes-file', notes }, root, env)
   end
   -- A rolling GitHub release cannot update several assets atomically. Upload
@@ -117,7 +194,7 @@ end
 
 -- Verify artifacts received from the low-privilege build runner before
 -- allowing the high-privilege publication job to touch a GitHub release.
-local function publishArtifacts(directory: string, root: string)
+local function publishArtifacts(directory: string, root: string, settings: Profile)
   local token = process.env('GH_TOKEN')
   if process.env('GITHUB_ACTIONS') ~= 'true' or not token or token == '' then
     error('publishing requires GitHub Actions and GH_TOKEN')
@@ -127,8 +204,10 @@ local function publishArtifacts(directory: string, root: string)
   local checksums = directory .. '/SHA256SUMS'
   local provenancePath = directory .. '/PROVENANCE.json'
   local content = util.file(notes)
-  if not content:find('OpenMW repository: ' .. config.repository .. '\n', 1, true)
-    or not content:find('OpenMW requested ref: ' .. config.ref .. '\n', 1, true) then
+  if not content:find('Profile: ' .. settings.id .. '\n', 1, true)
+    or not content:find('GitHub release: ' .. settings.releaseTag .. '\n', 1, true)
+    or not content:find('OpenMW repository: ' .. settings.repository .. '\n', 1, true)
+    or not content:find('OpenMW requested ref: ' .. settings.ref .. '\n', 1, true) then
     error('release provenance does not match the checked-in source selection')
   end
   local revision = content:match('OpenMW resolved SHA: ([0-9a-f]+)\n')
@@ -136,6 +215,9 @@ local function publishArtifacts(directory: string, root: string)
   local fingerprint = process.env('FORGE_INPUT_FINGERPRINT') or ''
   local expectedSha = process.env('FORGE_RESOLVED_SOURCE_SHA') or ''
   local expectedInputs = process.env('FORGE_INPUTS_JSON') or ''
+  local expectedProfile = process.env('FORGE_RELEASE_PROFILE') or settings.id
+  if expectedProfile ~= settings.id then error('publish profile differs from selected release profile') end
+
   if #fingerprint ~= 64 or not fingerprint:match('^[0-9a-f]+$') or revision ~= expectedSha then
     error('published source SHA or full input fingerprint does not match preflight')
   end
@@ -147,10 +229,11 @@ local function publishArtifacts(directory: string, root: string)
   if expectedInputs == '' then error('missing canonical preflight input JSON') end
   local provenance = util.file(provenancePath)
   local verified = process.run('jq', { '-e', '--arg', 'fingerprint', fingerprint, '--arg', 'sha', revision,
-    '--arg', 'repo', config.repository, '--arg', 'ref', config.ref,
+    '--arg', 'repo', settings.repository, '--arg', 'ref', settings.ref,
+    '--arg', 'profile', expectedProfile, '--arg', 'tag', settings.releaseTag,
     '--argjson', 'inputs', expectedInputs,
     '.schema == "forge-qualified-release/v1" and .qualified == true and .input_fingerprint == $fingerprint'
-      .. ' and .source_sha == $sha and .repository == $repo and .requested_ref == $ref and .inputs == $inputs', provenancePath }, {
+      .. ' and .source_sha == $sha and .repository == $repo and .requested_ref == $ref and .profile == $profile and .release_tag == $tag and .inputs == $inputs', provenancePath }, {
     stdout = 'null', stderr = 'capture',
   })
 
@@ -175,19 +258,45 @@ local function publishArtifacts(directory: string, root: string)
   for filename in allowed do
     if not expected[filename] then error('missing checksum for ' .. filename) end
   end
-  publish(config.releaseTag, root, { main, debug, notes, provenancePath, checksums }, notes)
+  publish(settings, root, { main, debug, notes, provenancePath, checksums }, notes)
 end
 
 local function run(argv: { string })
   local root, failure = fs.cwd()
   if not root then error(failure or 'cannot determine repository root') end
   if not fs.isFile(root .. '/jess.toml') then error('run from the OpenMW Forge repository root') end
-  local valid, reason = validate(config)
-  if not valid then error(reason or 'invalid scheduled release configuration') end
+  local selectedId: string? = process.env('FORGE_RELEASE_PROFILE')
+  local profileOptionSeen = false
+  local publishDirectory: string? = nil
+  local scan = 1
+  while scan <= #argv do
+    if argv[scan] == '--release-profile' then
+      if profileOptionSeen then error('--release-profile may be supplied only once') end
+      profileOptionSeen = true
+      scan += 1
+      local requestedId = argv[scan]
+      if not requestedId or requestedId == '' then error('--release-profile requires an id') end
 
-  if argv[1] == '--publish-artifacts' then
-    if #argv ~= 2 or argv[2] == '' then error('usage: --publish-artifacts /absolute/output/dir') end
-    publishArtifacts(argv[2], root)
+      if selectedId and selectedId ~= requestedId then
+        error('--release-profile conflicts with FORGE_RELEASE_PROFILE')
+      end
+      selectedId = requestedId
+    elseif argv[scan] == '--publish-artifacts' then
+      if publishDirectory then error('--publish-artifacts may be supplied only once') end
+      scan += 1
+      publishDirectory = argv[scan]
+      if not publishDirectory or publishDirectory == '' then
+        error('usage: --publish-artifacts /absolute/output/dir [--release-profile id]')
+      end
+    end
+    scan += 1
+  end
+  local settings = profile(selectedId)
+  local profilesValid, profilesReason = validateProfiles()
+  if not profilesValid then error(profilesReason or 'invalid release profiles') end
+
+  if publishDirectory then
+    publishArtifacts(publishDirectory, root, settings)
     return
   end
 
@@ -198,6 +307,11 @@ local function run(argv: { string })
   local index = 1
   while index <= #argv do
     local flag = argv[index]
+    if flag == '--release-profile' then
+      index += 2
+      continue
+    end
+
     if flag == '--dry-run' then dry = true
     elseif flag == '--prepare-deps' then depsOnly = true
     elseif flag == '--build-only' then buildOnly = true
@@ -214,15 +328,23 @@ local function run(argv: { string })
   local runId = process.env('GITHUB_RUN_ID') or 'local'
   local attempt = process.env('GITHUB_RUN_ATTEMPT') or '1'
   if not runId:match('^[%w%-]+$') or not attempt:match('^%d+$') then error('invalid CI run identity') end
-  local output = root .. '/artifacts/uberbranch/' .. runId .. '-' .. attempt
+  local output = root .. '/artifacts/' .. settings.artifactNamespace .. '/' .. runId .. '-' .. attempt
   local resolvedSha = process.env('FORGE_RESOLVED_SOURCE_SHA')
   if resolvedSha and (#resolvedSha ~= 40 or not resolvedSha:match('^[0-9a-f]+$')) then
     error('invalid preflight source SHA')
   end
-  local command = if depsOnly then depsArgs(config) elseif buildOnly then buildOnlyArgs(config, output, resolvedSha) else buildArgs(config, output)
+  local command = if depsOnly then depsArgs(settings) elseif buildOnly then buildOnlyArgs(settings, output, resolvedSha) else buildArgs(settings, output)
 
-  print(`Scheduled OpenMW source: {config.repository} @ {config.ref}`)
-  print(`GitHub release: {config.releaseTag}`)
+  print(`Release profile: {settings.id}`)
+  print(`OpenMW source: {settings.repository} @ {settings.ref}`)
+  print(`GitHub release: {settings.releaseTag} ({settings.releaseTitle})`)
+  print(`Artifact namespace: {settings.artifactNamespace}`)
+  print('Required features: Vulkan=' .. tostring(settings.features.vulkan)
+    .. ', Luau=' .. tostring(settings.features.luau) .. ', Lua UI=' .. tostring(settings.features.luaUi))
+  print('Test policy: GoogleTests=' .. tostring(settings.testPolicy.googleTests)
+    .. ', package smoke=' .. tostring(settings.testPolicy.packageSmoke)
+    .. ', Qt smoke=' .. tostring(settings.testPolicy.qtSmoke))
+  for _, arg in settings.cmakeArgs do print('CMake argument: ' .. arg) end
   print('Forge command: ' .. binary .. ' ' .. table.concat(command, ' '))
 
   if dry then return end
@@ -235,7 +357,7 @@ local function run(argv: { string })
   end
 
   local main, debug = findOutputs(output)
-  local checkout = source.path(root, config.repository)
+  local checkout = source.path(root, settings.repository)
   local revision = util.file(checkout .. '/.git/forge-revision'):gsub('%s+$', '')
   if not revision:match('^[0-9a-f]+$') or #revision ~= 40 then error('invalid resolved source SHA') end
 
@@ -245,11 +367,11 @@ local function run(argv: { string })
   -- Run the packaged launchers inside real distribution containers; publication
   -- is disabled if this release gate fails.
 
-  util.stream(binary, { 'smoke', '--archive', main, '--engine', 'docker',
-    '--distros', 'almalinux-9,ubuntu-24.04', '--with-qt' }, root)
+  local smoke = smokeArgs(settings, main)
+  if smoke then util.stream(binary, smoke, root) end
 
   local notes = output .. '/SOURCE.txt'
-  local requestedRef = process.env('FORGE_REQUESTED_REF') or config.ref
+  local requestedRef = process.env('FORGE_REQUESTED_REF') or settings.ref
   local fingerprint = process.env('FORGE_INPUT_FINGERPRINT') or ''
   local inputs = process.env('FORGE_INPUTS_JSON') or ''
   if #fingerprint ~= 64 or not fingerprint:match('^[0-9a-f]+$') or inputs == '' then
@@ -257,11 +379,12 @@ local function run(argv: { string })
   end
 
   if resolvedSha and revision ~= resolvedSha then error('built source differs from preflight-resolved SHA') end
-  util.write(notes, `OpenMW repository: {config.repository}\nOpenMW requested ref: {requestedRef}\nOpenMW resolved SHA: {revision}\nBuild input fingerprint: {fingerprint}\nForge CI run: {runId}/{attempt}\n`)
+  util.write(notes, `Profile: {settings.id}\nGitHub release: {settings.releaseTag}\nOpenMW repository: {settings.repository}\nOpenMW requested ref: {requestedRef}\nOpenMW resolved SHA: {revision}\nBuild input fingerprint: {fingerprint}\nForge CI run: {runId}/{attempt}\n`)
   local provenancePath = output .. '/PROVENANCE.json'
   local provenance = util.checked('jq', { '-cnS', '--arg', 'fingerprint', fingerprint, '--arg', 'sha', revision,
-    '--arg', 'repo', config.repository, '--arg', 'ref', requestedRef, '--argjson', 'inputs', inputs,
-    '{schema:"forge-qualified-release/v1",qualified:true,input_fingerprint:$fingerprint,source_sha:$sha,repository:$repo,requested_ref:$ref,inputs:$inputs}' })
+    '--arg', 'repo', settings.repository, '--arg', 'ref', requestedRef,
+    '--arg', 'profile', settings.id, '--arg', 'tag', settings.releaseTag, '--argjson', 'inputs', inputs,
+    '{schema:"forge-qualified-release/v1",qualified:true,input_fingerprint:$fingerprint,source_sha:$sha,repository:$repo,requested_ref:$ref,profile:$profile,release_tag:$tag,inputs:$inputs}' })
   util.write(provenancePath, provenance .. '\n')
   local checksums = output .. '/SHA256SUMS'
   local lines: { string } = {}
@@ -275,7 +398,9 @@ local function run(argv: { string })
 end
 
 return table.freeze {
-  validate = validate, buildArgs = buildArgs, depsArgs = depsArgs, buildOnlyArgs = buildOnlyArgs,
+  validate = validate, validateProfiles = validateProfiles, profile = profile,
+  buildArgs = buildArgs, depsArgs = depsArgs, buildOnlyArgs = buildOnlyArgs,
+  smokeArgs = smokeArgs,
   isMainTarball = isMainTarball,
   findOutputs = findOutputs, publishArtifacts = publishArtifacts, run = run,
 }

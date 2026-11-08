@@ -2,7 +2,7 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 scratch=$(mktemp -d)
-trap 'if [[ -f "$scratch/uberbranch.jsl" ]]; then cp "$scratch/uberbranch.jsl" "$root/src/uberbranch.jsl"; fi; rm -rf "$scratch"' EXIT
+trap 'if [[ -f "$scratch/uberbranch.jsl" ]]; then cp "$scratch/uberbranch.jsl" "$root/src/uberbranch.jsl"; fi; if [[ -f "$scratch/release-profiles.jsl" ]]; then cp "$scratch/release-profiles.jsl" "$root/ci/release-profiles.jsl"; fi; if [[ -f "$scratch/forge-ci.yml" ]]; then cp "$scratch/forge-ci.yml" "$root/.github/workflows/forge-ci.yml"; fi; rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/bin" "$scratch/assets"
 real_git=$(command -v git)
 cat > "$scratch/bin/git" <<'MOCK'
@@ -55,7 +55,10 @@ chmod +x "$scratch/bin/git" "$scratch/bin/gh"
 export PATH="$scratch/bin:$PATH" REAL_GIT="$real_git"
 export GITHUB_OUTPUT="$scratch/output" GITHUB_STEP_SUMMARY="$scratch/summary" GITHUB_TOKEN=fixture
 export OPENMW_REPOSITORY=https://example.invalid/openmw.git OPENMW_REF=master OPENMW_RELEASE_TAG=das-uberbranch
+export OPENMW_PROFILE=upstream
 export FORGE_TOOLCHAIN_ID=ghcr.io/example/forge-builder@sha256:$(printf 'b%.0s' {1..64}) RUNNER_ARCH=X64
+export FORGE_JESS_IDENTITY=dev@sha256:$(printf 'd%.0s' {1..64})
+export FORGE_PROFILE_SETTINGS_JSON='{"schema":"forge-profile-settings/v1","profile":"upstream","repository":"https://example.invalid/openmw.git","ref":"master","release_tag":"das-uberbranch","jobs":"auto","distros":"almalinux-9,ubuntu-24.04","cmake_args":[],"features":{"vulkan":false,"luau":false,"lua_ui":false},"test_policy":{"google_tests":true,"package_smoke":true,"qt_smoke":true}}'
 export MOCK_RELEASE_JSON='{}' MOCK_DOWNLOAD_LOG="$scratch/downloads.log"
 
 run_preflight() { : > "$GITHUB_OUTPUT"; : > "$GITHUB_STEP_SUMMARY"; bash "$root/tools/release_preflight.sh"; }
@@ -76,14 +79,41 @@ refresh_release_json() {
 
 run_preflight
 [[ "$(output should_build)" == true && "$(output reason)" == release-missing ]] || exit 1
-MOCK_GIT_MODE=branch OPENMW_REF=refs/heads/master run_preflight
+upstream_fp=$(output input_fingerprint)
+cp "$root/ci/release-profiles.jsl" "$scratch/release-profiles.jsl"
+sed -i 's/OpenMW Clockwork experimental/Clockwork title-only fixture edit/' "$root/ci/release-profiles.jsl"
+cp "$root/.github/workflows/forge-ci.yml" "$scratch/forge-ci.yml"
+sed -i 's/Forge validation and documentation/Unrelated validation workflow fixture/' "$root/.github/workflows/forge-ci.yml"
+run_preflight
+[[ "$(output input_fingerprint)" == "$upstream_fp" ]] || {
+  echo 'Clockwork metadata or unrelated workflow changed the upstream fingerprint' >&2; exit 1;
+}
+cp "$scratch/release-profiles.jsl" "$root/ci/release-profiles.jsl"
+cp "$scratch/forge-ci.yml" "$root/.github/workflows/forge-ci.yml"
+FORGE_PROFILE_SETTINGS_JSON=$(jq -cn --argjson settings "$FORGE_PROFILE_SETTINGS_JSON" \
+  '$settings | .cmake_args = ["-DUPSTREAM_TEST_FEATURE=ON"]') run_preflight
+[[ "$(output input_fingerprint)" != "$upstream_fp" ]] || {
+  echo 'selected profile build settings did not change the fingerprint' >&2; exit 1;
+}
+FORGE_PROFILE_SETTINGS_JSON=$(jq -cn --argjson settings "$FORGE_PROFILE_SETTINGS_JSON" \
+  '$settings | .cmake_args = []') FORGE_JESS_IDENTITY=dev@sha256:$(printf 'e%.0s' {1..64}) run_preflight
+[[ "$(output input_fingerprint)" != "$upstream_fp" ]] || {
+  echo 'selected immutable Jess runtime identity did not change the fingerprint' >&2; exit 1;
+}
+MOCK_GIT_MODE=branch OPENMW_REF=refs/heads/master \
+  FORGE_PROFILE_SETTINGS_JSON=$(jq -cn --argjson settings "$FORGE_PROFILE_SETTINGS_JSON" \
+    '$settings | .ref = "refs/heads/master"') run_preflight
 [[ "$(output source_sha)" == aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ]] || exit 1
-MOCK_GIT_MODE=tag OPENMW_REF=refs/tags/v1.0 run_preflight
+MOCK_GIT_MODE=tag OPENMW_REF=refs/tags/v1.0 \
+  FORGE_PROFILE_SETTINGS_JSON=$(jq -cn --argjson settings "$FORGE_PROFILE_SETTINGS_JSON" \
+    '$settings | .ref = "refs/tags/v1.0"') run_preflight
 [[ "$(output source_sha)" == cccccccccccccccccccccccccccccccccccccccc ]] || exit 1
 if MOCK_GIT_MODE=collision OPENMW_REF=master run_preflight >/dev/null 2>&1; then
   echo 'unqualified branch/tag collision unexpectedly passed' >&2; exit 1
 fi
-if MOCK_GIT_MODE=tag OPENMW_REF=refs/tags/v1.0 run_preflight >/dev/null 2>&1; then :; else
+if MOCK_GIT_MODE=tag OPENMW_REF=refs/tags/v1.0 \
+  FORGE_PROFILE_SETTINGS_JSON=$(jq -cn --argjson settings "$FORGE_PROFILE_SETTINGS_JSON" \
+    '$settings | .ref = "refs/tags/v1.0"') run_preflight >/dev/null 2>&1; then :; else
   echo 'qualified annotated tag unexpectedly failed' >&2; exit 1
 fi
 run_preflight
@@ -91,17 +121,24 @@ fp=$(output input_fingerprint); sha=$(output source_sha); inputs=$(output inputs
 mkdir -p "$scratch/assets"
 printf 'archive payload\n' > "$scratch/assets/openmw-0.53.0-g${sha:0:12}-Linux-64Bit.tar.gz"
 printf 'debug payload\n' > "$scratch/assets/openmw-0.53.0-g${sha:0:12}-Linux-64Bit-debug.tar.gz"
-printf 'OpenMW repository: %s\nOpenMW requested ref: %s\nOpenMW resolved SHA: %s\nBuild input fingerprint: %s\n' \
-  "$OPENMW_REPOSITORY" "$OPENMW_REF" "$sha" "$fp" > "$scratch/assets/SOURCE.txt"
+printf 'Profile: %s\nGitHub release: %s\nOpenMW repository: %s\nOpenMW requested ref: %s\nOpenMW resolved SHA: %s\nBuild input fingerprint: %s\n' \
+  "$OPENMW_PROFILE" "$OPENMW_RELEASE_TAG" "$OPENMW_REPOSITORY" "$OPENMW_REF" "$sha" "$fp" > "$scratch/assets/SOURCE.txt"
 jq -cnS --arg fp "$fp" --arg sha "$sha" --arg repo "$OPENMW_REPOSITORY" --arg ref "$OPENMW_REF" \
   --argjson inputs "$inputs" \
-  '{schema:"forge-qualified-release/v1",qualified:true,input_fingerprint:$fp,source_sha:$sha,repository:$repo,requested_ref:$ref,inputs:$inputs}' \
+  '{schema:"forge-qualified-release/v1",qualified:true,input_fingerprint:$fp,source_sha:$sha,repository:$repo,requested_ref:$ref,profile:"upstream",release_tag:"das-uberbranch",inputs:$inputs}' \
   > "$scratch/assets/PROVENANCE.json"
 (cd "$scratch/assets" && sha256sum openmw-* SOURCE.txt PROVENANCE.json > SHA256SUMS)
 export MOCK_ASSET_DIR="$scratch/assets" MOCK_GH_MODE=present
 refresh_release_json
 run_preflight
 [[ "$(output should_build)" == false && "$(output reason)" == skipped-qualified ]] || exit 1
+OPENMW_PROFILE=clockwork OPENMW_REPOSITORY=https://example.invalid/clockwork.git \
+  OPENMW_REF=clockwork-alpha OPENMW_RELEASE_TAG=das-uberbranch-clockwork \
+  FORGE_PROFILE_SETTINGS_JSON=$(jq -cn --argjson settings "$FORGE_PROFILE_SETTINGS_JSON" \
+    '$settings | .profile="clockwork" | .repository="https://example.invalid/clockwork.git" | .ref="clockwork-alpha" | .release_tag="das-uberbranch-clockwork" | .cmake_args=["-DOPENMW_USE_VULKAN=ON"] | .features={vulkan:true,luau:true,lua_ui:true}') \
+  run_preflight
+[[ "$(output should_build)" == true && "$(output reason)" == invalid-or-mismatched-provenance ]] || exit 1
+grep -Fq -- '- Profile: `clockwork`' "$GITHUB_STEP_SUMMARY" || exit 1
 grep -qx 'SHA256SUMS SOURCE.txt PROVENANCE.json' "$MOCK_DOWNLOAD_LOG" || exit 1
 if grep -q 'openmw-.*tar.gz' "$MOCK_DOWNLOAD_LOG"; then
   echo 'preflight downloaded a large OpenMW archive' >&2; exit 1
@@ -214,4 +251,4 @@ fallback_actual_id=$(sed -n 's/^toolchain_id=//p' "$GITHUB_OUTPUT")
 [[ "$fallback_actual_id" == "$fallback_preflight_id" ]] || exit 1
 grep -q '^FORGE_TOOLCHAIN_BASE_IMAGE=almalinux/9-base@sha256:' "$GITHUB_ENV" || exit 1
 unset MOCK_IMAGE_MISSING MOCK_MANIFEST_SHAPE
-echo 'PASS release preflight fixtures: qualified refs, branch/tag collision, digest-only asset verification, source/profile/recipe/toolchain changes, force, API failures, OCI index and single-manifest toolchain identities'
+echo 'PASS release preflight fixtures: qualified refs, profile-isolated settings, Jess runtime identity, digest-only asset verification, source/recipe/toolchain changes, force, API failures, OCI index and single-manifest toolchain identities'

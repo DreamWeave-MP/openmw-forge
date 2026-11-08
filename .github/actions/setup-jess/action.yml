@@ -6,23 +6,46 @@ inputs:
   version:
     description: Explicit, tested Jess release tag (required; latest is not reproducible)
     required: true
+outputs:
+  identity:
+    description: Jess release tag and immutable Linux X64 asset digest
+    value: ${{ steps.runtime.outputs.identity }}
 runs:
   using: composite
   steps:
-    - name: Download Jess release
+    - name: Resolve immutable Jess runtime identity
+      id: runtime
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
         JESS_TAG: ${{ inputs.version }}
       run: |
         set -euo pipefail
-        mkdir -p "$RUNNER_TEMP/forge-jess"
         if [[ -z "$JESS_TAG" ]]; then
           echo "Missing tested Jess release tag: set repository variable JESS_RELEASE_TAG" >&2
           exit 1
         fi
+        release=$(gh api "repos/DreamWeave-MP/jess/releases/tags/$JESS_TAG")
+        tag=$(jq -r '.tag_name // empty' <<<"$release")
+        digest=$(jq -r '.assets[] | select(.name == "jess-Linux-X64.zip") | .digest // empty' <<<"$release")
+        if [[ "$tag" != "$JESS_TAG" || ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+          echo "Cannot resolve immutable Jess asset for release $JESS_TAG" >&2
+          exit 1
+        fi
+        echo "sha256=${digest#sha256:}" >> "$GITHUB_OUTPUT"
+        echo "identity=$tag@$digest" >> "$GITHUB_OUTPUT"
+    - name: Download Jess release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        JESS_TAG: ${{ inputs.version }}
+        JESS_SHA256: ${{ steps.runtime.outputs.sha256 }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$RUNNER_TEMP/forge-jess"
         gh release download "$JESS_TAG" --repo DreamWeave-MP/jess \
           --pattern 'jess-Linux-X64.zip' --dir "$RUNNER_TEMP/forge-jess"
+        echo "$JESS_SHA256  $RUNNER_TEMP/forge-jess/jess-Linux-X64.zip" | sha256sum --check -
         unzip -oq "$RUNNER_TEMP/forge-jess/jess-Linux-X64.zip" -d "$RUNNER_TEMP/forge-jess"
         chmod +x "$RUNNER_TEMP/forge-jess/jess"
         "$RUNNER_TEMP/forge-jess/jess" --version
