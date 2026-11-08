@@ -287,5 +287,15 @@ jobs:
             artifacts/uberbranch-clockwork/**/SOURCE.txt
             artifacts/uberbranch-clockwork/**/PROVENANCE.json
             artifacts/uberbranch-clockwork/**/SHA256SUMS
+            work/vulkan-runtime-evidence/**/runtime.log
+            work/vulkan-runtime-evidence/**/vulkaninfo.txt
+            work/vulkan-runtime-evidence/**/vulkan-runtime-packages.txt
+            work/vulkan-runtime-evidence/**/luau-ui-tests.txt
+            work/vulkan-runtime-evidence/**/runner/**/result.json
+            work/vulkan-runtime-evidence/**/runner/**/stdout.log
+            work/vulkan-runtime-evidence/**/runner/**/stderr.log
+            work/vulkan-runtime-evidence/**/vulkan-capture/capture.json
+            work/vulkan-runtime-evidence/**/vulkan-capture/stdout.log
+            work/vulkan-runtime-evidence/**/vulkan-capture/stderr.log
           if-no-files-found: warn
           retention-days: 14
