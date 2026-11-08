@@ -433,7 +433,7 @@ if arguments[1] == 'release' and arguments[2] == 'view' then
     error('mock release not found')
   end
 
-  if arguments[4] == '--json' then print(process.env('FORGE_MOCK_GH_ASSETS') or '') end
+  if arguments[4] == '--json' then print(process.env('FORGE_MOCK_GH_ASSETS') or '{"assets":[]}') end
 end
 
 if arguments[1] == 'image' and process.env('FORGE_MOCK_IMAGE_PRESENT') == '1' then
@@ -1276,7 +1276,7 @@ check(util.file(mockLog) == '', 'invalid provenance must be rejected before invo
 util.write(provenancePath, validProvenance)
 
 local updatingEnv = table.clone(publisherEnv)
-updatingEnv.FORGE_MOCK_GH_ASSETS = 'openmw-0.50.0-Linux-64Bit.tar.gz\nopenmw-0.50.0-Linux-64Bit-debug.tar.gz\nKEEP.bin'
+updatingEnv.FORGE_MOCK_GH_ASSETS = '{"assets":[{"name":"openmw-0.50.0-Linux-64Bit.tar.gz"},{"name":"openmw-0.50.0-Linux-64Bit-debug.tar.gz"},{"name":"KEEP.bin"}]}'
 util.write(mockLog, '')
 local updated = publishFixture(updatingEnv)
 check(updated.success, 'rolling prerelease must replace old qualified archives')
