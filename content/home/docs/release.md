@@ -59,8 +59,12 @@ that revision in the tarball name and `SOURCE.txt` provenance.
 The rolling prerelease includes the main package, matching debug package,
 `SOURCE.txt`, and `SHA256SUMS`. Its previous Forge tarballs are pruned after
 success while unrelated assets remain. GitHub Release assets are independent
-objects, not an atomic multi-asset transaction. Consumers should verify the
-checksums and matching source revision before using a rolling release.
+objects, not an atomic multi-asset transaction. Before updating an existing
+release, Forge removes the previous `SHA256SUMS` completion marker; it then
+uploads the new payload and writes `SHA256SUMS` **last**. Failed or interrupted
+updates therefore leave a visibly unqualified release, rather than a stale
+checksum marker alongside a partially replaced payload. Consumers should verify
+the checksums and matching source revision before using a rolling release.
 
 ## Clockwork experimental release and publish recovery
 
@@ -100,6 +104,30 @@ release by checking `SOURCE.txt`, `PROVENANCE.json`,
 The upstream `das-uberbranch` manual workflow accepts the same run-ID recovery
 inputs for a qualified upstream candidate. Its scheduled runs remain unchanged;
 recovery is an operator-triggered dispatch.
+
+## Promoting the stacked Clockwork pull requests
+
+The current experimental stack is built from PR 04 (Clockwork full build),
+followed by PRs 05 (packaging), 06 (runtime), 07 (release workflow), and 08
+(candidate recovery). Reconcile the latest heads into the descendant branches
+before merging: a previous merge of an earlier PR head does **not** automatically
+include commits made to that PR afterward. Verify the ancestry using
+`git merge-base --is-ancestor` for each predecessor and descendant.
+
+Merge and validate the stack from the tip downward into PR 04, then run the
+**non-publishing** Clockwork qualification on the resulting PR 04 commit. That
+workflow accepts a push to `pr-04-clockwork-full-build` whose head commit message
+includes `[qualify-clockwork]`; it does not publish a release. All Jess, CMake,
+GoogleTest, package, distribution, and Vulkan runtime gates must pass before
+PR 04 is merged to `main`.
+
+GitHub only accepts manual `workflow_dispatch` for workflows registered on the
+default branch. The **publishing** `das-uberbranch-clockwork.yml` workflow comes
+from PR 07 and is not manually dispatchable until that workflow has reached
+`main` as part of the merged stack. After the qualification succeeds and the
+stack is merged to `main`, invoke the Clockwork release workflow explicitly;
+its default behavior must remain manual-only. Never work around the registration
+rule by adding an unreviewed write-scoped push trigger to a PR branch.
 
 ## Offline dry runs for the two scheduled stages
 

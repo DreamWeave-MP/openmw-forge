@@ -443,6 +443,9 @@ if arguments[1] == 'release' and arguments[2] == 'view' then
   if process.env('FORGE_MOCK_GH_MISSING') == '1' and not arguments[4] then
     error('mock release not found')
   end
+  if process.env('FORGE_MOCK_FAIL_LIST') == '1' and arguments[4] == '--json' then
+    error('mock release asset listing failed')
+  end
 
   if arguments[4] == '--json' then print(process.env('FORGE_MOCK_GH_ASSETS') or '{"assets":[]}') end
 end
@@ -1349,6 +1352,30 @@ check(updateLog:find('release\tdelete-asset\tdas-uberbranch\topenmw-0.50.0-Linux
   'rolling release must prune matching old debug archives')
 check(updateLog:find('KEEP.bin', 1, true) == nil,
   'rolling release must preserve unrelated release assets')
+
+local markedEnv = table.clone(publisherEnv)
+markedEnv.FORGE_MOCK_GH_ASSETS = '{"assets":[{"name":"SHA256SUMS"},{"name":"KEEP.bin"}]}'
+util.write(mockLog, '')
+local replacedMarker = publishFixture(markedEnv)
+check(replacedMarker.success, 'existing release with checksum marker must be replaceable')
+local markedLog = util.file(mockLog)
+local markerDeleted = markedLog:find('release\tdelete-asset\tdas-uberbranch\tSHA256SUMS\t--yes', 1, true)
+local payloadStarted = markedLog:find('release\tupload\tdas-uberbranch', 1, true)
+local newMarkerUploaded = markedLog:find('SHA256SUMS\t--clobber', 1, true)
+check(markerDeleted ~= nil and payloadStarted ~= nil and newMarkerUploaded ~= nil
+  and (markerDeleted :: number) < (payloadStarted :: number)
+  and (payloadStarted :: number) < (newMarkerUploaded :: number),
+  'existing checksum marker must be removed before payload changes and restored last')
+check(markedLog:find('KEEP.bin', 1, true) == nil,
+  'invalidating checksum marker must not delete unrelated release assets')
+
+local failedInventoryEnv = table.clone(publisherEnv)
+failedInventoryEnv.FORGE_MOCK_FAIL_LIST = '1'
+util.write(mockLog, '')
+check(not publishFixture(failedInventoryEnv).success,
+  'publisher must not proceed when existing asset listing fails')
+check(util.file(mockLog):find('release\tupload', 1, true) == nil,
+  'failed asset inventory must prevent mutation of the release')
 
 local failedManifestEnv = table.clone(publisherEnv)
 failedManifestEnv.FORGE_MOCK_FAIL_MANIFEST = '1'
