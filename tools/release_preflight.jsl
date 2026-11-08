@@ -1,0 +1,397 @@
+#!/usr/bin/env -S jess run --trusted --package .
+--!strict
+-- Cheap scheduled-release gate. A release is reusable only when its complete
+-- uploaded payload proves the exact versioned source and build identity. Outputs
+-- are the same as the shell gate this replaced: GitHub Actions outputs, a step
+-- summary, and a nonzero exit when the release lookup itself failed.
+local bytes = require '@dream/bytes'
+local fs = require '@dream/fs'
+local json = require '@jess/json'
+local process = require '@dream/process'
+local util = require '@forge/native-util'
+
+local FixedQt = '6.6.3'
+local FixedCompiler = 'GCC Toolset 13; CMake from immutable AlmaLinux 9 builder'
+local RecipeInputs = {
+  '.github/workflows/das-uberbranch.yml', '.github/actions/setup-jess/action.yml',
+  'src', 'tools', 'vendor/builder', 'vendor/deps', 'jess.toml',
+}
+local DependencyInputs = { 'vendor/deps', 'src/native_deps.jsl', 'src/native_sdk_cache.jsl' }
+
+type Asset = { name: string, digest: string? }
+type Release = { isPrerelease: boolean?, assets: { Asset } }
+type Settings = {
+  schema: string?, profile: string?, repository: string?, ref: string?, release_tag: string?,
+  cmake_args: { string }?, features: unknown?, test_policy: unknown?,
+}
+
+local function requiredEnv(name: string): string
+  local value = process.env(name)
+  if not value or value == '' then error(name .. ' is required') end
+  return value
+end
+
+local function validProfileId(value: string): boolean
+  return value:match('^[a-z][a-z0-9-]*$') ~= nil
+end
+
+local function validJessIdentity(value: string): boolean
+  local hex = value:match('^[^%s@]+@sha256:([0-9a-f]+)$')
+  return hex ~= nil and #hex == 64
+end
+
+local function validToolchain(value: string): boolean
+  local hex = value:match('^ghcr%.io/.+@sha256:([0-9a-f]+)$')
+  if hex and #hex == 64 then return true end
+  local first, second = value:match('^fallback:([0-9a-f]+):([0-9a-f]+)$')
+  return first ~= nil and second ~= nil and #first == 64 and #second == 64
+end
+
+-- Lines of a text file, without the newline that ends the last line.
+local function splitLines(text: string): { string }
+  local body = text
+  if body:sub(-1) == '\n' then body = body:sub(1, -2) end
+  local lines: { string } = {}
+  for line in (body .. '\n'):gmatch('([^\n]*)\n') do table.insert(lines, line) end
+  return lines
+end
+
+local function nonEmptyFile(path: string): boolean
+  local stat = fs.stat(path)
+  return stat ~= nil and stat.isFile and stat.size > 0
+end
+
+-- Resolves a branch, tag or qualified ref to one full commit SHA, refusing
+-- ambiguity. An annotated tag resolves to the commit it peels to.
+local function resolveSource(remote: string, ref: string): string
+  local branch, tag, peeled = '', '', ''
+  local argv = { 'ls-remote', remote }
+  if ref:sub(1, 11) == 'refs/heads/' then
+    branch = ref
+    table.insert(argv, branch)
+  elseif ref:sub(1, 10) == 'refs/tags/' then
+    tag = ref
+    peeled = ref .. '^{}'
+    table.insert(argv, tag)
+    table.insert(argv, peeled)
+  else
+    branch = 'refs/heads/' .. ref
+    tag = 'refs/tags/' .. ref
+    peeled = tag .. '^{}'
+    table.insert(argv, branch)
+    table.insert(argv, tag)
+    table.insert(argv, peeled)
+  end
+
+  local listing = process.run('git', argv, { stdout = 'capture', stderr = 'capture' })
+  if not listing or not listing.success then error('Failed to query source ref ' .. remote .. ' @ ' .. ref) end
+
+  local matches: { { sha: string, refname: string } } = {}
+  for _, line in splitLines(listing.stdout or '') do
+    local sha, refname = line:match('^(%S+)%s+(%S+)$')
+    if sha and refname and (refname == branch or refname == tag or refname == peeled) then
+      table.insert(matches, { sha = sha, refname = refname })
+    end
+  end
+
+  if #matches == 0 then error('Source ref not found: ' .. remote .. ' @ ' .. ref) end
+  if #matches > 2 then error('Ambiguous source ref: ' .. remote .. ' @ ' .. ref) end
+
+  local branchSha, tagSha, peeledSha = '', '', ''
+  for _, match in matches do
+    if match.refname == branch then branchSha = match.sha end
+    if match.refname == tag then tagSha = match.sha end
+    if match.refname == peeled then peeledSha = match.sha end
+  end
+
+  if branchSha ~= '' and tagSha ~= '' then
+    error('Ref resolves as both branch and tag; configure a qualified ref: ' .. ref)
+  end
+
+  local sha = if peeledSha ~= '' then peeledSha elseif branchSha ~= '' then branchSha else tagSha
+  if #sha ~= 40 or sha:match('^[0-9a-f]+$') == nil then
+    error('Remote returned a non-commit SHA for ' .. ref)
+  end
+  return sha
+end
+
+-- Tracked files under the given paths, in the order git lists them.
+local function trackedFiles(paths: { string }): { string }
+  local argv = { 'ls-files', '-z', '--' }
+  for _, path in paths do table.insert(argv, path) end
+  local listing = util.checked('git', argv)
+  local files: { string } = {}
+  for entry in listing:gmatch('[^\0]+') do table.insert(files, entry) end
+  return files
+end
+
+-- sha256 over the "digest  path" lines sha256sum would print, for the files in order.
+local function digestOfDigests(files: { string }): string
+  local lines: { string } = {}
+  for _, path in files do
+    table.insert(lines, util.sha256(path) .. '  ' .. path .. '\n')
+  end
+  return bytes.sha256(table.concat(lines))
+end
+
+local function assetDigest(release: Release, name: string): string?
+  for _, asset in release.assets do
+    if asset.name == name then return asset.digest end
+  end
+  return nil
+end
+
+local function assetCount(release: Release, name: string): number
+  local count = 0
+  for _, asset in release.assets do
+    if asset.name == name then count += 1 end
+  end
+  return count
+end
+
+-- A downloaded payload is reusable only when every asset's digest, the SHA256SUMS
+-- marker, and the SOURCE and PROVENANCE checksums agree with the bytes on disk.
+local function verifyAssetDigests(release: Release, directory: string): boolean
+  local manifest = directory .. '/SHA256SUMS'
+  if not (nonEmptyFile(manifest) and nonEmptyFile(directory .. '/SOURCE.txt')
+    and nonEmptyFile(directory .. '/PROVENANCE.json')) then
+    return false
+  end
+
+  local markerDigest = assetDigest(release, 'SHA256SUMS') or ''
+  if markerDigest:match('^sha256:[0-9a-f]+$') == nil or #markerDigest ~= 71 then return false end
+  if markerDigest ~= 'sha256:' .. util.sha256(manifest) then return false end
+
+  local mainNames: { string }, debugNames: { string } = {}, {}
+  for _, asset in release.assets do
+    if asset.name:match('^openmw%-.*%-Linux%-64Bit%.tar%.gz$') then table.insert(mainNames, asset.name) end
+    if asset.name:match('^openmw%-.*%-Linux%-64Bit%-debug%.tar%.gz$') then table.insert(debugNames, asset.name) end
+  end
+
+  if #mainNames ~= 1 or #debugNames ~= 1 then return false end
+
+  local checksums: { [string]: string } = {}
+  local entryCount = 0
+  local manifestText = util.file(manifest)
+  for _, line in splitLines(manifestText) do
+    local sha, filename = line:match('^(%S+)%s+(%S+)$')
+    if not sha or #sha ~= 64 or sha:match('^[0-9a-f]+$') == nil then return false end
+    if not filename or filename:match('^[A-Za-z0-9._+-]+$') == nil or checksums[filename] then return false end
+    if assetCount(release, filename) ~= 1 then return false end
+    if assetDigest(release, filename) ~= 'sha256:' .. sha then return false end
+    checksums[filename] = sha
+    entryCount += 1
+  end
+
+  if entryCount ~= 4 then return false end
+  local mainName, debugName = mainNames[1], debugNames[1]
+  if not checksums[mainName] or not checksums[debugName] then return false end
+  local sourceSha = checksums['SOURCE.txt']
+  local provenanceSha = checksums['PROVENANCE.json']
+  if not sourceSha or not provenanceSha then return false end
+  if util.sha256(directory .. '/SOURCE.txt') ~= sourceSha then return false end
+  if util.sha256(directory .. '/PROVENANCE.json') ~= provenanceSha then return false end
+  return true
+end
+
+-- The provenance must name exactly this release identity, with canonical inputs.
+local function provenanceMatches(path: string, expected: {
+  fingerprint: string, sourceSha: string, repository: string, ref: string,
+  profile: string, releaseTag: string, inputs: string,
+}): boolean
+  local document = json.decode(util.file(path)) :: {
+    schema: string?, qualified: boolean?, input_fingerprint: string?, source_sha: string?,
+    repository: string?, requested_ref: string?, profile: string?, release_tag: string?,
+    inputs: unknown?,
+  }
+  return document.schema == 'forge-qualified-release/v1'
+    and document.qualified == true
+    and document.input_fingerprint == expected.fingerprint
+    and document.source_sha == expected.sourceSha
+    and document.repository == expected.repository
+    and document.requested_ref == expected.ref
+    and document.profile == expected.profile
+    and document.release_tag == expected.releaseTag
+    and json.encodeTable(document.inputs) == expected.inputs
+end
+
+local function sourceNotesMatch(path: string, expected: { string }): boolean
+  local present: { [string]: boolean } = {}
+  for _, line in splitLines(util.file(path)) do present[line] = true end
+
+  for _, line in expected do
+    if not present[line] then return false end
+  end
+  return true
+end
+
+local function main()
+  local root, rootFailure = fs.cwd()
+  if not root then error(rootFailure or 'cannot determine the repository root') end
+  local githubOutput = requiredEnv('GITHUB_OUTPUT')
+  local stepSummary = requiredEnv('GITHUB_STEP_SUMMARY')
+  local token = requiredEnv('GITHUB_TOKEN')
+  local repository = requiredEnv('OPENMW_REPOSITORY')
+  local ref = requiredEnv('OPENMW_REF')
+  local releaseTag = requiredEnv('OPENMW_RELEASE_TAG')
+  local toolchainId = requiredEnv('FORGE_TOOLCHAIN_ID')
+  local runnerArch = requiredEnv('RUNNER_ARCH')
+  local settingsText = requiredEnv('FORGE_PROFILE_SETTINGS_JSON')
+  local jessIdentity = requiredEnv('FORGE_JESS_IDENTITY')
+  local profileId = process.env('OPENMW_PROFILE') or ''
+  if profileId == '' then profileId = 'upstream' end
+  if not validProfileId(profileId) then error('Invalid release profile id: ' .. profileId) end
+
+  if not validJessIdentity(jessIdentity) then
+    error('Cannot establish immutable Jess runtime identity: ' .. jessIdentity)
+  end
+
+  if not validToolchain(toolchainId) then
+    error('Cannot establish immutable toolchain identity: ' .. toolchainId)
+  end
+
+  local settings = json.decode(settingsText) :: Settings
+  if type(settings) ~= 'table' or settings.schema ~= 'forge-profile-settings/v1'
+    or settings.profile ~= profileId or settings.repository ~= repository
+    or settings.ref ~= ref or settings.release_tag ~= releaseTag
+    or type(settings.cmake_args) ~= 'table' or type(settings.features) ~= 'table'
+    or type(settings.test_policy) ~= 'table' then
+    error('release profile settings do not match selected source')
+  end
+  local cmakeArgs = settings.cmake_args :: { string }
+
+  local sourceSha = resolveSource(repository, ref)
+  local recipeHash = digestOfDigests(trackedFiles(RecipeInputs))
+  local dependencies = digestOfDigests(trackedFiles(DependencyInputs))
+
+  local inputs = json.encodeTable {
+    schema = 'forge-release-inputs/v1',
+    profile = profileId,
+    repository = repository,
+    requested_ref = ref,
+    release_tag = releaseTag,
+    source_sha = sourceSha,
+    target = 'linux-' .. runnerArch,
+    toolchain = toolchainId,
+    dependency_sdk_fingerprint = dependencies,
+    qt = FixedQt,
+    compiler_configuration = FixedCompiler,
+    cmake_flags = cmakeArgs,
+    profile_settings = settings,
+    jess_runtime = jessIdentity,
+    forge_recipe_sha256 = recipeHash,
+  }
+  local fingerprint = bytes.sha256(inputs)
+
+  local outputs = 'source_sha=' .. sourceSha .. '\ninput_fingerprint=' .. fingerprint
+    .. '\ninputs_json=' .. inputs .. '\n'
+  local written, writeProblem = fs.writeFile(githubOutput, outputs, { append = true })
+  if not written then error(writeProblem or 'cannot write preflight identity outputs') end
+
+  local shouldBuild = true
+  local reason = 'release-missing'
+  local preflightFailure = false
+  local forceRebuild = process.env('FORCE_REBUILD') == 'true'
+  if forceRebuild then
+    reason = 'manual-force-rebuild'
+  else
+    local listing = process.run('gh', { 'release', 'view', releaseTag, '--json', 'assets,isPrerelease' }, {
+      env = { GH_TOKEN = token }, stdout = 'capture', stderr = 'capture',
+    })
+
+    if listing and listing.success then
+      local release = json.decode(listing.stdout or '') :: Release
+      local names: { string } = {}
+      for _, asset in release.assets do table.insert(names, asset.name) end
+
+      local function hasName(name: string): boolean
+        return assetCount(release, name) > 0
+      end
+
+      local function nameContains(fragment: string): boolean
+        for _, name in names do
+          if string.find(name, fragment, 1, true) then return true end
+        end
+        return false
+      end
+      local mainCount = 0
+      local debugCount = 0
+      for _, name in names do
+        if name:match('^openmw%-.*%-Linux%-64Bit%.tar%.gz$') then mainCount += 1 end
+        if name:match('^openmw%-.*%-Linux%-64Bit%-debug%.tar%.gz$') then debugCount += 1 end
+      end
+      local twelve = sourceSha:sub(1, 12)
+
+      if release.isPrerelease == true and hasName('SHA256SUMS') and hasName('SOURCE.txt')
+        and hasName('PROVENANCE.json') and mainCount == 1 and debugCount == 1
+        and nameContains('-g' .. twelve .. '-Linux-64Bit.tar.gz')
+        and nameContains('-g' .. twelve .. '-Linux-64Bit-debug.tar.gz') then
+        local temp = root .. '/work/preflight-' .. bytes.toHex(bytes.random(8))
+        fs.mkdir(temp, { recursive = true })
+        local download = process.run('gh', {
+          'release', 'download', releaseTag,
+          '--pattern', 'SHA256SUMS', '--pattern', 'SOURCE.txt', '--pattern', 'PROVENANCE.json',
+          '--dir', temp,
+        }, { env = { GH_TOKEN = token }, stdout = 'null', stderr = 'null' })
+        local downloaded = download ~= nil and download.success
+          and #(fs.list(temp) or {}) == 3
+          and verifyAssetDigests(release, temp)
+        if not downloaded then
+          reason = 'missing-or-invalid-checksum-payload'
+        else
+          local expected = {
+            fingerprint = fingerprint, sourceSha = sourceSha, repository = repository, ref = ref,
+            profile = profileId, releaseTag = releaseTag, inputs = inputs,
+          }
+
+          local sourceLines = {
+            'Profile: ' .. profileId,
+            'GitHub release: ' .. releaseTag,
+            'OpenMW repository: ' .. repository,
+            'OpenMW requested ref: ' .. ref,
+            'OpenMW resolved SHA: ' .. sourceSha,
+            'Build input fingerprint: ' .. fingerprint,
+          }
+
+          if provenanceMatches(temp .. '/PROVENANCE.json', expected)
+            and sourceNotesMatch(temp .. '/SOURCE.txt', sourceLines) then
+            shouldBuild = false
+            reason = 'skipped-qualified'
+          else
+            reason = 'invalid-or-mismatched-provenance'
+          end
+        end
+        fs.remove(temp, { recursive = true })
+      else
+        reason = 'incomplete-release-assets'
+      end
+    else
+      -- Release lookup failure is not evidence of qualification. Rebuild and let
+      -- the narrowly scoped publish job report any persistent API failure.
+      local errorText = ((listing and listing.stderr) or ''):lower()
+      if errorText:find('http 404', 1, true) or errorText:find('not found', 1, true) then
+        reason = 'release-missing'
+      else
+        reason = 'release-api-unavailable'
+        preflightFailure = true
+      end
+    end
+  end
+
+  local decision = 'should_build=' .. tostring(shouldBuild) .. '\nreason=' .. reason .. '\n'
+  local decided, decideProblem = fs.writeFile(githubOutput, decision, { append = true })
+  if not decided then error(decideProblem or 'cannot write preflight decision') end
+
+  local summary = '### Release preflight\n\n- Profile: `' .. profileId .. '`\n- Decision: `' .. reason
+    .. '`\n- Source: `' .. repository .. '` @ `' .. ref .. '`\n- Release: `' .. releaseTag
+    .. '`\n- Resolved SHA: `' .. sourceSha .. '`\n- Input fingerprint: `' .. fingerprint .. '`\n'
+  local summarized, summaryProblem = fs.writeFile(stepSummary, summary, { append = true })
+  if not summarized then error(summaryProblem or 'cannot write preflight summary') end
+
+  print('Preflight: ' .. reason .. ' (' .. fingerprint .. ')')
+  if preflightFailure then
+    error('Release metadata lookup failed; refusing to run an expensive build without a reliable preflight result.')
+  end
+end
+
+main()

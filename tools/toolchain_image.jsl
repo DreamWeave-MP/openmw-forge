@@ -93,7 +93,7 @@ local function manifestDigest(reference: string): string
 
   -- json.decode raises on output that is not JSON. Docker then describes no digest we
   -- can use, so the result is the same as a missing image: the explicit fallback.
-  local decoded, document = pcall(json.decode, result.stdout or '')
+  local decoded, document = pcall(function() return json.decode(result.stdout or '') end)
   if not decoded or type(document) ~= 'table' then return '' end
 
   local manifests = document :: { Manifest }
