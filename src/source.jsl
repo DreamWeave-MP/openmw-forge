@@ -52,6 +52,12 @@ local function path(root: string, repo: string): string
   return root .. '/work/sources/git-' .. key(repo)
 end
 
+-- The public build planner and the post-build runtime qualification must
+-- resolve the SAME persisted build tree for the exact requested ref.
+local function buildPath(root: string, repo: string, ref: string): string
+  return root .. '/work/build-' .. key(repo .. '#' .. ref)
+end
+
 local function checkout(options: Options)
   if not validRepo(options.repo) then error('unsupported Git remote; use HTTPS or SSH') end
   if not validRef(options.ref) then error('invalid Git ref') end
@@ -88,4 +94,4 @@ local function checkout(options: Options)
   print('OpenMW revision: ' .. revision)
 end
 
-return table.freeze { checkout = checkout, validRepo = validRepo, validRef = validRef, path = path, key = key }
+return table.freeze { checkout = checkout, validRepo = validRepo, validRef = validRef, path = path, key = key, buildPath = buildPath }

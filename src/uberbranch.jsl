@@ -493,8 +493,14 @@ local function run(argv: { string })
       error('qualified Clockwork release archive is missing required runtime contents')
     end
 
+    -- The --repo build planner keys the CMake build root by repository AND
+    -- requested ref. In CI, --build-only uses the preflight-pinned SHA.
+    -- Never pass the default work/build directory to the runtime harness:
+    -- it would look for test binaries and the renderer probe in the wrong tree.
+    local buildRef = if buildOnly then (resolvedSha or settings.ref) else settings.ref
+    local buildRoot = source.buildPath(root, settings.repository, buildRef)
     local evidence = root .. '/work/vulkan-runtime-evidence/' .. runId .. '-' .. attempt
-    clockworkSmoke.run(checkout, root .. '/work/build', packageRoot, root .. '/work/deps',
+    clockworkSmoke.run(checkout, buildRoot, packageRoot, root .. '/work/deps',
       suiteRoot, evidence, revision, process.env('FORGE_TOOLCHAIN_IMAGE') or '',
       process.env('FORGE_CONTAINER_ENGINE') or 'docker', runId)
     local qualification = evidence .. '/CLOCKWORK-VULKAN-QUALIFICATION.txt'
