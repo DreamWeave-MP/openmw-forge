@@ -59,8 +59,75 @@ that revision in the tarball name and `SOURCE.txt` provenance.
 The rolling prerelease includes the main package, matching debug package,
 `SOURCE.txt`, and `SHA256SUMS`. Its previous Forge tarballs are pruned after
 success while unrelated assets remain. GitHub Release assets are independent
-objects, not an atomic multi-asset transaction. Consumers should verify the
-checksums and matching source revision before using a rolling release.
+objects, not an atomic multi-asset transaction. Before updating an existing
+release, Forge removes the previous `SHA256SUMS` completion marker; it then
+uploads the new payload and writes `SHA256SUMS` **last**. Failed or interrupted
+updates therefore leave a visibly unqualified release, rather than a stale
+checksum marker alongside a partially replaced payload. Consumers should verify
+the checksums and matching source revision before using a rolling release.
+
+## Clockwork experimental release and publish recovery
+
+Clockwork is published only through the separate
+`das-uberbranch-clockwork` experimental prerelease. Its workflow remains
+`workflow_dispatch` only until the real Vulkan frame, Luau/UI behavior, package,
+GoogleTest, ABI, and distribution gates have passed. The upstream four-hour
+schedule and release tag are independent.
+
+Preflight records the full Clockwork source SHA and versioned build-input
+fingerprint. If that identity already has a complete checksummed release, the
+workflow exits without restoring SDK or compiler caches. Use `force_rebuild`
+only when a new compilation is intended. Cache hits are reported separately;
+they never qualify a release.
+
+If a build and its qualification tests succeeded but the publication job
+failed, dispatch the Clockwork workflow again with the prior run's numeric
+`candidate_run_id`. Set `force_republish` when the existing release is already
+qualified but the operator explicitly wants to publish that candidate again.
+Recovery checks that the run belongs to this workflow and repository, its
+Clockwork build job succeeded, and its candidate artifact is still retained.
+Forge then compares its full source SHA, fingerprint, structured provenance,
+Clockwork Vulkan report, and every SHA-256 entry against the new preflight
+identity before transferring it to the write-scoped publisher. A missing,
+expired, malformed, or mismatched candidate falls back to a cold build when
+preflight says one is needed. A failed build, GoogleTest, ABI, or smoke gate
+does not upload a candidate. Candidate artifacts are retained for three days;
+they are not a compilation cache and do not bypass qualification.
+
+The run summary records the profile, full source SHA, fingerprint, preflight and
+recovery decision, cache restore results, builder digest, total build/smoke
+duration, CMake compile wall time, completed per-launcher distro smoke results
+and failures, ccache statistics, and release URL when one is available. Verify the published
+release by checking `SOURCE.txt`, `PROVENANCE.json`,
+`VULKAN-QUALIFICATION.txt`, and `SHA256SUMS` together.
+
+The upstream `das-uberbranch` manual workflow accepts the same run-ID recovery
+inputs for a qualified upstream candidate. Its scheduled runs remain unchanged;
+recovery is an operator-triggered dispatch.
+
+## Promoting the stacked Clockwork pull requests
+
+The current experimental stack is built from PR 04 (Clockwork full build),
+followed by PRs 05 (packaging), 06 (runtime), 07 (release workflow), and 08
+(candidate recovery). Reconcile the latest heads into the descendant branches
+before merging: a previous merge of an earlier PR head does **not** automatically
+include commits made to that PR afterward. Verify the ancestry using
+`git merge-base --is-ancestor` for each predecessor and descendant.
+
+Merge and validate the stack from the tip downward into PR 04, then run the
+**non-publishing** Clockwork qualification on the resulting PR 04 commit. That
+workflow accepts a push to `pr-04-clockwork-full-build` whose head commit message
+includes `[qualify-clockwork]`; it does not publish a release. All Jess, CMake,
+GoogleTest, package, distribution, and Vulkan runtime gates must pass before
+PR 04 is merged to `main`.
+
+GitHub only accepts manual `workflow_dispatch` for workflows registered on the
+default branch. The **publishing** `das-uberbranch-clockwork.yml` workflow comes
+from PR 07 and is not manually dispatchable until that workflow has reached
+`main` as part of the merged stack. After the qualification succeeds and the
+stack is merged to `main`, invoke the Clockwork release workflow explicitly;
+its default behavior must remain manual-only. Never work around the registration
+rule by adding an unreviewed write-scoped push trigger to a PR branch.
 
 ## Offline dry runs for the two scheduled stages
 

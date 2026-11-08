@@ -42,9 +42,10 @@ check(util.resolveJobs(2) == 2, 'explicit parallelism must override auto detecti
 -- GitHub's automatic cache save requires a successful overall job.
 local workflow = util.file(root .. '/.github/workflows/das-uberbranch.yml')
 local preflight = util.file(root .. '/tools/release_preflight.jsl')
-check(workflow:find('needs: preflight', 1, true) ~= nil
-  and workflow:find("if: needs.preflight.outputs.should_build == 'true'", 1, true) ~= nil,
-  'expensive build and publication jobs must depend on successful qualification preflight')
+check(workflow:find('needs: [preflight, recover-candidate]', 1, true) ~= nil
+  and workflow:find('needs: [preflight, recover-candidate, build]', 1, true) ~= nil
+  and workflow:find("needs.preflight.outputs.should_build == 'true'", 1, true) ~= nil,
+  'build and publication jobs must depend on successful preflight and only reuse validated candidates')
 check(workflow:find('force_rebuild:', 1, true) ~= nil
   and workflow:find('type: boolean', 1, true) ~= nil,
   'manual dispatch must expose an explicit boolean force_rebuild')
@@ -58,6 +59,7 @@ check(preflight:find('verifyAssetDigests', 1, true) ~= nil
 check(preflight:find('profile_settings = settings', 1, true) ~= nil
   and preflight:find('jess_runtime = jessIdentity', 1, true) ~= nil
   and preflight:find("'.github/workflows/das-uberbranch.yml', '.github/actions/setup-jess/action.yml',", 1, true) ~= nil
+  and preflight:find("'.github/workflows/das-uberbranch-clockwork.yml'", 1, true) ~= nil
   and preflight:find("'.github/workflows', 'ci'", 1, true) == nil,
   'release fingerprint must include selected profile settings and pinned Jess identity without hashing every profile')
 local setupJessAction = util.file(root .. '/.github/actions/setup-jess/action.yml')
@@ -77,6 +79,15 @@ if not releaseFixtures or not releaseFixtures.success then
 end
 check((releaseFixtures.stdout or ''):find('PASS release preflight fixtures', 1, true) ~= nil,
   'release preflight fixture matrix must report its covered decisions')
+local candidateFixtures, candidateFixtureFailure = process.run('bash', { root .. '/tests/release_candidate.sh' }, {
+  cwd = root, stdout = 'capture', stderr = 'capture',
+})
+
+if not candidateFixtures or not candidateFixtures.success then
+  error('release candidate fixture matrix failed: ' .. (candidateFixtureFailure or (candidateFixtures and candidateFixtures.stderr or 'unknown')))
+end
+check((candidateFixtures.stdout or ''):find('PASS candidate recovery fixtures', 1, true) ~= nil,
+  'candidate recovery must cover prior publish failure and invalid/expired candidate fallbacks')
 check(workflow:find('uses: actions/cache/restore@v6', 1, true) ~= nil,
   'hosted compiler cache must use an explicit restore-only action')
 check(workflow:find('uses: actions/cache/save@v6', 1, true) ~= nil,
@@ -431,6 +442,9 @@ if arguments[1] == 'rm' and arguments[2] == '-f' then return end
 if arguments[1] == 'release' and arguments[2] == 'view' then
   if process.env('FORGE_MOCK_GH_MISSING') == '1' and not arguments[4] then
     error('mock release not found')
+  end
+  if process.env('FORGE_MOCK_FAIL_LIST') == '1' and arguments[4] == '--json' then
+    error('mock release asset listing failed')
   end
 
   if arguments[4] == '--json' then print(process.env('FORGE_MOCK_GH_ASSETS') or '{"assets":[]}') end
@@ -913,6 +927,22 @@ check(not fs.exists(pendingPair), 'archive recovery must retire its transaction 
 
 
 -- A valid tarball from the staged tree should pass the actual compiled smoke CLI.
+-- Smoke requires every packaged tool, so the valid package carries all of them.
+-- Legacy tools must print their help banner to pass; the others need only exit 0.
+local LegacyBanners: { [string]: string } = {
+  bsatool = 'Inspect and extract files from Bethesda BSA archives',
+  esmtool = 'Inspect and extract from Morrowind ES files',
+  niftest = 'Ensure that OpenMW can use the provided NIF',
+}
+
+for _, tool in { 'openmw-iniimporter', 'openmw-essimporter', 'openmw-navmeshtool', 'openmw-bulletobjecttool', 'bsatool', 'esmtool', 'niftest' } do
+  local banner = LegacyBanners[tool]
+  local body = ''
+  if banner then body = 'printf "%s\\n" "' .. banner .. '"\n' end
+  util.write(stage .. '/' .. tool .. '.x86_64', '#!/bin/sh\n' .. body .. 'exit 0\n')
+  util.write(stage .. '/' .. tool, '#!/bin/sh\nexec "$(dirname "$0")/' .. tool .. '.x86_64" "$@"\n')
+  util.stream('chmod', { '+x', stage .. '/' .. tool .. '.x86_64', stage .. '/' .. tool })
+end
 util.copy('/usr/bin/true', stage .. '/openmw.x86_64')
 util.stream('chmod', { '+x', stage .. '/openmw.x86_64' })
 local valid = scratch .. '/valid.tar.gz'
@@ -1245,6 +1275,41 @@ local function publishFixture(env: { [string]: string }, explicitProfile: boolea
   return result
 end
 
+local function verifyCandidateFixture(env: { [string]: string }, directory: string?): dream_process_Result
+  local result, failure = process.run(jessBin, {
+    'run', '--trusted', '--package', '.', 'tools/uberbranch.jsl', '--verify-artifacts', directory or releaseDir,
+  }, { cwd = root, env = env, stdout = 'capture', stderr = 'capture' })
+
+  if not result then error('failed to invoke candidate verifier: ' .. (failure or '')) end
+
+  return result
+end
+
+local verifierEnv = table.clone(publisherEnv)
+verifierEnv.GH_TOKEN = ''
+local verifiedCandidate = verifyCandidateFixture(verifierEnv)
+check(verifiedCandidate.success
+  and (verifiedCandidate.stdout or ''):find('PASS candidate artifacts match current preflight identity and checksums', 1, true) ~= nil,
+  'read-only candidate verification must accept a complete candidate without a release token')
+
+local mismatchDir = scratch .. '/release-candidate-mismatched-debug'
+util.mkdir(mismatchDir)
+util.copy(releaseMain, mismatchDir .. '/' .. (fs.fileName(releaseMain) or 'main.tar.gz'))
+local wrongDebug = mismatchDir .. '/openmw-0.53.0-g' .. string.rep('b', 12) .. '-Linux-64Bit-debug.tar.gz'
+util.copy(releaseDebug, wrongDebug)
+for _, filename in { 'SOURCE.txt', 'PROVENANCE.json', 'SHA256SUMS' } do
+  util.copy(releaseDir .. '/' .. filename, mismatchDir .. '/' .. filename)
+end
+local mismatchedDebugCandidate = verifyCandidateFixture(verifierEnv, mismatchDir)
+check(not mismatchedDebugCandidate.success
+  and (mismatchedDebugCandidate.stderr or ''):find('release tarball filename does not match source provenance', 1, true) ~= nil,
+  'read-only candidate verification must reject a debug archive from a different source revision')
+
+local staleCandidate = table.clone(verifierEnv)
+staleCandidate.FORGE_RESOLVED_SOURCE_SHA = string.rep('b', 40)
+check(not verifyCandidateFixture(staleCandidate).success,
+  'read-only candidate verification must reject a different source SHA before recovery')
+
 local withoutToken = table.clone(publisherEnv)
 withoutToken.GH_TOKEN = ''
 check(not publishFixture(withoutToken).success, 'publisher must require a release-capable token')
@@ -1287,6 +1352,30 @@ check(updateLog:find('release\tdelete-asset\tdas-uberbranch\topenmw-0.50.0-Linux
   'rolling release must prune matching old debug archives')
 check(updateLog:find('KEEP.bin', 1, true) == nil,
   'rolling release must preserve unrelated release assets')
+
+local markedEnv = table.clone(publisherEnv)
+markedEnv.FORGE_MOCK_GH_ASSETS = '{"assets":[{"name":"SHA256SUMS"},{"name":"KEEP.bin"}]}'
+util.write(mockLog, '')
+local replacedMarker = publishFixture(markedEnv)
+check(replacedMarker.success, 'existing release with checksum marker must be replaceable')
+local markedLog = util.file(mockLog)
+local markerDeleted = markedLog:find('release\tdelete-asset\tdas-uberbranch\tSHA256SUMS\t--yes', 1, true)
+local payloadStarted = markedLog:find('release\tupload\tdas-uberbranch', 1, true)
+local newMarkerUploaded = markedLog:find('SHA256SUMS\t--clobber', 1, true)
+check(markerDeleted ~= nil and payloadStarted ~= nil and newMarkerUploaded ~= nil
+  and (markerDeleted :: number) < (payloadStarted :: number)
+  and (payloadStarted :: number) < (newMarkerUploaded :: number),
+  'existing checksum marker must be removed before payload changes and restored last')
+check(markedLog:find('KEEP.bin', 1, true) == nil,
+  'invalidating checksum marker must not delete unrelated release assets')
+
+local failedInventoryEnv = table.clone(publisherEnv)
+failedInventoryEnv.FORGE_MOCK_FAIL_LIST = '1'
+util.write(mockLog, '')
+check(not publishFixture(failedInventoryEnv).success,
+  'publisher must not proceed when existing asset listing fails')
+check(util.file(mockLog):find('release\tupload', 1, true) == nil,
+  'failed asset inventory must prevent mutation of the release')
 
 local failedManifestEnv = table.clone(publisherEnv)
 failedManifestEnv.FORGE_MOCK_FAIL_MANIFEST = '1'
