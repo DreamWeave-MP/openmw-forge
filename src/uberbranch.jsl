@@ -176,6 +176,36 @@ local function publish(settings: Profile, root: string, files: { string }, notes
     util.stream('gh', { 'release', 'create', tag, '--target', target, '--title', settings.releaseTitle,
       '--prerelease', '--notes-file', notes }, root, env)
   end
+
+  -- Invalidate an existing completion marker BEFORE changing any release
+  -- assets. Otherwise a previous SHA256SUMS remains publicly visible while
+  -- a new payload is partially uploaded; a failed upload can leave a release
+  -- falsely appearing qualified. An incomplete release must fail closed.
+  if view and view.success then
+    local listed = process.run('gh', { 'release', 'view', tag, '--json', 'assets' }, {
+      cwd = root, env = env, stdout = 'capture', stderr = 'capture',
+    })
+
+    if not listed or not listed.success then
+      error('cannot inspect existing release assets before publication')
+    end
+
+    local release = json.decode(listed.stdout or '') :: { assets: { { name: string } } }
+    if type(release) ~= 'table' or type(release.assets) ~= 'table' then
+      error('existing release does not provide an asset inventory')
+    end
+    local markerCount = 0
+    for _, asset in release.assets do
+      if asset.name == 'SHA256SUMS' then markerCount += 1 end
+    end
+
+    if markerCount > 1 then error('existing release has duplicate checksum completion markers') end
+
+    if markerCount == 1 then
+      util.stream('gh', { 'release', 'delete-asset', tag, 'SHA256SUMS', '--yes' }, root, env)
+    end
+  end
+
   -- A rolling GitHub release cannot update several assets atomically. Upload
   -- content first, then publish the checksum manifest LAST as the completion
   -- marker. A reader must verify SHA256SUMS before accepting any artifact.
