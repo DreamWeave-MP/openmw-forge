@@ -423,6 +423,7 @@ set(VCPKG_OSX_DEPLOYMENT_TARGET "13.0")
       "platform": "linux",
       "features": [
         "dbus",
+        "vulkan",
         "x11",
         "wayland"
       ]

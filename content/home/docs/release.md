@@ -26,7 +26,12 @@ The scheduled **Das UberBranch** workflow builds **Clockwork Vulkan** from
 logic. The only source-specific parameters are encoded in
 `ci/release-profiles.jsl`: source repository/ref, required CMake features,
 release identity, and package namespace. Dependencies and builder-image
-selection remain independent of renderer validation.
+selection remain independent of renderer validation. Both source profiles
+consume the same Linux vcpkg SDK: SDL2 is built with its `vulkan` feature
+and X11/Wayland window backends enabled. This makes Vulkan window creation
+available to Clockwork without enabling Vulkan rendering in upstream/master.
+The manifest change invalidates the dependency SDK identity and requires a new
+SDK build; CI does not perform frame capture or renderer verification.
 
 The two profiles currently publish to separate prereleases:
 `das-uberbranch-clockwork` and `das-uberbranch`, respectively. Keeping both
