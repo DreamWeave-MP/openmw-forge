@@ -1,10 +1,18 @@
 --!strict
 local test = require '@jess/test'
+local bytes = require '@dream/bytes'
 local fs = require '@dream/fs'
 local args = require '@forge/args'
 local planning = require '@forge/plan'
 local profile = require '@forge/config'
 local util = require '@forge/native-util'
+
+-- A fresh directory per test run under the gitignored work tree, so repeated or parallel runs never share fixtures.
+local function scratchRoot(name: string): string
+  local cwd, failure = fs.cwd()
+  if not cwd then error(failure or 'cannot find the repository root') end
+  return cwd .. '/work/test-' .. name .. '-' .. bytes.toHex(bytes.random(8))
+end
 local nativeOpenmw = require '@forge/native-openmw'
 local nativeFeatureGate = require '@forge/native-feature-gate'
 local nativeQt = require '@forge/native-qt'
@@ -25,7 +33,7 @@ local suite = test.new()
 
 suite.describe('Clockwork Vulkan frame qualification', function()
   suite.it('uses Clockwork CI’s pinned example suite and immutable builder identity', function()
-    local root = '/tmp/clockwork-runtime-smoke-fixture'
+    local root = scratchRoot('clockwork-runtime-smoke')
     util.remove(root)
     util.mkdir(root)
     util.write(root .. '/.gitlab-ci.yml', table.concat({
@@ -77,7 +85,7 @@ suite.describe('Clockwork Vulkan frame qualification', function()
   end)
 
   suite.it('accepts only complete Vulkan renderer and scene-capture evidence', function()
-    local root = '/tmp/clockwork-runtime-evidence'
+    local root = scratchRoot('clockwork-runtime-evidence')
     util.remove(root)
     util.mkdir(root .. '/runner/renderer_startup_output')
     util.mkdir(root .. '/vulkan-capture/capture')
@@ -252,7 +260,7 @@ suite.describe('packaged executable smoke contracts', function()
   end)
 
   suite.it('requires Clockwork Vulkan, Luau UI resources and all dependency licenses', function()
-    local root = '/tmp/clockwork-package-assets'
+    local root = scratchRoot('clockwork-package-assets')
     util.remove(root)
     util.mkdir(root .. '/stage/resources/shaders')
     util.mkdir(root .. '/source/files/licenses')
