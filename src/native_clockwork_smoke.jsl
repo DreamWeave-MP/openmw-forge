@@ -96,8 +96,45 @@ local function command(engine: string, name: string, image: string, sourceRoot: 
     'grep -Eq "^[[:space:]]*deviceName[[:space:]]*=[[:space:]]*(llvmpipe|lavapipe)" /output/vulkaninfo.txt',
     'stage=luau-ui-tests; echo "CHECK $stage"',
     '(cd /build && ./components-tests --gtest_filter="NativeCodeGenTest.DisabledOrUnavailableCodegenRunsInterpreted:NativeCodeGenTest.CompilesAndReusesNativeModules:LuaUiContentTest.NestedContentChangesInvalidateParentContent:LuaUiLayout.NestedContentChangesUpdateTheRetainedDescendant:LuaUiLayout.ResolvesRelativeChildSizeAndAnchoredPosition") > /output/luau-ui-tests.txt 2>&1',
+    -- AlmaLinux 9's Python 3.9 lacks hashlib.file_digest, used by Clockwork's
+    -- pinned, read-only upstream runner. Keep its Python/Pillow interpreter,
+    -- but explicitly run that script with a scoped compatibility helper.
+    'stage=python-digest-compat; echo "CHECK $stage"',
+    'mkdir -p /tmp/forge-python-compat',
+    "cat > /tmp/forge-python-compat/run.py <<'FORGE_PYTHON_COMPAT'",
+    'import hashlib',
+    'import io',
+    'import runpy',
+    'import sys',
+    'if not hasattr(hashlib, "file_digest"):',
+    '    def file_digest(stream, algorithm):',
+    '        digest = hashlib.new(algorithm)',
+    '        while True:',
+    '            chunk = stream.read(1024 * 1024)',
+    '            if not chunk:',
+    '                break',
+    '            digest.update(chunk)',
+    '        return digest',
+    '    hashlib.file_digest = file_digest',
+    'if sys.argv[1:] == ["--self-test"]:',
+    '    for payload in (b"", b"Clockwork", b"X" * (1024 * 1024 + 7)):',
+    '        actual = hashlib.file_digest(io.BytesIO(payload), "sha256").digest()',
+    '        assert actual == hashlib.sha256(payload).digest()',
+    '    sys.exit(0)',
+    'script = sys.argv[1]',
+    'sys.argv = sys.argv[1:]',
+    'sys.path.insert(0, "/source/CI")',
+    'runpy.run_path(script, run_name="__main__")',
+    'FORGE_PYTHON_COMPAT',
+    -- Prove the compatibility layer before launching OpenMW. It also exercises
+    -- the chunk boundary, rather than loading the engine executable in memory.
+    'python3 /tmp/forge-python-compat/run.py --self-test',
     'stage=renderer-startup; echo "CHECK $stage"',
-    'python3 /source/CI/run_renderer_startup.py --openmw /package/openmw.x86_64 --example-suite /example-suite --helper /build/libopenmw-renderer-gl-probe.so --resources /package/resources --output /output/runner/renderer_startup_output --entry "vulkan 1.3" --icd "$VK_DRIVER_FILES" --headless --timeout 180',
+    'python3 /tmp/forge-python-compat/run.py /source/CI/run_renderer_startup.py '
+      .. '--openmw /package/openmw.x86_64 --example-suite /example-suite '
+      .. '--helper /build/libopenmw-renderer-gl-probe.so --resources /package/resources '
+      .. '--output /output/runner/renderer_startup_output --entry "vulkan 1.3" '
+      .. '--icd "$VK_DRIVER_FILES" --headless --timeout 180',
     'stage=vulkan-capture; echo "CHECK $stage"',
     'python3 /source/CI/run_vulkan_capture.py --openmw /package/openmw.x86_64 --example-suite /example-suite --resources /package/resources --output /output/vulkan-capture --cache /output/vulkan-cache --entry "vulkan 1.3" --icd "$VK_DRIVER_FILES" --timeout 600',
     'echo "PASS Clockwork runtime stages completed"',
