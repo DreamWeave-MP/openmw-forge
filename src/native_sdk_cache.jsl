@@ -2,6 +2,7 @@
 -- OpenMW-specific, content-addressed vcpkg export cache. The ABI scan runs
 -- when a new export is produced; cache hits are permitted only after matching
 -- inputs, metadata, archive bytes and the safe member listing are verified.
+local bytes = require '@dream/bytes'
 local fs = require '@dream/fs'
 local process = require '@dream/process'
 local util = require '@forge/native-util'
@@ -9,18 +10,11 @@ local archive = require '@forge/native-archive'
 local config = require '@forge/config'
 
 local function digest(path: string): string
-  local output = util.checked('sha256sum', { path })
-  local value = output:match('^([0-9a-f]+)')
-  if not value or #value ~= 64 then error('invalid SHA-256 for ' .. path) end
-  return value
+  return util.sha256(path)
 end
 
 local function hashText(value: string): string
-  local result, failure = process.run('sha256sum', {}, { stdin = value, stdout = 'capture', stderr = 'capture' })
-  if not result or not result.success then error('cannot hash SDK inputs: ' .. (failure or 'sha256sum failure')) end
-  local hash = (result.stdout or ''):match('^([0-9a-f]+)')
-  if not hash or #hash ~= 64 then error('invalid SDK input SHA-256') end
-  return hash
+  return bytes.sha256(value)
 end
 
 local function toolVersion(program: string): string

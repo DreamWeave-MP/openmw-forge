@@ -82,7 +82,7 @@ jobs:
           FORGE_TOOLCHAIN_ID: ${{ steps.toolchain.outputs.toolchain_id }}
           RUNNER_ARCH: ${{ runner.arch }}
           FORCE_REBUILD: ${{ inputs.force_rebuild || false }}
-        run: bash tools/release_preflight.sh
+        run: jess run --trusted --package . tools/release_preflight.jsl
 
   build:
     name: Build and qualify Clockwork on GitHub-hosted Ubuntu (AlmaLinux 9 containers)

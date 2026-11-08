@@ -90,7 +90,7 @@ jobs:
           FORGE_TOOLCHAIN_ID: ${{ steps.toolchain.outputs.toolchain_id }}
           RUNNER_ARCH: ${{ runner.arch }}
           FORCE_REBUILD: 'true'
-        run: bash tools/release_preflight.sh
+        run: jess run --trusted --package . tools/release_preflight.jsl
 
       - name: Fetch the Clockwork-pinned example suite with LFS assets
         id: example-suite
