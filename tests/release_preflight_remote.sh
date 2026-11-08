@@ -20,7 +20,7 @@ chmod +x "$scratch/bin/gh"
 export PATH="$scratch/bin:$PATH"
 export GITHUB_OUTPUT="$scratch/output" GITHUB_STEP_SUMMARY="$scratch/summary" GITHUB_TOKEN=remote-test
 export OPENMW_REPOSITORY=https://gitlab.com/OpenMW/openmw.git OPENMW_REF=master
-export OPENMW_RELEASE_TAG=das-uberbranch OPENMW_PROFILE=upstream RUNNER_ARCH=X64
+export OPENMW_RELEASE_TAG=upstream OPENMW_PROFILE=upstream RUNNER_ARCH=X64
 export FORGE_TOOLCHAIN_ID="fallback:$(printf 'a%.0s' {1..64}):$(printf 'b%.0s' {1..64})"
 
 (cd "$root" && jess run --trusted --package . tools/release_preflight.jsl)

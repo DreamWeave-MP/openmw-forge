@@ -914,6 +914,10 @@ end)
 suite.describe('embedded assets, versions, and archive names', function()
   suite.it('embeds vcpkg manifest and overlays in the Jess executable', function()
     test.expect(assets['deps/vcpkg.json']).toContain('boost-geometry')
+    local embeddedManifest = assets['deps/vcpkg.json']
+    local checkedInManifest = util.file((fs.cwd() or '') .. '/vendor/deps/vcpkg.json')
+    test.expect(embeddedManifest).toBe(checkedInManifest)
+    test.expect(embeddedManifest).toContain('"dbus",\n        "vulkan",\n        "x11",\n        "wayland"')
     test.expect(assets['deps/triplets/x64-linux-dynamic.cmake']).toContain('VCPKG_TARGET_ARCHITECTURE')
     test.expect(assets['openmw/templates/runtime_wrapper.sh.in']).toContain('LD_LIBRARY_PATH')
   end)
@@ -1035,7 +1039,7 @@ suite.describe('scheduled das-uberbranch release contract', function()
     test.expect(reason).toBeNil()
     test.expect(uberConfig.repository).toBe('https://gitlab.com/OursCodeur/openmw.git')
     test.expect(uberConfig.ref).toBe('clockwork-alpha')
-    test.expect(uberConfig.releaseTag).toBe('das-uberbranch-clockwork')
+    test.expect(uberConfig.releaseTag).toBe('das-uberbranch')
     test.expect(uberConfig.jobs).toBe('auto')
   end)
 
@@ -1044,10 +1048,24 @@ suite.describe('scheduled das-uberbranch release contract', function()
     test.expect(valid).toBeTruthy()
     test.expect(reason).toBeNil()
     local known = uber.profile('clockwork')
-    test.expect(known.releaseTag).toBe('das-uberbranch-clockwork')
+    test.expect(known.releaseTag).toBe('das-uberbranch')
+    test.expect(releaseProfiles.upstream.releaseTag).toBe('upstream')
     -- Unknown ids throw intentionally; this fixture verifies the diagnostic instead of aborting the suite.
     local ok = pcall(uber.profile, 'unknown')
     test.expect(ok).toBeFalsy()
+  end)
+
+  suite.it('refuses to publish into an existing release owned by another OpenMW source', function()
+    local upstream = releaseProfiles.upstream
+    local clockwork = releaseProfiles.clockwork
+    local upstreamNotes = 'OpenMW repository: ' .. upstream.repository .. '\nOpenMW requested ref: master\n'
+    local clockworkNotes = 'OpenMW repository: ' .. clockwork.repository
+      .. '\nOpenMW requested ref: clockwork-alpha\n'
+    test.expect(uber.releaseIdentityMatches(upstream, upstreamNotes)).toBeTruthy()
+    test.expect(uber.releaseIdentityMatches(clockwork, clockworkNotes)).toBeTruthy()
+    test.expect(uber.releaseIdentityMatches(clockwork, upstreamNotes)).toBeFalsy()
+    test.expect(uber.releaseIdentityMatches(upstream, clockworkNotes)).toBeFalsy()
+    test.expect(uber.releaseIdentityMatches(clockwork, '')).toBeFalsy()
   end)
 
   suite.it('rejects release tag and artifact namespace collisions', function()

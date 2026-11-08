@@ -39,6 +39,7 @@
       "platform": "linux",
       "features": [
         "dbus",
+        "vulkan",
         "x11",
         "wayland"
       ]

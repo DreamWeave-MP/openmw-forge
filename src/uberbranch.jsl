@@ -164,6 +164,11 @@ local function findOutputs(directory: string): (string, string)
   return main :: string, debug :: string
 end
 
+local function releaseIdentityMatches(settings: Profile, body: string): boolean
+  return body:find('OpenMW repository: ' .. settings.repository, 1, true) ~= nil
+    and body:find('OpenMW requested ref: ' .. settings.ref, 1, true) ~= nil
+end
+
 local function publish(settings: Profile, root: string, files: { string }, notes: string)
   local env = { GH_PROMPT_DISABLED = '1' }
   local tag = settings.releaseTag
@@ -174,6 +179,20 @@ local function publish(settings: Profile, root: string, files: { string }, notes
     local target = process.env('GITHUB_SHA') or 'HEAD'
     util.stream('gh', { 'release', 'create', tag, '--target', target, '--title', settings.releaseTitle,
       '--prerelease', '--notes-file', notes }, root, env)
+  end
+
+  if view and view.success then
+    local identity = process.run('gh', { 'release', 'view', tag, '--json', 'body' }, {
+      cwd = root, env = env, stdout = 'capture', stderr = 'capture',
+    })
+
+    if not identity or not identity.success then error('cannot inspect existing release identity') end
+    local release = json.decode(identity.stdout or '') :: { body: string? }
+    if type(release) ~= 'table' or type(release.body) ~= 'string'
+      or not releaseIdentityMatches(settings, release.body) then
+      error('refusing to publish ' .. settings.id .. ' into ' .. tag
+        .. ': release currently belongs to a different OpenMW source; delete the old release first')
+    end
   end
 
   -- Invalidate an existing completion marker BEFORE changing any release
@@ -506,5 +525,6 @@ return table.freeze {
   buildArgs = buildArgs, depsArgs = depsArgs, buildOnlyArgs = buildOnlyArgs,
   smokeArgs = smokeArgs,
   isMainTarball = isMainTarball,
-  findOutputs = findOutputs, verifyArtifacts = verifyArtifacts, publishArtifacts = publishArtifacts, run = run,
+  findOutputs = findOutputs, verifyArtifacts = verifyArtifacts, publishArtifacts = publishArtifacts,
+  releaseIdentityMatches = releaseIdentityMatches, run = run,
 }
