@@ -136,7 +136,8 @@ local function smokeBinaries(stage: string, withQt: boolean?)
   local ran = 0
   for _, name in names do
     local binary = stage .. '/' .. name .. '.x86_64'
-    if not fs.isFile(binary) then continue end
+    -- Every listed tool must be packaged; a silent skip would let a missing tool pass.
+    if not fs.isFile(binary) then error('smoke tool missing from package: ' .. name) end
     local wrapper = stage .. '/' .. name
     if not fs.isFile(wrapper) then error('missing installed launcher: ' .. name) end
     local env = { LD_LIBRARY_PATH = stage .. '/lib', QT_PLUGIN_PATH = stage .. '/plugins' }
@@ -298,7 +299,7 @@ end
 -- Detached containers let Forge poll GUI startup without blocking in
 -- @dream/process.run. A stopped container remains inspectable until cleanup.
 -- No shell, no background subshell, no orphaned GUI after a normal smoke run.
-local function runDistroCommand(engine: string, imageTag: string, volume: string,
+local function runDistroCommandUnsafe(engine: string, imageTag: string, volume: string,
   tag: string, tool: string, entry: string, maxRoundsOverride: number?,
   testEnvironment: { [string]: string }?)
   local label = tag .. '/' .. entry
@@ -390,6 +391,18 @@ local function runDistroCommand(engine: string, imageTag: string, volume: string
   if not valid then error(reason or `smoke {label} failed`) end
 end
 
+local function runDistroCommand(engine: string, imageTag: string, volume: string,
+  tag: string, tool: string, entry: string, maxRoundsOverride: number?,
+  testEnvironment: { [string]: string }?)
+  -- Keep a machine-readable failure marker before preserving the original error.
+  local success, failure = pcall(runDistroCommandUnsafe, engine, imageTag, volume,
+    tag, tool, entry, maxRoundsOverride, testEnvironment)
+  if not success then
+    print(`FORGE_SMOKE_FAILURE distro={tag} tool={tool} entry={entry}`)
+    error(failure)
+  end
+end
+
 local function multiSmoke(options: Options, staging: string)
   local selected: { string } = {}
   for tag in options.distros:gmatch('[^,]+') do
@@ -446,7 +459,7 @@ local function multiSmoke(options: Options, staging: string)
     end
 
     for _, name in names do
-      if not fs.isFile(staging .. '/' .. name .. '.x86_64') then continue end
+      if not fs.isFile(staging .. '/' .. name .. '.x86_64') then error('smoke tool missing from package: ' .. name) end
       if not fs.isFile(staging .. '/' .. name) then error('missing installed launcher: ' .. name) end
       count += 1
       -- Run both entry points; a distro-specific wrapper failure is a release failure.

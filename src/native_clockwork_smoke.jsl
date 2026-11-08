@@ -1,0 +1,300 @@
+#!/usr/bin/env -S jess run --trusted --package .
+--!strict
+-- Run Clockwork's maintained integration and Vulkan capture tests against a
+-- qualified Forge build. This remains an opt-in post-build qualification.
+local fs = require '@dream/fs'
+local json = require '@jess/json'
+local process = require '@dream/process'
+local util = require '@forge/native-util'
+
+local TimeoutSeconds = 2400
+
+local function fullSha(value: string): boolean
+  return #value == 40 and value:match('^[0-9a-f]+$') ~= nil
+end
+
+local function exampleSuiteRevision(sourceRoot: string): string
+  local pipeline = util.file(sourceRoot .. '/.gitlab-ci.yml')
+  local revision: string? = nil
+  for value in pipeline:gmatch('EXAMPLE_SUITE_REVISION:%s*([0-9a-f]+)') do
+    if not fullSha(value) then error('Clockwork CI has an invalid example-suite revision') end
+
+    if revision and revision ~= value then error('Clockwork CI selects conflicting example-suite revisions') end
+    revision = value
+  end
+
+  if not revision then error('Clockwork CI does not pin EXAMPLE_SUITE_REVISION') end
+  return revision
+end
+
+local function containerName(runId: string, sourceSha: string): string
+  if not runId:match('^[%w%-]+$') then error('invalid runtime-smoke run id') end
+  return 'forge-clockwork-vulkan-' .. runId .. '-' .. sourceSha:sub(1, 12)
+end
+
+local function runtimeImageName(runId: string, sourceSha: string): string
+  return 'forge-clockwork-vulkan-runtime:' .. containerName(runId, sourceSha):sub(#'forge-clockwork-vulkan-' + 1)
+end
+
+local function boundedCommand(engine: string, seconds: number, args: { string }): { string }
+  if seconds < 1 or seconds > 3600 or seconds % 1 ~= 0 then error('invalid runtime-smoke timeout') end
+  local command = { '--signal=TERM', '--kill-after=10s', tostring(seconds) .. 's', engine }
+  for _, value in args do table.insert(command, value) end
+  return command
+end
+
+local function pinnedImage(image: string): boolean
+  if not image:match('^[%w%._/@:%-]+$') or image:find('..', 1, true) then return false end
+  local digest = image:match('@sha256:([0-9a-f]+)$')
+  return digest ~= nil and #digest == 64
+end
+
+local function runtimeDockerfile(baseImage: string): string
+  if not pinnedImage(baseImage) then error('runtime image base must be pinned by OCI digest') end
+  return 'FROM ' .. baseImage .. '\n'
+    .. 'RUN dnf install -y mesa-vulkan-drivers-24.1.2-3.el9.alma.2 '
+      .. 'python3-pillow-10.0.1-1.el9 vulkan-tools-1.3.283.0-1.el9 '
+      .. '&& dnf clean all && rpm -q mesa-vulkan-drivers python3-pillow vulkan-tools\n'
+end
+
+local function command(engine: string, name: string, image: string, sourceRoot: string,
+  buildRoot: string, packageRoot: string, depsRoot: string, suiteRoot: string, outputRoot: string,
+  suiteSha: string): { string }
+  if engine ~= 'docker' and engine ~= 'podman' then error('runtime smoke requires docker or podman') end
+
+  if not pinnedImage(image) and not image:match('^forge%-clockwork%-vulkan%-runtime:[%w%-]+$') then
+    error('runtime smoke requires a pinned OCI image reference')
+  end
+
+  for _, path in { sourceRoot, buildRoot, depsRoot, suiteRoot, outputRoot } do
+    if path:sub(1, 1) ~= '/' or path:find(':', 1, true) or path:find('\n', 1, true) then
+      error('runtime smoke paths must be absolute Linux paths without colons or newlines')
+    end
+  end
+
+  if not fullSha(suiteSha) then error('invalid pinned example-suite SHA') end
+
+  local script = table.concat({
+    'set -euo pipefail',
+    'cd /tmp',
+    'exec > /output/runtime.log 2>&1',
+    'export LD_LIBRARY_PATH=/package/lib:/deps/openmw-deps/installed/x64-linux-dynamic/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}',
+    'mkdir -p /tmp/forge-xdg-runtime && chmod 700 /tmp/forge-xdg-runtime',
+    'export XDG_RUNTIME_DIR=/tmp/forge-xdg-runtime',
+    'rpm -q mesa-vulkan-drivers python3-pillow vulkan-tools > /output/vulkan-runtime-packages.txt',
+    'export VK_DRIVER_FILES="$(python3 /source/CI/vulkan_ci.py)"',
+    'test -n "$VK_DRIVER_FILES"',
+    'vulkaninfo --summary > /output/vulkaninfo.txt 2>&1',
+    -- Only the device name proves the renderer: a warning that mentions lavapipe does not.
+    'grep -Eq "^[[:space:]]*deviceName[[:space:]]*=[[:space:]]*(llvmpipe|lavapipe)" /output/vulkaninfo.txt',
+    '(cd /build && ./components-tests --gtest_filter="NativeCodeGenTest.DisabledOrUnavailableCodegenRunsInterpreted:NativeCodeGenTest.CompilesAndReusesNativeModules:LuaUiContentTest.NestedContentChangesInvalidateParentContent:LuaUiLayout.NestedContentChangesUpdateTheRetainedDescendant:LuaUiLayout.ResolvesRelativeChildSizeAndAnchoredPosition") > /output/luau-ui-tests.txt 2>&1',
+    'python3 /source/CI/run_renderer_startup.py --openmw /package/openmw.x86_64 --example-suite /example-suite --helper /build/libopenmw-renderer-gl-probe.so --resources /package/resources --output /output/runner/renderer_startup_output --entry "vulkan 1.3" --icd "$VK_DRIVER_FILES" --headless --timeout 180',
+    'python3 /source/CI/run_vulkan_capture.py --openmw /package/openmw.x86_64 --example-suite /example-suite --resources /package/resources --output /output/vulkan-capture --cache /output/vulkan-cache --entry "vulkan 1.3" --icd "$VK_DRIVER_FILES" --headless --timeout 600',
+  }, '\n')
+
+  -- Network access is disabled: all source, test assets and SDK libraries are
+  -- mounted from the exact qualified build inputs.
+  return {
+    'run', '--name', name, '--network', 'none',
+    '-v', sourceRoot .. ':/source:ro', '-v', buildRoot .. ':/build:ro',
+    '-v', packageRoot .. ':/package:ro',
+    '-v', depsRoot .. ':/deps:ro', '-v', suiteRoot .. ':/example-suite:ro',
+    '-v', outputRoot .. ':/output:rw',
+    image, 'bash', '-euc', script,
+  }
+end
+
+-- json.decode raises on text that is not JSON, and util.file raises when the file is missing.
+-- Either is a failed proof rather than a crash, so both are caught here and nowhere else.
+local function decodedEvidence(path: string): { [string]: unknown }?
+  local ok, document = pcall(function() return json.decode(util.file(path)) end)
+  if not ok or type(document) ~= 'table' then return nil end
+  return document :: { [string]: unknown }
+end
+
+local function emptyArray(value: unknown): boolean
+  return type(value) == 'table' and next(value) == nil
+end
+
+local function cleanRun(document: { [string]: unknown }): boolean
+  return document.timed_out == false and document.returncode == 0 and emptyArray(document.errors)
+end
+
+-- The same "digest  path" lines sha256sum prints, one per file, in the given order.
+local function evidenceHashes(paths: { string }): string
+  local lines: { string } = {}
+  for _, path in paths do table.insert(lines, util.sha256(path) .. '  ' .. path .. '\n') end
+  return table.concat(lines)
+end
+
+local function validateEvidence(outputRoot: string, sourceSha: string, suiteSha: string,
+  builderImage: string, hashEvidence: (({ string }) -> string)?): (boolean, string?)
+  local startup = outputRoot .. '/runner/renderer_startup_output/result.json'
+  local capture = outputRoot .. '/vulkan-capture/capture.json'
+  local image = outputRoot .. '/vulkan-capture/capture'
+  local vulkanInfo = outputRoot .. '/vulkaninfo.txt'
+  local runtimePackages = outputRoot .. '/vulkan-runtime-packages.txt'
+  local luauUiTests = outputRoot .. '/luau-ui-tests.txt'
+  if not fs.isFile(startup) then return false, 'Clockwork renderer-startup evidence is missing' end
+  if not fs.isFile(capture) then return false, 'Clockwork Vulkan capture evidence is missing' end
+  if not fs.isDir(image) then return false, 'Clockwork Vulkan capture directory is missing' end
+
+  if not fs.isFile(vulkanInfo) or not fs.isFile(runtimePackages) then
+    return false, 'Lavapipe runtime identity evidence is missing'
+  end
+
+  if not fs.isFile(luauUiTests) then return false, 'Luau and Lua UI runtime test evidence is missing' end
+  local testOutput = util.file(luauUiTests)
+  for _, testName in {
+    '[       OK ] NativeCodeGenTest.DisabledOrUnavailableCodegenRunsInterpreted',
+    '[       OK ] LuaUiContentTest.NestedContentChangesInvalidateParentContent',
+    '[       OK ] LuaUiLayout.NestedContentChangesUpdateTheRetainedDescendant',
+    '[       OK ] LuaUiLayout.ResolvesRelativeChildSizeAndAnchoredPosition',
+  } do
+    if not testOutput:find(testName, 1, true) then
+      return false, 'Luau and Lua UI runtime tests did not pass: ' .. testName
+    end
+  end
+
+  local deviceInfo = util.file(vulkanInfo):lower()
+  if not deviceInfo:find('llvmpipe', 1, true) and not deviceInfo:find('lavapipe', 1, true) then
+    return false, 'Vulkan runtime evidence does not identify Lavapipe'
+  end
+
+  local captures, walkFailure = fs.walk(image, { include = 'files', sort = true })
+  if not captures then return false, walkFailure or 'cannot enumerate Vulkan capture files' end
+  local captureCount = 0
+  for _, relative in captures.paths do
+    if not relative:match('%.omwcap$') then continue end
+    local stat = fs.stat(image .. '/' .. relative)
+    if not stat or stat.size == 0 then return false, 'Clockwork Vulkan capture is empty' end
+    captureCount += 1
+  end
+
+  if captureCount ~= 1 then return false, 'Clockwork Vulkan capture artifact count differs from one' end
+
+  local startupValid = false
+  local startupDocument = decodedEvidence(startup)
+  if startupDocument and cleanRun(startupDocument) and type(startupDocument.renderer) == 'table' then
+    local renderer = startupDocument.renderer :: { entry: unknown?, requested: unknown? }
+    startupValid = renderer.entry == 'vulkan 1.3' and renderer.requested == 'vulkan 1.3'
+  end
+
+  if not startupValid then
+    return false, 'renderer-startup evidence does not prove a clean Vulkan 1.3 run'
+  end
+
+  local captureValid = false
+  local captureDocument = decodedEvidence(capture)
+  if captureDocument and cleanRun(captureDocument) and type(captureDocument.captures) == 'table' then
+    local captures = captureDocument.captures :: { unknown }
+    captureValid = #captures == 1 and captureDocument.icd ~= nil and captureDocument.icd ~= json.null
+  end
+
+  if not captureValid then
+    return false, 'capture evidence does not prove one clean Vulkan scene capture'
+  end
+
+  local evidenceFiles = { startup, capture }
+  for _, relative in captures.paths do
+    if relative:match('%.omwcap$') then table.insert(evidenceFiles, image .. '/' .. relative) end
+  end
+  table.insert(evidenceFiles, vulkanInfo)
+  table.insert(evidenceFiles, runtimePackages)
+  table.insert(evidenceFiles, luauUiTests)
+  local hashes = if hashEvidence then hashEvidence(evidenceFiles) else evidenceHashes(evidenceFiles)
+  util.write(outputRoot .. '/CLOCKWORK-VULKAN-QUALIFICATION.txt',
+    'Profile: clockwork\nRenderer: vulkan 1.3\nClockwork source SHA: ' .. sourceSha
+      .. '\nExample-suite SHA: ' .. suiteSha .. '\nBuilder image: ' .. builderImage
+      .. '\nRuntime packages:\n' .. util.file(runtimePackages)
+      .. '\nLuau and Lua UI tests:\n' .. testOutput .. '\nEvidence SHA256:\n' .. hashes)
+  return true, nil
+end
+
+local function run(sourceRoot: string, buildRoot: string, packageRoot: string, depsRoot: string,
+  suiteRoot: string, outputRoot: string, sourceSha: string, image: string,
+  engine: string?, runId: string?)
+  if process.env('FORGE_RELEASE_PROFILE') ~= 'clockwork' then
+    error('Vulkan runtime qualification requires FORGE_RELEASE_PROFILE=clockwork')
+  end
+
+  if not fullSha(sourceSha) then error('runtime qualification requires the full Clockwork source SHA') end
+
+  local expectedSuiteSha = exampleSuiteRevision(sourceRoot)
+  local actualSourceSha = util.checked('git', { '-C', sourceRoot, 'rev-parse', 'HEAD' }):gsub('%s+$', '')
+  if actualSourceSha ~= sourceSha then error('runtime smoke source checkout does not match the qualified SHA') end
+
+  local actualSuiteSha = util.checked('git', { '-C', suiteRoot, 'rev-parse', 'HEAD' }):gsub('%s+$', '')
+  if actualSuiteSha ~= expectedSuiteSha then error('example-suite checkout does not match Clockwork CI pin') end
+
+  for _, relative in { '/CI/vulkan_ci.py', '/CI/run_vulkan_capture.py', '/CI/run_renderer_startup.py' } do
+    if not fs.isFile(sourceRoot .. relative) then error('Clockwork runtime test input is missing: ' .. relative) end
+  end
+
+  for _, relative in { '/libopenmw-renderer-gl-probe.so' } do
+    if not fs.isFile(buildRoot .. relative) then error('qualified Clockwork build output is missing: ' .. relative) end
+  end
+
+  for _, relative in { '/openmw.x86_64', '/resources/vfs' } do
+    if not fs.exists(packageRoot .. relative) then error('qualified Clockwork package input is missing: ' .. relative) end
+  end
+
+  if fs.exists(outputRoot) then error('refusing to reuse runtime smoke output: ' .. outputRoot) end
+  util.mkdir(outputRoot)
+
+  local selectedEngine = engine or 'docker'
+  local selectedRunId = runId or process.env('GITHUB_RUN_ID') or 'local'
+  local attempt = process.env('GITHUB_RUN_ATTEMPT') or '1'
+  selectedRunId ..= '-a' .. attempt
+  local name = containerName(selectedRunId, sourceSha)
+  local derivedImage = runtimeImageName(selectedRunId, sourceSha)
+  local dockerfile = runtimeDockerfile(image)
+  util.write(outputRoot .. '/Dockerfile', dockerfile)
+  local imageBuild = process.run('timeout', boundedCommand(selectedEngine, 600, {
+    'build', '--tag', derivedImage, '--file', outputRoot .. '/Dockerfile', outputRoot,
+  }), { stdout = 'capture', stderr = 'capture' })
+
+  if not imageBuild or not imageBuild.success then
+    error('could not provision pinned Lavapipe runtime image: '
+      .. (imageBuild and imageBuild.stderr or 'image build timeout or process failure'))
+  end
+
+  local invocation = command(selectedEngine, name, derivedImage, sourceRoot, buildRoot,
+    packageRoot, depsRoot, suiteRoot, outputRoot, expectedSuiteSha)
+  -- Keep the container name known before launch so timeout and runner failures
+  -- can always remove any surviving engine-side process tree.
+  local result, failure = process.run('timeout', boundedCommand(selectedEngine, TimeoutSeconds, invocation), {
+    stdout = 'capture', stderr = 'capture',
+  })
+
+  local removed, removeFailure = process.run(selectedEngine, { 'rm', '-f', name }, {
+    stdout = 'null', stderr = 'capture',
+  })
+
+  if not removed or (not removed.success and not (removed.stderr or ''):find('No such container', 1, true)) then
+    error('failed to remove Vulkan smoke container: ' .. (removeFailure or (removed and removed.stderr or 'unknown')))
+  end
+
+  if not result or not result.success then
+    local log = if fs.isFile(outputRoot .. '/runtime.log') then util.file(outputRoot .. '/runtime.log') else ''
+    error('Clockwork Vulkan runtime tests failed: ' .. (failure or (result and result.stderr or 'unknown'))
+      .. '\n' .. log:sub(math.max(1, #log - 12000)))
+  end
+
+  local valid, reason = validateEvidence(outputRoot, sourceSha, expectedSuiteSha, image, nil)
+  if not valid then error(reason or 'Clockwork Vulkan evidence is invalid') end
+  print('PASS Clockwork Vulkan integration and frame capture at ' .. outputRoot)
+end
+
+return table.freeze {
+  fullSha = fullSha,
+  exampleSuiteRevision = exampleSuiteRevision,
+  containerName = containerName,
+  runtimeImageName = runtimeImageName,
+  boundedCommand = boundedCommand,
+  pinnedImage = pinnedImage,
+  runtimeDockerfile = runtimeDockerfile,
+  command = command,
+  validateEvidence = validateEvidence,
+  run = run,
+}
