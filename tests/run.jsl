@@ -1,15 +1,25 @@
 --!strict
 local test = require '@jess/test'
+local bytes = require '@dream/bytes'
 local fs = require '@dream/fs'
 local args = require '@forge/args'
 local planning = require '@forge/plan'
 local profile = require '@forge/config'
 local util = require '@forge/native-util'
+
+-- A fresh directory per test run under the gitignored work tree, so repeated or parallel runs never share fixtures.
+local function scratchRoot(name: string): string
+  local cwd, failure = fs.cwd()
+  if not cwd then error(failure or 'cannot find the repository root') end
+  return cwd .. '/work/test-' .. name .. '-' .. bytes.toHex(bytes.random(8))
+end
 local nativeOpenmw = require '@forge/native-openmw'
+local nativeFeatureGate = require '@forge/native-feature-gate'
 local nativeQt = require '@forge/native-qt'
 local nativeArchive = require '@forge/native-archive'
 local nativeAbi = require '@forge/native-abi'
 local nativeSmoke = require '@forge/native-smoke'
+local nativePackage = require '@forge/native-package'
 local sdkCache = require '@forge/native-sdk-cache'
 local nativeDeps = require '@forge/native-deps'
 local vcpkgPython = require '@forge/native-vcpkg-python'
@@ -19,6 +29,44 @@ local uber = require '@forge/uberbranch'
 local uberConfig = require '@forge/uberbranch-config'
 local releaseProfiles = require '@forge/release-profiles'
 local suite = test.new()
+
+suite.describe('Das UberBranch source selection and qualification policy', function()
+  suite.it('schedules Clockwork and uses one workflow for both source profiles', function()
+    local root = fs.cwd() or ''
+    local workflow = util.file(root .. '/.github/workflows/das-uberbranch.yml')
+    test.expect(workflow).toContain('default: clockwork')
+    test.expect(workflow).toContain('options: [clockwork, upstream]')
+    test.expect(workflow).toContain("FORGE_RELEASE_PROFILE: ${{ inputs.release_profile || 'clockwork' }}")
+    test.expect(workflow).toContain('FORGE_RELEASE_PROFILE: ${{ needs.preflight.outputs.profile }}')
+    test.expect(workflow).toContain('artifact_namespace: ${{ steps.config.outputs.artifact_namespace }}')
+    test.expect(workflow).toContain('artifacts/${{ needs.preflight.outputs.artifact_namespace }}')
+    test.expect(workflow).toContain("contains(github.event.head_commit.message, '[qualify-clockwork]')")
+    test.expect(workflow).toContain("github.event_name != 'push' && always()")
+    test.expect(workflow).toContain('bash tests/release_preflight.sh')
+    test.expect(workflow).toContain('bash tests/release_candidate.sh')
+    test.expect(workflow).toContain('tools/uberbranch.jsl --build-only')
+    test.expect(workflow).toContain('--verify-artifacts "$PWD/recovered-candidate"')
+    test.expect(workflow).toContain('key: ${{ steps.ccache.outputs.cache-primary-key }}')
+    test.expect(workflow).toContain('### Completed smoke outcomes')
+    test.expect(workflow).toContain('FORGE_METRIC openmw_compile_seconds=')
+    test.expect(fs.isFile(root .. '/.github/workflows/das-uberbranch-clockwork.yml')).toBeFalsy()
+    test.expect(fs.isFile(root .. '/.github/workflows/clockwork-qualification.yml')).toBeFalsy()
+  end)
+
+  suite.it('requires compiled features and package verification, not rendered frames', function()
+    local root = fs.cwd() or ''
+    local orchestrator = util.file(root .. '/src/uberbranch.jsl')
+    test.expect(orchestrator).toContain('local smoke = smokeArgs(settings, main)')
+    test.expect(orchestrator).toContain('if smoke then util.stream(binary, smoke, root) end')
+    test.expect(orchestrator).toContain("local notes = output .. '/SOURCE.txt'")
+    test.expect(orchestrator).toContain('table.insert(publishFiles, checksums)')
+    test.expect(orchestrator:find('clockworkSmoke', 1, true) == nil).toBeTruthy()
+    test.expect(orchestrator:find("local qualificationPath = directory .. '/VULKAN-QUALIFICATION.txt'", 1, true) == nil)
+      .toBeTruthy()
+    test.expect(fs.isFile(root .. '/src/native_clockwork_smoke.jsl')).toBeFalsy()
+    test.expect(fs.isFile(root .. '/tools/clockwork_runtime_smoke.jsl')).toBeFalsy()
+  end)
+end)
 
 suite.describe('bounded OpenMW GUI smoke startup', function()
   suite.it('accepts a live GUI only without fatal Qt or loader diagnostics', function()
@@ -98,6 +146,86 @@ suite.describe('packaged executable smoke contracts', function()
     for _, tag in { 'archlinux', 'voidlinux' } do
       test.expect(nativeSmoke.imageDockerfile(tag)).toContain('libglvnd')
     end
+  end)
+
+  suite.it('provides the system Vulkan loader without bundling an ICD', function()
+    local packages: { [string]: string } = {
+      ['almalinux-9'] = 'vulkan-loader',
+      ['debian-12'] = 'libvulkan1',
+      ['debian-13'] = 'libvulkan1',
+      ['ubuntu-22.04'] = 'libvulkan1',
+      ['ubuntu-24.04'] = 'libvulkan1',
+      ['fedora-latest'] = 'vulkan-loader',
+      ['archlinux'] = 'vulkan-icd-loader',
+      ['opensuse-tumbleweed'] = 'libvulkan1',
+      ['voidlinux'] = 'vulkan-loader',
+    }
+
+    for distro, loaderPackage in packages do
+      local baseImage = nativeSmoke.imageDockerfile(distro)
+      local vulkanImage = nativeSmoke.imageDockerfile(distro, true)
+      test.expect(vulkanImage).toContain(loaderPackage)
+      local loaderInBaseImage = string.find(baseImage, loaderPackage, 1, true)
+      test.expect(loaderInBaseImage).toBeNil()
+    end
+    test.expect(nativePackage.VulkanRuntimePolicy).toContain('does not bundle libvulkan.so.1')
+    test.expect(nativePackage.VulkanRuntimePolicy).toContain('vendor driver/ICD')
+  end)
+
+  suite.it('installs the AlmaLinux 9 runtime loader RPM, never the devel package', function()
+    -- AlmaLinux 9's vulkan-loader RPM supplies libvulkan.so.1. The -devel package
+    -- only adds headers and link stubs; a smoke image must not need it.
+    local dockerfile = nativeSmoke.imageDockerfile('almalinux-9', true)
+    test.expect(dockerfile).toBe('FROM almalinux:9\n'
+      .. 'RUN dnf install -y mesa-libGL libglvnd-egl glib2 krb5-libs libwayland-cursor '
+      .. 'libwayland-egl vulkan-loader\n')
+    test.expect((string.find(dockerfile, 'vulkan-loader-devel', 1, true))).toBeNil()
+    test.expect((string.find(dockerfile, 'mesa-vulkan-drivers', 1, true))).toBeNil()
+
+    local base = nativeSmoke.imageDockerfile('almalinux-9')
+    test.expect((string.find(base, 'vulkan', 1, true))).toBeNil()
+  end)
+
+  suite.it('requires Clockwork Vulkan, Luau UI resources and all dependency licenses', function()
+    local root = scratchRoot('clockwork-package-assets')
+    util.remove(root)
+    util.mkdir(root .. '/stage/resources/shaders')
+    util.mkdir(root .. '/source/files/licenses')
+    util.write(root .. '/stage/resources/shaders/runtime.glsl', '// shader')
+    local features, parseError = args.parse({ 'build', '--require-feature', 'vulkan', '--require-feature', 'lua-ui' }, '/tmp/forge-root')
+    if not features then error(parseError or 'cannot parse feature fixture') end
+    local valid, reason = nativePackage.validateFeatureAssets(root .. '/stage', root .. '/source', features)
+    test.expect(valid).toBeFalsy()
+    test.expect(reason).toContain('luau.txt')
+
+    local licenseFiles: { string } = {
+      'luau.txt', 'glslang.txt', 'spirv-headers.txt', 'spirv-tools.txt',
+      'vulkan-headers.txt', 'vulkan-memory-allocator.txt',
+    }
+
+    for _, filename in licenseFiles do
+      util.write(root .. '/source/files/licenses/' .. filename, 'license fixture')
+    end
+    util.mkdir(root .. '/stage/resources/lua_libs')
+    util.write(root .. '/stage/resources/lua_libs/content.lua', '-- Lua UI')
+    valid = nativePackage.stageFeatureAssets(root .. '/stage', root .. '/source', features)
+    test.expect(valid).toBeTruthy()
+    for _, filename in licenseFiles do
+      test.expect(fs.isFile(root .. '/stage/licenses/' .. filename)).toBeTruthy()
+    end
+    test.expect(util.file(root .. '/stage/VULKAN-RUNTIME.txt')).toContain('system')
+
+    util.remove(root .. '/stage/resources/lua_libs/content.lua')
+    valid, reason = nativePackage.validateFeatureAssets(root .. '/stage', root .. '/source', features)
+    test.expect(valid).toBeFalsy()
+    test.expect(reason).toContain('lua_libs/content.lua')
+
+    local upstream, upstreamError = args.parse({ 'build' }, '/tmp/forge-root')
+    if not upstream then error(upstreamError or 'cannot parse upstream fixture') end
+    valid = nativePackage.stageFeatureAssets(root .. '/upstream-stage', root .. '/source', upstream)
+    test.expect(valid).toBeTruthy()
+    test.expect(fs.isFile(root .. '/upstream-stage/VULKAN-RUNTIME.txt')).toBeFalsy()
+    util.remove(root)
   end)
 
   suite.it('reports all missing SONAMEs and version errors from ldd', function()
@@ -316,6 +444,13 @@ suite.describe('profile and CLI', function()
   suite.it('preserves arbitrary CMake arguments as values', function()
     local options = parsed({ 'build', '--cmake-arg', '-DHELLO=a b', '--cmake-arg=-DX=$HOME' })
     test.expect(options.cmakeArgs).toEqual({ '-DHELLO=a b', '-DX=$HOME' })
+  end)
+
+  suite.it('accepts only unique required feature assertions', function()
+    local options = parsed({ 'build', '--require-feature', 'vulkan', '--require-feature=luau' })
+    test.expect(options.requiredFeatures).toEqual({ 'vulkan', 'luau' })
+    fails({ 'build', '--require-feature', 'opengl' }, '--require-feature must be')
+    fails({ 'build', '--require-feature', 'vulkan', '--require-feature', 'vulkan' }, 'duplicate required feature')
   end)
 
   suite.it('accepts both --flag=value and --flag value', function()
@@ -859,6 +994,20 @@ suite.describe('embedded assets, versions, and archive names', function()
     test.expect(linkProbe).toContain('vkCreateInstance')
   end)
 
+  suite.it('records memory and disk capacity before and after the expensive OpenMW build', function()
+    local root, failure = fs.cwd()
+    test.expect(root ~= nil and failure == nil).toBeTruthy()
+    if not root then return end
+    local workflow = util.file(root .. '/.github/workflows/das-uberbranch.yml')
+    local resources = util.file(root .. '/tools/ci_resources.jsl')
+    test.expect(workflow).toContain('tools/ci_resources.jsl --before-build')
+    test.expect(workflow).toContain('tools/ci_resources.jsl --after-build')
+    test.expect(workflow).toContain('always() && !cancelled() && steps.openmw-build.outcome != \'skipped\'')
+    test.expect(resources).toContain("process.run('free', { '-h' }")
+    test.expect(resources).toContain('memory.peak')
+    test.expect(resources).toContain("util.checked('df', { '-h', root })")
+  end)
+
   suite.it('compares ABI versions numerically', function()
     test.expect(nativeAbi.newer('2.35', '2.34')).toBeTruthy()
     test.expect(nativeAbi.newer('3.4.9', '3.4.29')).toBeFalsy()
@@ -880,13 +1029,13 @@ suite.describe('embedded assets, versions, and archive names', function()
 end)
 
 suite.describe('scheduled das-uberbranch release contract', function()
-  suite.it('tracks the official master branch in one Jess configuration', function()
+  suite.it('defaults to Clockwork Vulkan while retaining upstream as a separate profile', function()
     local valid, reason = uber.validate(uberConfig)
     test.expect(valid).toBeTruthy()
     test.expect(reason).toBeNil()
-    test.expect(uberConfig.repository).toBe('https://gitlab.com/OpenMW/openmw.git')
-    test.expect(uberConfig.ref).toBe('master')
-    test.expect(uberConfig.releaseTag).toBe('das-uberbranch')
+    test.expect(uberConfig.repository).toBe('https://gitlab.com/OursCodeur/openmw.git')
+    test.expect(uberConfig.ref).toBe('clockwork-alpha')
+    test.expect(uberConfig.releaseTag).toBe('das-uberbranch-clockwork')
     test.expect(uberConfig.jobs).toBe('auto')
   end)
 
@@ -965,6 +1114,7 @@ suite.describe('scheduled das-uberbranch release contract', function()
     local smoke = uber.smokeArgs(upstream, '/tmp/openmw.tar.gz')
     test.expect(smoke ~= nil).toBeTruthy()
     test.expect(has(smoke or {}, '--with-qt')).toBeFalsy()
+    test.expect(has(smoke or {}, 'vulkan')).toBeFalsy()
 
     upstream.testPolicy = { googleTests = true, packageSmoke = false, qtSmoke = false }
     local testsOnly = uber.buildArgs(upstream, '/tmp/forge-policy-fixture')
@@ -974,6 +1124,30 @@ suite.describe('scheduled das-uberbranch release contract', function()
     upstream.testPolicy = { googleTests = true, packageSmoke = true, qtSmoke = true }
     local fullSmoke = uber.smokeArgs(upstream, '/tmp/openmw.tar.gz')
     test.expect(has(fullSmoke or {}, '--with-qt')).toBeTruthy()
+
+    local clockwork = uber.profile('clockwork')
+    local clockworkSmoke = uber.smokeArgs(clockwork, '/tmp/clockwork.tar.gz')
+    test.expect(has(clockworkSmoke or {}, '--require-feature')).toBeTruthy()
+    test.expect(has(clockworkSmoke or {}, 'vulkan')).toBeTruthy()
+  end)
+
+  suite.it('resolves the pinned Clockwork CMake build root used by the native planner', function()
+    local root = '/tmp/forge-scheduled'
+    local config = uber.profile('clockwork')
+    local sha = string.rep('a', 40)
+    local command = uber.buildOnlyArgs(config, '/tmp/clockwork-output', sha)
+    local parsed, failure = args.parse(command, root)
+    test.expect(parsed ~= nil and failure == nil).toBeTruthy()
+    if not parsed then return end
+    local plan, reason = planning.build(parsed)
+    test.expect(plan ~= nil and reason == nil).toBeTruthy()
+    local expected = source.buildPath(root, config.repository, sha)
+    test.expect(parsed.build).toBe(expected)
+    test.expect(expected).toContain('/work/build-')
+    test.expect(expected == root .. '/work/build').toBeFalsy()
+    test.expect(source.buildPath(root, config.repository, config.ref) == expected).toBeFalsy()
+    local orchestrator = util.file((fs.cwd() or '') .. '/src/uberbranch.jsl')
+    test.expect(uber.buildOnlyArgs(config, '/tmp/clockwork-output', sha)).toContain(sha)
   end)
 
   suite.it('keeps Clockwork flags and artifact namespace separate from upstream', function()
@@ -985,8 +1159,98 @@ suite.describe('scheduled das-uberbranch release contract', function()
     test.expect(has(command, '-DOPENMW_USE_SYSTEM_GLSLANG=OFF')).toBeTruthy()
     test.expect(has(command, '-DOPENMW_USE_SYSTEM_VULKAN_HEADERS=OFF')).toBeTruthy()
     test.expect(has(command, '-DOPENMW_USE_SYSTEM_VMA=OFF')).toBeTruthy()
+    test.expect(has(command, '--require-feature')).toBeTruthy()
+    test.expect(has(command, 'vulkan')).toBeTruthy()
+    test.expect(has(command, 'luau')).toBeTruthy()
+    test.expect(has(command, 'lua-ui')).toBeTruthy()
     test.expect(clockwork.artifactNamespace).toBe('uberbranch-clockwork')
-    test.expect(clockwork.releaseTag == uberConfig.releaseTag).toBeFalsy()
+    test.expect(clockwork.releaseTag == uberConfig.releaseTag).toBeTruthy()
+  end)
+
+  suite.it('forwards required features into the in-container build', function()
+    local result = plan({ 'build', '--source', Source, '--deps-archive', '/tmp/deps.7z',
+      '--require-feature', 'vulkan', '--require-feature', 'lua-ui' })
+    local inner: { string }? = nil
+    for _, item in result.steps do
+      if has(item.args, '__build') then inner = item.args end
+    end
+    test.expect(inner ~= nil).toBeTruthy()
+    test.expect(has(inner or {}, '--require-feature')).toBeTruthy()
+    test.expect(has(inner or {}, 'vulkan')).toBeTruthy()
+    test.expect(has(inner or {}, 'lua-ui')).toBeTruthy()
+  end)
+
+  suite.it('rejects missing Clockwork feature configuration or compiled source entries', function()
+    local cache = [=[
+OPENMW_USE_VULKAN:BOOL=ON
+OPENMW_USE_SYSTEM_GLSLANG:BOOL=OFF
+OPENMW_USE_SYSTEM_VULKAN_HEADERS:BOOL=OFF
+OPENMW_USE_SYSTEM_VMA:BOOL=OFF
+CMAKE_EXPORT_COMPILE_COMMANDS:BOOL=ON
+BUILD_OPENMW:BOOL=ON
+BUILD_OPENMW_TESTS:BOOL=ON
+BUILD_COMPONENTS_TESTS:BOOL=ON
+]=]
+    local compileCommands = [=[
+[
+  {"directory": "/build", "command": "c++ -c /src/components/vulkan/device.cpp", "file": "/src/components/vulkan/device.cpp"},
+  {"directory": "/build", "command": "c++ -c devicetable.cpp", "file": "/build/components/devicetable.cpp"},
+  {"directory": "/build", "command": "c++ -c nativecodegen.cpp", "file": "/src/components/lua/nativecodegen.cpp"},
+  {"directory": "/build", "command": "c++ -c lvmexecute.cpp", "file": "/build/extern/fetched/luau/VM/src/lvmexecute.cpp"},
+  {"directory": "/build", "command": "c++ -c Compiler.cpp", "file": "/build/extern/fetched/luau/Compiler/src/Compiler.cpp"},
+  {"directory": "/build", "command": "c++ -c CodeGen.cpp", "file": "/build/extern/fetched/luau/CodeGen/src/CodeGen.cpp"},
+  {"directory": "/build", "command": "c++ -c content.cpp", "file": "/src/components/lua_ui/content.cpp"},
+  {"directory": "/build", "command": "c++ -c uibindings.cpp", "file": "/src/apps/openmw/mwlua/uibindings.cpp"},
+  {"directory": "/build", "command": "c++ -c testluaunativecodegen.cpp", "file": "/src/apps/components_tests/lua/testluaunativecodegen.cpp"},
+  {"directory": "/build", "command": "c++ -c testuicontent.cpp", "file": "/src/apps/components_tests/lua/testuicontent.cpp"}
+]
+]=]
+    local valid = nativeFeatureGate.validate(cache, compileCommands, { 'vulkan', 'luau', 'lua-ui' }, true)
+    test.expect(valid).toBeTruthy()
+
+    local upstreamCache = [=[
+CMAKE_EXPORT_COMPILE_COMMANDS:BOOL=ON
+BUILD_OPENMW_TESTS:BOOL=ON
+BUILD_COMPONENTS_TESTS:BOOL=ON
+]=]
+    local upstream, upstreamReason = nativeFeatureGate.validate(upstreamCache,
+      'apps/components_tests/testcomponents.cpp', {}, true)
+    test.expect(upstream).toBeTruthy()
+    test.expect(upstreamReason).toBeNil()
+
+    local disabledVulkan = cache:gsub('OPENMW_USE_VULKAN:BOOL=ON', 'OPENMW_USE_VULKAN:BOOL=OFF')
+    local disabled, reason = nativeFeatureGate.validate(disabledVulkan, compileCommands,
+      { 'vulkan', 'luau', 'lua-ui' }, true)
+    test.expect(disabled).toBeFalsy()
+    test.expect(reason).toContain('OPENMW_USE_VULKAN must be ON')
+
+    local missingLuauSource = compileCommands:gsub('/CodeGen/src/CodeGen%.cpp', '/CodeGen/src/not-built.cpp')
+    local absent, sourceReason = nativeFeatureGate.validate(cache, missingLuauSource,
+      { 'vulkan', 'luau', 'lua-ui' }, true)
+    test.expect(absent).toBeFalsy()
+    test.expect(sourceReason).toContain('/CodeGen/src/CodeGen.cpp')
+
+    local testsDisabled = cache:gsub('BUILD_COMPONENTS_TESTS:BOOL=ON', 'BUILD_COMPONENTS_TESTS:BOOL=OFF')
+    local noTests, testsReason = nativeFeatureGate.validate(testsDisabled, compileCommands,
+      { 'vulkan', 'luau', 'lua-ui' }, true)
+    test.expect(noTests).toBeFalsy()
+    test.expect(testsReason).toContain('GoogleTests must be enabled')
+
+    -- The source path in a command or output string is not a compiled unit.
+    local commandOnly = [=[
+[{"command": "c++ -c /src/components/vulkan/device.cpp -o /build/other.o", "file": "/build/other.cpp"}]
+]=]
+    local inCommand, commandReason = nativeFeatureGate.validate(cache, commandOnly,
+      { 'vulkan' }, false)
+    test.expect(inCommand).toBeFalsy()
+    test.expect(commandReason).toContain('components/vulkan/device.cpp')
+
+    -- A sibling directory that only shares the suffix must not satisfy the needle.
+    local sibling = [=[[{"file": "/src/vendored-components/vulkan/device.cpp"}]]=]
+    local siblingOnly, siblingReason = nativeFeatureGate.validate(cache, sibling,
+      { 'vulkan' }, false)
+    test.expect(siblingOnly).toBeFalsy()
+    test.expect(siblingReason).toContain('components/vulkan/device.cpp')
   end)
 
   suite.it('separates verified SDK preparation from release compilation', function()

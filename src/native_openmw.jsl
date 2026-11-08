@@ -8,6 +8,7 @@ local archiveSafety = require '@forge/native-archive'
 local packaging = require '@forge/native-package'
 local qt = require '@forge/native-qt'
 local treeIntegrity = require '@forge/native-tree-integrity'
+local featureGate = require '@forge/native-feature-gate'
 
 type Options = args.Options
 
@@ -51,7 +52,7 @@ local function extractDeps(options: Options)
       local tempDownload = dest .. '.incomplete'
       util.remove(tempDownload)
       util.stream('curl', { '--fail', '--location', '--retry', '3', '--output', tempDownload, archive })
-      local digest = util.checked('sha256sum', { tempDownload }):match('^([0-9a-fA-F]+)')
+      local digest = util.sha256(tempDownload)
       if not digest or digest:lower() ~= options.depsSha256:lower() then
         util.remove(tempDownload)
         error('downloaded dependency archive SHA-256 mismatch')
@@ -65,12 +66,12 @@ local function extractDeps(options: Options)
   if not fs.isFile(archive) then error('missing AlmaLinux 9 dependencies archive: ' .. archive) end
 
   if options.depsSha256 ~= '' then
-    local digest = util.checked('sha256sum', { archive }):match('^([0-9a-fA-F]+)')
+    local digest = util.sha256(archive)
     if not digest or digest:lower() ~= options.depsSha256:lower() then
       error('dependency archive SHA-256 mismatch: ' .. archive)
     end
   end
-  local digest = util.checked('sha256sum', { archive }):match('^([0-9a-fA-F]+)')
+  local digest = util.sha256(archive)
   if not digest then error('could not fingerprint dependency archive') end
   local final = options.deps .. '/openmw-deps'
   util.recoverManagedDirectory(final)
@@ -192,8 +193,22 @@ local function configure(options: Options)
     table.insert(flags, '-DBUILD_COMPONENTS_TESTS=ON')
   end
 
+  if #options.requiredFeatures > 0 or options.runTests then
+    table.insert(flags, '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON')
+  end
+
   for _, value in options.cmakeArgs do table.insert(flags, value) end
   util.stream('cmake', flags, nil, setTools(options))
+
+  if #options.requiredFeatures > 0 or options.runTests then
+    local valid, reason = featureGate.validate(
+      util.file(options.build .. '/CMakeCache.txt'),
+      util.file(options.build .. '/compile_commands.json'),
+      options.requiredFeatures,
+      options.runTests)
+    if not valid then error('configured build does not satisfy its requested feature/test policy: ' .. (reason or 'unknown')) end
+    print('PASS configured feature and GoogleTest sources are present')
+  end
 end
 
 local function build(options: Options)
@@ -202,7 +217,15 @@ local function build(options: Options)
   configure(options)
   local jobs = util.resolveJobs(options.jobs)
   print('OpenMW CMake parallelism: ' .. tostring(jobs) .. ' jobs (' .. tostring(options.jobs) .. ')')
-  util.stream('cmake', { '--build', options.build, '--parallel', tostring(jobs) }, nil, setTools(options))
+  local compileStarted = os.clock()
+  -- Record elapsed compile time even when CMake exits unsuccessfully.
+  local compiled, compileFailure = pcall(util.stream, 'cmake',
+    { '--build', options.build, '--parallel', tostring(jobs) }, nil, setTools(options))
+  local compileSeconds = math.floor((os.clock() - compileStarted) * 1000) / 1000
+  print(`FORGE_METRIC openmw_compile_seconds={compileSeconds}`)
+
+  if not compiled then error(compileFailure) end
+
   if options.runTests then
     util.stream('cmake', { '--build', options.build, '--target', 'openmw-tests', 'components-tests', '--parallel', tostring(jobs) }, nil, setTools(options))
     local env = { LD_LIBRARY_PATH = options.deps .. '/openmw-deps/installed/' .. options.triplet .. '/lib:' .. options.deps .. '/QT/' .. options.qtVersion .. '/gcc_64/lib' }

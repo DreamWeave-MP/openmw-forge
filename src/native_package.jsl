@@ -12,6 +12,57 @@ local args = require '@forge/args'
 
 type Options = args.Options
 
+local VulkanLicenseFiles = {
+  'luau.txt', 'glslang.txt', 'spirv-headers.txt', 'spirv-tools.txt',
+  'vulkan-headers.txt', 'vulkan-memory-allocator.txt',
+}
+local VulkanRuntimePolicy = [=[Clockwork Vulkan runtime policy:
+Forge does not bundle libvulkan.so.1, a Vulkan ICD, or vendor driver files.
+Install the operating system's Vulkan loader and a compatible vendor driver/ICD.
+The bundled renderer compiles its GLSL shader sources to SPIR-V at runtime.
+]=]
+
+local function requiresFeature(options: Options, feature: string): boolean
+  for _, required in options.requiredFeatures do
+    if required == feature then return true end
+  end
+  return false
+end
+
+local function validateFeatureAssets(stage: string, source: string, options: Options): (boolean, string?)
+  if requiresFeature(options, 'vulkan') then
+    local resources = fs.walk(stage .. '/resources/shaders', { include = 'files', sort = true })
+    if not resources or #resources.paths == 0 then
+      return false, 'Vulkan package is missing runtime shader source resources'
+    end
+
+    for _, filename in VulkanLicenseFiles do
+      if not fs.isFile(source .. '/files/licenses/' .. filename) then
+        return false, 'Vulkan package is missing dependency license ' .. filename
+      end
+    end
+  end
+
+  if requiresFeature(options, 'lua-ui') and not fs.isFile(stage .. '/resources/lua_libs/content.lua') then
+    return false, 'Lua UI package is missing resources/lua_libs/content.lua'
+  end
+  return true, nil
+end
+
+local function stageFeatureAssets(stage: string, source: string, options: Options): (boolean, string?)
+  local valid, reason = validateFeatureAssets(stage, source, options)
+  if not valid then return false, reason end
+
+  if requiresFeature(options, 'vulkan') then
+    util.mkdir(stage .. '/licenses')
+    for _, filename in VulkanLicenseFiles do
+      util.copy(source .. '/files/licenses/' .. filename, stage .. '/licenses/' .. filename)
+    end
+    util.write(stage .. '/VULKAN-RUNTIME.txt', VulkanRuntimePolicy)
+  end
+  return true, nil
+end
+
 local function binaryVersion(source: string): string
   local cmake = util.file(source .. '/CMakeLists.txt')
   local parts: { string } = {}
@@ -150,6 +201,9 @@ local function package(options: Options)
 
   if not fs.isDir(options.build .. '/resources') then error('missing OpenMW resources directory') end
   util.tree(options.build .. '/resources', stage .. '/resources')
+  local featureAssetsValid, featureAssetsError = stageFeatureAssets(stage, options.source, options)
+  if not featureAssetsValid then error(featureAssetsError or 'profile runtime assets are incomplete') end
+
   for _, file in { 'defaults.bin', 'defaults-cs.bin', 'gamecontrollerdb.txt' } do
     if fs.isFile(options.build .. '/' .. file) then util.copy(options.build .. '/' .. file, stage .. '/' .. file) end
   end
@@ -200,4 +254,10 @@ local function package(options: Options)
 end
 
 
-return table.freeze { package = package }
+return table.freeze {
+  package = package,
+  validateFeatureAssets = validateFeatureAssets,
+  stageFeatureAssets = stageFeatureAssets,
+  VulkanLicenseFiles = VulkanLicenseFiles,
+  VulkanRuntimePolicy = VulkanRuntimePolicy,
+}

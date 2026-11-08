@@ -1,6 +1,7 @@
 #!/usr/bin/env -S jess run --trusted --package .
 --!strict
 local fs = require '@dream/fs'
+local json = require '@jess/json'
 local process = require '@dream/process'
 local util = require '@forge/native-util'
 local sourceModule = require '@forge/source'
@@ -12,7 +13,7 @@ local nativeArchive = require '@forge/native-archive'
 local releaseArtifacts = require '@forge/native-release-artifacts'
 local sdkCache = require '@forge/native-sdk-cache'
 local config = require '@forge/config'
-local uberConfig = require '@forge/uberbranch-config'
+local uberConfig = require '@forge/release-profiles'.upstream
 local assets = require '@forge/assets'
 local vcpkgPython = require '@forge/native-vcpkg-python'
 
@@ -40,25 +41,26 @@ check(util.resolveJobs(2) == 2, 'explicit parallelism must override auto detecti
 -- validation deliberately run after OpenMW compilation in one CI step.
 -- GitHub's automatic cache save requires a successful overall job.
 local workflow = util.file(root .. '/.github/workflows/das-uberbranch.yml')
-local preflight = util.file(root .. '/tools/release_preflight.sh')
-check(workflow:find('needs: preflight', 1, true) ~= nil
-  and workflow:find("if: needs.preflight.outputs.should_build == 'true'", 1, true) ~= nil,
-  'expensive build and publication jobs must depend on successful qualification preflight')
+local preflight = util.file(root .. '/tools/release_preflight.jsl')
+check(workflow:find('needs: [preflight, recover-candidate]', 1, true) ~= nil
+  and workflow:find('needs: [preflight, recover-candidate, build]', 1, true) ~= nil
+  and workflow:find("needs.preflight.outputs.should_build == 'true'", 1, true) ~= nil,
+  'build and publication jobs must depend on successful preflight and only reuse validated candidates')
 check(workflow:find('force_rebuild:', 1, true) ~= nil
   and workflow:find('type: boolean', 1, true) ~= nil,
   'manual dispatch must expose an explicit boolean force_rebuild')
-check(preflight:find('verify_asset_digests', 1, true) ~= nil
-  and preflight:find("--pattern 'openmw-*-Linux-64Bit.tar.gz'", 1, true) == nil
-  and preflight:find('.digest // empty', 1, true) ~= nil
+check(preflight:find('verifyAssetDigests', 1, true) ~= nil
+  and preflight:find("'openmw-*", 1, true) == nil
+  and preflight:find('asset.digest', 1, true) ~= nil
   and preflight:find('input_fingerprint', 1, true) ~= nil
-  and preflight:find('peeled="$ref^{}"', 1, true) ~= nil
-  and preflight:find('refs/heads/*', 1, true) ~= nil,
+  and preflight:find("ref .. '^{}'", 1, true) ~= nil
+  and preflight:find("'refs/heads/'", 1, true) ~= nil,
   'release preflight must verify API asset digests, full identity, and peeled annotated tags without downloading archives')
-check(preflight:find('profile_settings:$profile_settings', 1, true) ~= nil
-  and preflight:find('jess_runtime:$jess_runtime', 1, true) ~= nil
-  and preflight:find('git ls-files -z .github/workflows/das-uberbranch.yml .github/actions/setup-jess/action.yml src tools', 1, true) ~= nil
-  and preflight:find('git ls-files -z .github/workflows ci src tools', 1, true) == nil,
-  'release fingerprint must include selected profile settings and pinned Jess identity without hashing every profile')
+check(preflight:find('profile_settings = settings', 1, true) ~= nil
+  and preflight:find('jess_runtime = jessIdentity', 1, true) ~= nil
+  and preflight:find("'.github/workflows/das-uberbranch.yml', '.github/actions/setup-jess/action.yml',", 1, true) ~= nil
+  and preflight:find("'.github/workflows', 'ci'", 1, true) == nil,
+  'release fingerprint must include selected profile settings and pinned Jess identity without hashing unrelated profiles')
 local setupJessAction = util.file(root .. '/.github/actions/setup-jess/action.yml')
 check(setupJessAction:find('steps.runtime.outputs.identity', 1, true) ~= nil
   and setupJessAction:find('sha256sum --check', 1, true) ~= nil,
@@ -76,10 +78,23 @@ if not releaseFixtures or not releaseFixtures.success then
 end
 check((releaseFixtures.stdout or ''):find('PASS release preflight fixtures', 1, true) ~= nil,
   'release preflight fixture matrix must report its covered decisions')
+local candidateFixtures, candidateFixtureFailure = process.run('bash', { root .. '/tests/release_candidate.sh' }, {
+  cwd = root, stdout = 'capture', stderr = 'capture',
+})
+
+if not candidateFixtures or not candidateFixtures.success then
+  error('release candidate fixture matrix failed: ' .. (candidateFixtureFailure or (candidateFixtures and candidateFixtures.stderr or 'unknown')))
+end
+check((candidateFixtures.stdout or ''):find('PASS candidate recovery fixtures', 1, true) ~= nil,
+  'candidate recovery must cover prior publish failure and invalid/expired candidate fallbacks')
 check(workflow:find('uses: actions/cache/restore@v6', 1, true) ~= nil,
   'hosted compiler cache must use an explicit restore-only action')
 check(workflow:find('uses: actions/cache/save@v6', 1, true) ~= nil,
   'hosted compiler cache must have an explicit save action')
+check(workflow:find("forge-vcpkg-alma9-${{ runner.arch }}-${{ hashFiles('vendor/deps/**', 'src/config.jsl') }}-${{ steps.toolchain.outputs.cache_key }}-${{ steps.cache-key.outputs.day }}", 1, true) ~= nil
+  and workflow:find("forge-vcpkg-alma9-${{ runner.arch }}-${{ hashFiles('vendor/deps/**', 'src/config.jsl') }}-", 1, true) ~= nil
+  and workflow:find('snapshots from a compatible previous image', 1, true) ~= nil,
+  'vcpkg binary cache must restore cross-image snapshots while keeping writes image-scoped and ABI-validated by vcpkg')
 check(workflow:find("steps.openmw-build.outcome != 'skipped'", 1, true) ~= nil
   and workflow:find('always() && !cancelled()', 1, true) ~= nil,
   'hosted compiler cache save must still run after failed OpenMW smoke tests')
@@ -427,8 +442,11 @@ if arguments[1] == 'release' and arguments[2] == 'view' then
   if process.env('FORGE_MOCK_GH_MISSING') == '1' and not arguments[4] then
     error('mock release not found')
   end
+  if process.env('FORGE_MOCK_FAIL_LIST') == '1' and arguments[4] == '--json' then
+    error('mock release asset listing failed')
+  end
 
-  if arguments[4] == '--json' then print(process.env('FORGE_MOCK_GH_ASSETS') or '') end
+  if arguments[4] == '--json' then print(process.env('FORGE_MOCK_GH_ASSETS') or '{"assets":[]}') end
 end
 
 if arguments[1] == 'image' and process.env('FORGE_MOCK_IMAGE_PRESENT') == '1' then
@@ -469,7 +487,7 @@ local resolvedSourceDryRun = process.run(jessBin, { 'run', '--trusted', '--packa
   stdout = 'capture', stderr = 'capture',
 })
 check(resolvedSourceDryRun ~= nil and resolvedSourceDryRun.success
-  and (resolvedSourceDryRun.stdout or ''):find('--ref master', 1, true) ~= nil,
+  and (resolvedSourceDryRun.stdout or ''):find('--ref clockwork-alpha', 1, true) ~= nil,
   'scheduled dry-run must accept and preserve a valid preflight SHA')
 local invalidSourceDryRun = process.run(jessBin, { 'run', '--trusted', '--package', '.',
   'tools/uberbranch.jsl', '--dry-run' }, {
@@ -908,12 +926,57 @@ check(not fs.exists(pendingPair), 'archive recovery must retire its transaction 
 
 
 -- A valid tarball from the staged tree should pass the actual compiled smoke CLI.
+-- Smoke requires every packaged tool, so the valid package carries all of them.
+-- Legacy tools must print their help banner to pass; the others need only exit 0.
+local LegacyBanners: { [string]: string } = {
+  bsatool = 'Inspect and extract files from Bethesda BSA archives',
+  esmtool = 'Inspect and extract from Morrowind ES files',
+  niftest = 'Ensure that OpenMW can use the provided NIF',
+}
+
+for _, tool in { 'openmw-iniimporter', 'openmw-essimporter', 'openmw-navmeshtool', 'openmw-bulletobjecttool', 'bsatool', 'esmtool', 'niftest' } do
+  local banner = LegacyBanners[tool]
+  local body = ''
+  if banner then body = 'printf "%s\\n" "' .. banner .. '"\n' end
+  util.write(stage .. '/' .. tool .. '.x86_64', '#!/bin/sh\n' .. body .. 'exit 0\n')
+  util.write(stage .. '/' .. tool, '#!/bin/sh\nexec "$(dirname "$0")/' .. tool .. '.x86_64" "$@"\n')
+  util.stream('chmod', { '+x', stage .. '/' .. tool .. '.x86_64', stage .. '/' .. tool })
+end
 util.copy('/usr/bin/true', stage .. '/openmw.x86_64')
 util.stream('chmod', { '+x', stage .. '/openmw.x86_64' })
 local valid = scratch .. '/valid.tar.gz'
 util.stream('tar', { 'czf', valid, '-C', build .. '/package-staging', 'openmw-0.49.0-Linux-64Bit' })
 local accepted = invoke({ 'smoke', '--archive', valid }, empty)
 check(accepted.success, 'valid synthetic ELF tarball must pass the native smoke CLI: ' .. (accepted.stderr or ''))
+
+-- Clockwork runtime verification must use the published archive, not native
+-- package-staging (which is deleted by the builder after the archive is saved).
+-- This fixture deliberately has no build/package-staging directory at all.
+local clockworkInput = scratch .. '/clockwork-archive-input'
+local ClockworkName = 'openmw-0.52.0-g123456789abc-Linux-64Bit'
+util.mkdir(clockworkInput .. '/' .. ClockworkName .. '/resources/vfs')
+util.write(clockworkInput .. '/' .. ClockworkName .. '/openmw.x86_64', 'test executable')
+util.write(clockworkInput .. '/' .. ClockworkName .. '/openmw', 'test launcher')
+local clockworkArchive = scratch .. '/' .. ClockworkName .. '.tar.gz'
+util.stream('tar', { 'czf', clockworkArchive, '-C', clockworkInput, ClockworkName })
+local extractedClockwork = smokeModule.extractPackage(clockworkArchive,
+  scratch .. '/clockwork-isolated-extraction')
+check(fs.fileName(extractedClockwork) == ClockworkName and fs.isFile(extractedClockwork .. '/openmw.x86_64')
+  and fs.isDir(extractedClockwork .. '/resources/vfs'),
+  'Clockwork runtime package can be recovered from a qualified archive without a build staging directory')
+check(not fs.exists(scratch .. '/clockwork-isolated-extraction/package-staging'),
+  'Clockwork extraction must not depend on a native package-staging directory')
+
+-- An archive with multiple roots cannot become a trusted runtime package.
+util.write(clockworkInput .. '/unexpected.txt', 'unexpected')
+local mixedArchive = scratch .. '/clockwork-mixed.tar.gz'
+util.stream('tar', { 'czf', mixedArchive, '-C', clockworkInput, ClockworkName, 'unexpected.txt' })
+-- extractPackage is expected to reject a second root before writing any files.
+local acceptedMixed, mixedError = pcall(smokeModule.extractPackage, mixedArchive,
+  scratch .. '/clockwork-rejected-extraction')
+check(not acceptedMixed and type(mixedError) == 'string'
+  and mixedError:find('more than one package root', 1, true) ~= nil,
+  'Clockwork runtime extraction must reject archives with multiple roots')
 
 -- OpenMW's bsatool, esmtool and niftest return exit 1 for --help even when
 -- functioning correctly. The packaged binaries and their launchers must be
@@ -1177,11 +1240,18 @@ local releaseDebug = releaseDir .. '/' .. releaseName .. '-debug.tar.gz'
 util.copy(valid, releaseMain)
 util.copy(valid, releaseDebug)
 local inputIdentityPath = scratch .. '/release-inputs.json'
-local inputIdentity = util.checked('jq', { '-cnS', '--arg', 'repo', uberConfig.repository,
-  '--arg', 'ref', uberConfig.ref, '--arg', 'tag', uberConfig.releaseTag,
-  '{schema:"forge-release-inputs/v1",profile:"upstream",repository:$repo,requested_ref:$ref,release_tag:$tag,target:"linux-X64",toolchain:"fixture",source_sha:"' .. fakeRevision .. '"}' }):gsub('%s+$', '')
+local inputIdentity = json.encodeTable {
+  schema = 'forge-release-inputs/v1',
+  profile = 'upstream',
+  repository = uberConfig.repository,
+  requested_ref = uberConfig.ref,
+  release_tag = uberConfig.releaseTag,
+  target = 'linux-X64',
+  toolchain = 'fixture',
+  source_sha = fakeRevision,
+}
 util.write(inputIdentityPath, inputIdentity)
-local inputFingerprint = util.checked('sha256sum', { inputIdentityPath }):match('^([0-9a-f]+)')
+local inputFingerprint = util.sha256(inputIdentityPath)
 if not inputFingerprint then error('could not fingerprint release identity fixture') end
 local sourceNotes = releaseDir .. '/SOURCE.txt'
 local sourceText = 'Profile: upstream\nGitHub release: ' .. uberConfig.releaseTag .. '\n'
@@ -1189,15 +1259,21 @@ local sourceText = 'Profile: upstream\nGitHub release: ' .. uberConfig.releaseTa
   .. 'OpenMW requested ref: ' .. uberConfig.ref .. '\nOpenMW resolved SHA: ' .. fakeRevision .. '\n'
   .. 'Build input fingerprint: ' .. inputFingerprint .. '\n'
 util.write(sourceNotes, sourceText)
-local provenance = util.checked('jq', { '-cnS', '--arg', 'fingerprint', inputFingerprint,
-  '--arg', 'sha', fakeRevision, '--arg', 'repo', uberConfig.repository, '--arg', 'ref', uberConfig.ref,
-  '--arg', 'tag', uberConfig.releaseTag,
-  '--argjson', 'inputs', inputIdentity,
-  '{schema:"forge-qualified-release/v1",qualified:true,input_fingerprint:$fingerprint,source_sha:$sha,repository:$repo,requested_ref:$ref,profile:"upstream",release_tag:$tag,inputs:$inputs}' })
-util.write(releaseDir .. '/PROVENANCE.json', provenance)
+local provenance = json.encodeTable {
+  schema = 'forge-qualified-release/v1',
+  qualified = true,
+  input_fingerprint = inputFingerprint,
+  source_sha = fakeRevision,
+  repository = uberConfig.repository,
+  requested_ref = uberConfig.ref,
+  profile = 'upstream',
+  release_tag = uberConfig.releaseTag,
+  inputs = json.decode(inputIdentity),
+}
+util.write(releaseDir .. '/PROVENANCE.json', provenance .. '\n')
 local checksumLines: { string } = {}
 for _, path in { releaseMain, releaseDebug, sourceNotes, releaseDir .. '/PROVENANCE.json' } do
-  local hash = util.checked('sha256sum', { path }):match('^([0-9a-f]+)')
+  local hash = util.sha256(path)
   if not hash then error('could not hash release fixture') end
   table.insert(checksumLines, hash .. '  ' .. (fs.fileName(path) or ''))
 end
@@ -1226,6 +1302,41 @@ local function publishFixture(env: { [string]: string }, explicitProfile: boolea
   if not result then error('failed to invoke publisher: ' .. (failure or '')) end
   return result
 end
+
+local function verifyCandidateFixture(env: { [string]: string }, directory: string?): dream_process_Result
+  local result, failure = process.run(jessBin, {
+    'run', '--trusted', '--package', '.', 'tools/uberbranch.jsl', '--verify-artifacts', directory or releaseDir,
+  }, { cwd = root, env = env, stdout = 'capture', stderr = 'capture' })
+
+  if not result then error('failed to invoke candidate verifier: ' .. (failure or '')) end
+
+  return result
+end
+
+local verifierEnv = table.clone(publisherEnv)
+verifierEnv.GH_TOKEN = ''
+local verifiedCandidate = verifyCandidateFixture(verifierEnv)
+check(verifiedCandidate.success
+  and (verifiedCandidate.stdout or ''):find('PASS candidate artifacts match current preflight identity and checksums', 1, true) ~= nil,
+  'read-only candidate verification must accept a complete candidate without a release token')
+
+local mismatchDir = scratch .. '/release-candidate-mismatched-debug'
+util.mkdir(mismatchDir)
+util.copy(releaseMain, mismatchDir .. '/' .. (fs.fileName(releaseMain) or 'main.tar.gz'))
+local wrongDebug = mismatchDir .. '/openmw-0.53.0-g' .. string.rep('b', 12) .. '-Linux-64Bit-debug.tar.gz'
+util.copy(releaseDebug, wrongDebug)
+for _, filename in { 'SOURCE.txt', 'PROVENANCE.json', 'SHA256SUMS' } do
+  util.copy(releaseDir .. '/' .. filename, mismatchDir .. '/' .. filename)
+end
+local mismatchedDebugCandidate = verifyCandidateFixture(verifierEnv, mismatchDir)
+check(not mismatchedDebugCandidate.success
+  and (mismatchedDebugCandidate.stderr or ''):find('release tarball filename does not match source provenance', 1, true) ~= nil,
+  'read-only candidate verification must reject a debug archive from a different source revision')
+
+local staleCandidate = table.clone(verifierEnv)
+staleCandidate.FORGE_RESOLVED_SOURCE_SHA = string.rep('b', 40)
+check(not verifyCandidateFixture(staleCandidate).success,
+  'read-only candidate verification must reject a different source SHA before recovery')
 
 local withoutToken = table.clone(publisherEnv)
 withoutToken.GH_TOKEN = ''
@@ -1258,7 +1369,7 @@ check(util.file(mockLog) == '', 'invalid provenance must be rejected before invo
 util.write(provenancePath, validProvenance)
 
 local updatingEnv = table.clone(publisherEnv)
-updatingEnv.FORGE_MOCK_GH_ASSETS = 'openmw-0.50.0-Linux-64Bit.tar.gz\nopenmw-0.50.0-Linux-64Bit-debug.tar.gz\nKEEP.bin'
+updatingEnv.FORGE_MOCK_GH_ASSETS = '{"assets":[{"name":"openmw-0.50.0-Linux-64Bit.tar.gz"},{"name":"openmw-0.50.0-Linux-64Bit-debug.tar.gz"},{"name":"KEEP.bin"}]}'
 util.write(mockLog, '')
 local updated = publishFixture(updatingEnv)
 check(updated.success, 'rolling prerelease must replace old qualified archives')
@@ -1269,6 +1380,30 @@ check(updateLog:find('release\tdelete-asset\tdas-uberbranch\topenmw-0.50.0-Linux
   'rolling release must prune matching old debug archives')
 check(updateLog:find('KEEP.bin', 1, true) == nil,
   'rolling release must preserve unrelated release assets')
+
+local markedEnv = table.clone(publisherEnv)
+markedEnv.FORGE_MOCK_GH_ASSETS = '{"assets":[{"name":"SHA256SUMS"},{"name":"KEEP.bin"}]}'
+util.write(mockLog, '')
+local replacedMarker = publishFixture(markedEnv)
+check(replacedMarker.success, 'existing release with checksum marker must be replaceable')
+local markedLog = util.file(mockLog)
+local markerDeleted = markedLog:find('release\tdelete-asset\tdas-uberbranch\tSHA256SUMS\t--yes', 1, true)
+local payloadStarted = markedLog:find('release\tupload\tdas-uberbranch', 1, true)
+local newMarkerUploaded = markedLog:find('SHA256SUMS\t--clobber', 1, true)
+check(markerDeleted ~= nil and payloadStarted ~= nil and newMarkerUploaded ~= nil
+  and (markerDeleted :: number) < (payloadStarted :: number)
+  and (payloadStarted :: number) < (newMarkerUploaded :: number),
+  'existing checksum marker must be removed before payload changes and restored last')
+check(markedLog:find('KEEP.bin', 1, true) == nil,
+  'invalidating checksum marker must not delete unrelated release assets')
+
+local failedInventoryEnv = table.clone(publisherEnv)
+failedInventoryEnv.FORGE_MOCK_FAIL_LIST = '1'
+util.write(mockLog, '')
+check(not publishFixture(failedInventoryEnv).success,
+  'publisher must not proceed when existing asset listing fails')
+check(util.file(mockLog):find('release\tupload', 1, true) == nil,
+  'failed asset inventory must prevent mutation of the release')
 
 local failedManifestEnv = table.clone(publisherEnv)
 failedManifestEnv.FORGE_MOCK_FAIL_MANIFEST = '1'

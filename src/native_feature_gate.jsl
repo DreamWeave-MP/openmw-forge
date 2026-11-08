@@ -1,0 +1,108 @@
+--!strict
+-- Fail a requested feature qualification if CMake silently omitted its sources.
+local json = require '@jess/json'
+
+local function cacheValues(content: string): { [string]: string }
+  local values: { [string]: string } = {}
+  for line in content:gmatch('[^\r\n]+') do
+    local key, value = line:match('^([%w_]+):[^=]+=([^\r\n]*)$')
+    if key and value then values[key] = value end
+  end
+  return values
+end
+
+-- Only the "file" value of an entry names a compiled translation unit. A needle
+-- found in a command, output or directory string does not prove the source built.
+-- A malformed compile_commands.json raises from the decoder, which fails closed.
+local function compileUnits(content: string): { string }
+  local entries = json.decode(content) :: { { file: string? } }
+  local units: { string } = {}
+  for _, entry in entries do
+    if type(entry.file) == 'string' then table.insert(units, entry.file) end
+  end
+  return units
+end
+
+-- A needle matches a whole path suffix: 'components/x.cpp' must be the file or
+-- follow a '/', so a sibling such as 'vendored-components/x.cpp' does not count.
+local function unitMatches(unit: string, needle: string): boolean
+  if unit == needle then return true end
+  local start = #unit - #needle
+  if start < 1 or unit:sub(start + 1) ~= needle then return false end
+  return needle:sub(1, 1) == '/' or unit:sub(start, start) == '/'
+end
+
+local function containsAll(content: string, needles: { string }, context: string): (boolean, string?)
+  if #needles == 0 then return true, nil end
+  local units = compileUnits(content)
+  for _, needle in needles do
+    local found = false
+    for _, unit in units do
+      if unitMatches(unit, needle) then
+        found = true
+        break
+      end
+    end
+
+    if not found then
+      return false, context .. ' is missing required source or option: ' .. needle
+    end
+  end
+  return true, nil
+end
+
+local function validate(cache: string, compileCommands: string, features: { string }, runTests: boolean): (boolean, string?)
+  local values = cacheValues(cache)
+  local expectedOptions: { [string]: string } = {}
+  local expectedSources: { string } = {}
+
+  for _, feature in features do
+    if feature == 'vulkan' then
+      expectedOptions.OPENMW_USE_VULKAN = 'ON'
+      expectedOptions.OPENMW_USE_SYSTEM_GLSLANG = 'OFF'
+      expectedOptions.OPENMW_USE_SYSTEM_VULKAN_HEADERS = 'OFF'
+      expectedOptions.OPENMW_USE_SYSTEM_VMA = 'OFF'
+      table.insert(expectedSources, 'components/vulkan/device.cpp')
+      table.insert(expectedSources, '/components/devicetable.cpp')
+    elseif feature == 'luau' then
+      table.insert(expectedSources, 'components/lua/nativecodegen.cpp')
+      table.insert(expectedSources, '/VM/src/lvmexecute.cpp')
+      table.insert(expectedSources, '/Compiler/src/Compiler.cpp')
+      table.insert(expectedSources, '/CodeGen/src/CodeGen.cpp')
+      table.insert(expectedSources, 'apps/components_tests/lua/testluaunativecodegen.cpp')
+    elseif feature == 'lua-ui' then
+      table.insert(expectedSources, 'components/lua_ui/content.cpp')
+      table.insert(expectedSources, 'apps/openmw/mwlua/uibindings.cpp')
+      table.insert(expectedSources, 'apps/components_tests/lua/testuicontent.cpp')
+    else
+      return false, 'unknown required build feature: ' .. feature
+    end
+  end
+
+  for key, expected in expectedOptions do
+    if values[key] ~= expected then
+      return false, key .. ' must be ' .. expected .. ' in CMakeCache.txt, got ' .. (values[key] or 'missing')
+    end
+  end
+
+  if #features > 0 and values.CMAKE_EXPORT_COMPILE_COMMANDS ~= 'ON' then
+    return false, 'CMAKE_EXPORT_COMPILE_COMMANDS must be ON for required feature validation'
+  end
+
+  if #features > 0 and values.BUILD_OPENMW ~= 'ON' then
+    return false, 'BUILD_OPENMW must be ON when qualifying renderer, Luau, or Lua UI sources'
+  end
+  local complete, reason = containsAll(compileCommands, expectedSources, 'compile_commands.json')
+  if not complete then return false, reason end
+
+  if runTests then
+    if values.BUILD_OPENMW_TESTS ~= 'ON' or values.BUILD_COMPONENTS_TESTS ~= 'ON' then
+      return false, 'both OpenMW and components GoogleTests must be enabled in CMakeCache.txt'
+    end
+
+  end
+
+  return true, nil
+end
+
+return table.freeze { cacheValues = cacheValues, validate = validate }

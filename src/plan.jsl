@@ -63,6 +63,9 @@ local function flags(options: Options, inner: boolean): { string }
   if options.runTests then addOption(output, '--gtest-filter', options.gtestFilter) end
   if options.depsSha256 ~= '' then addOption(output, '--deps-sha256', options.depsSha256) end
   for _, arg in options.cmakeArgs do addOption(output, '--cmake-arg', arg) end
+  -- The in-container build is the only place the feature gate can see CMakeCache
+  -- and compile_commands.json, so requirements must cross the container boundary.
+  for _, feature in options.requiredFeatures do addOption(output, '--require-feature', feature) end
   return output
 end
 
@@ -236,7 +239,7 @@ local function build(options: Options): (Plan?, string?)
     options.source = sourceModule.path(options.root, options.repo)
     -- Reuse CMake outputs for a given fork/ref without cross-fork cache mixing.
     if options.build == options.root .. '/work/build' then
-      options.build = options.root .. '/work/build-' .. sourceModule.key(options.repo .. '#' .. options.ref)
+      options.build = sourceModule.buildPath(options.root, options.repo, options.ref)
     end
   elseif options.ref ~= 'HEAD' then
     return nil, '--ref requires --repo; a local --source checkout is never modified'

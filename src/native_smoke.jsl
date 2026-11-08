@@ -136,7 +136,8 @@ local function smokeBinaries(stage: string, withQt: boolean?)
   local ran = 0
   for _, name in names do
     local binary = stage .. '/' .. name .. '.x86_64'
-    if not fs.isFile(binary) then continue end
+    -- Every listed tool must be packaged; a silent skip would let a missing tool pass.
+    if not fs.isFile(binary) then error('smoke tool missing from package: ' .. name) end
     local wrapper = stage .. '/' .. name
     if not fs.isFile(wrapper) then error('missing installed launcher: ' .. name) end
     local env = { LD_LIBRARY_PATH = stage .. '/lib', QT_PLUGIN_PATH = stage .. '/plugins' }
@@ -153,21 +154,23 @@ end
 -- through QtNetwork. Keep explicit runtime packages in minimal smoke images:
 -- dependency-closure preflight below catches further missing SONAMEs at once.
 local DistroImages: { [string]: { string } } = {
-  ['almalinux-9'] = { 'almalinux:9', 'dnf install -y mesa-libGL libglvnd-egl glib2 krb5-libs libwayland-cursor libwayland-egl' },
-  ['debian-12'] = { 'debian:12', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1' },
-  ['debian-13'] = { 'debian:trixie', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0t64 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1' },
-  ['ubuntu-22.04'] = { 'ubuntu:22.04', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1' },
-  ['ubuntu-24.04'] = { 'ubuntu:24.04', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0t64 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1' },
-  ['fedora-latest'] = { 'fedora:latest', 'dnf install -y mesa-libGL libglvnd-egl glib2 krb5-libs libwayland-cursor libwayland-egl' },
-  ['archlinux'] = { 'archlinux:latest', 'pacman -Sy --noconfirm --needed libglvnd glib2 krb5 wayland' },
-  ['opensuse-tumbleweed'] = { 'opensuse/tumbleweed', 'zypper --non-interactive install Mesa-libGL1 Mesa-libEGL1 libglib-2_0-0 krb5 libwayland-cursor0 libwayland-egl1' },
-  ['voidlinux'] = { 'ghcr.io/void-linux/void-glibc-full:latest', 'xbps-install -Sy libglvnd glib mit-krb5-libs wayland' },
+  ['almalinux-9'] = { 'almalinux:9', 'dnf install -y mesa-libGL libglvnd-egl glib2 krb5-libs libwayland-cursor libwayland-egl', 'vulkan-loader' },
+  ['debian-12'] = { 'debian:12', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1', 'libvulkan1' },
+  ['debian-13'] = { 'debian:trixie', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0t64 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1', 'libvulkan1' },
+  ['ubuntu-22.04'] = { 'ubuntu:22.04', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1', 'libvulkan1' },
+  ['ubuntu-24.04'] = { 'ubuntu:24.04', 'apt-get update && apt-get install -y libgl1 libegl1 libglib2.0-0t64 libgssapi-krb5-2 libwayland-cursor0 libwayland-egl1', 'libvulkan1' },
+  ['fedora-latest'] = { 'fedora:latest', 'dnf install -y mesa-libGL libglvnd-egl glib2 krb5-libs libwayland-cursor libwayland-egl', 'vulkan-loader' },
+  ['archlinux'] = { 'archlinux:latest', 'pacman -Sy --noconfirm --needed libglvnd glib2 krb5 wayland', 'vulkan-icd-loader' },
+  ['opensuse-tumbleweed'] = { 'opensuse/tumbleweed', 'zypper --non-interactive install Mesa-libGL1 Mesa-libEGL1 libglib-2_0-0 krb5 libwayland-cursor0 libwayland-egl1', 'libvulkan1' },
+  ['voidlinux'] = { 'ghcr.io/void-linux/void-glibc-full:latest', 'xbps-install -Sy libglvnd glib mit-krb5-libs wayland', 'vulkan-loader' },
 }
 
-local function imageDockerfile(tag: string): string
+local function imageDockerfile(tag: string, vulkanRuntime: boolean?): string
   local image = DistroImages[tag]
   if not image then error('unknown smoke distro: ' .. tag) end
-  return `FROM {image[1]}\nRUN {image[2]}\n`
+  local install = image[2]
+  if vulkanRuntime then install ..= ' ' .. image[3] end
+  return `FROM {image[1]}\nRUN {install}\n`
 end
 
 -- Check the actual dynamic-linker closure *inside* each smoke distro before
@@ -296,7 +299,7 @@ end
 -- Detached containers let Forge poll GUI startup without blocking in
 -- @dream/process.run. A stopped container remains inspectable until cleanup.
 -- No shell, no background subshell, no orphaned GUI after a normal smoke run.
-local function runDistroCommand(engine: string, imageTag: string, volume: string,
+local function runDistroCommandUnsafe(engine: string, imageTag: string, volume: string,
   tag: string, tool: string, entry: string, maxRoundsOverride: number?,
   testEnvironment: { [string]: string }?)
   local label = tag .. '/' .. entry
@@ -388,6 +391,18 @@ local function runDistroCommand(engine: string, imageTag: string, volume: string
   if not valid then error(reason or `smoke {label} failed`) end
 end
 
+local function runDistroCommand(engine: string, imageTag: string, volume: string,
+  tag: string, tool: string, entry: string, maxRoundsOverride: number?,
+  testEnvironment: { [string]: string }?)
+  -- Keep a machine-readable failure marker before preserving the original error.
+  local success, failure = pcall(runDistroCommandUnsafe, engine, imageTag, volume,
+    tag, tool, entry, maxRoundsOverride, testEnvironment)
+  if not success then
+    print(`FORGE_SMOKE_FAILURE distro={tag} tool={tool} entry={entry}`)
+    error(failure)
+  end
+end
+
 local function multiSmoke(options: Options, staging: string)
   local selected: { string } = {}
   for tag in options.distros:gmatch('[^,]+') do
@@ -411,7 +426,7 @@ local function multiSmoke(options: Options, staging: string)
   for _, tag in selected do
     local buildDir = options.root .. '/work/forge-smoke-images/' .. tag
     util.mkdir(buildDir)
-    util.write(buildDir .. '/Dockerfile', imageDockerfile(tag))
+    util.write(buildDir .. '/Dockerfile', imageDockerfile(tag, table.find(options.requiredFeatures, 'vulkan') ~= nil))
     local imageTag = 'openmw-forge-smoke:' .. tag
     util.stream(options.engine, { 'build', '-t', imageTag, '-f', buildDir .. '/Dockerfile', buildDir })
   end
@@ -444,7 +459,7 @@ local function multiSmoke(options: Options, staging: string)
     end
 
     for _, name in names do
-      if not fs.isFile(staging .. '/' .. name .. '.x86_64') then continue end
+      if not fs.isFile(staging .. '/' .. name .. '.x86_64') then error('smoke tool missing from package: ' .. name) end
       if not fs.isFile(staging .. '/' .. name) then error('missing installed launcher: ' .. name) end
       count += 1
       -- Run both entry points; a distro-specific wrapper failure is a release failure.
@@ -458,29 +473,49 @@ local function multiSmoke(options: Options, staging: string)
   end
 end
 
-local function smokeUnlocked(options: Options)
-  archive.listTar(options.archive)
-  local root = options.root .. '/work/forge-smoke'
-  util.resetManaged(root)
-  util.stream('tar', { 'xzf', options.archive, '-C', root })
-  -- Inspect every link after extraction; never follow a link outside this root.
-  local walk, problem = fs.walk(root, { include = 'all', sort = true })
-  if not walk then error(problem or 'cannot inspect extracted archive') end
-
-  for index, name in walk.paths do
-    if walk.kinds[index] ~= 'symlink' then continue end
-
-    local target = root .. '/' .. name
-      local resolved = fs.canonicalize(target)
-      if not resolved or (resolved ~= root and resolved:sub(1, #root + 1) ~= root .. '/') then
-        error('archive has escaping or dangling symbolic link: ' .. name)
-      end
-  end
-  local first = archive.listTar(options.archive)[1]
-  local top = first:match('^[^/]+') or ''
+-- Extract a published release archive into an independently owned directory.
+-- Unlike the native builder's package-staging tree, this directory survives
+-- the build process. Its contents and symlinks are inspected before use.
+local function extractPackage(archivePath: string, destination: string): string
+  local paths = archive.listTar(archivePath)
+  local top = paths[1]:match('^[^/]+') or ''
   if not archive.isSafeName(top) then error('unsafe archive root') end
-  local staging = root .. '/' .. top
+
+  for _, path in paths do
+    if path ~= top and path:sub(1, #top + 1) ~= top .. '/' then
+      error('archive contains more than one package root: ' .. path)
+    end
+  end
+
+  util.resetManaged(destination)
+  util.stream('tar', { 'xzf', archivePath, '-C', destination })
+  -- No other top-level directory or file may appear after extraction. The
+  -- only permitted extra file is the Forge-managed ownership marker.
+  for _, name in util.list(destination) do
+    if name ~= '.openmw-forge-managed' and name ~= top then
+      error('archive extracted an unexpected top-level entry: ' .. name)
+    end
+  end
+
+  local walk, problem = fs.walk(destination, { include = 'all', sort = true })
+  if not walk then error(problem or 'cannot inspect extracted archive') end
+  local canonical = fs.canonicalize(destination)
+  if not canonical then error('cannot resolve package extraction directory') end
+
+  for index, relative in walk.paths do
+    if walk.kinds[index] ~= 'symlink' then continue end
+    local resolved = fs.canonicalize(destination .. '/' .. relative)
+    if not resolved or (resolved ~= canonical and resolved:sub(1, #canonical + 1) ~= canonical .. '/') then
+      error('archive has escaping or dangling symbolic link: ' .. relative)
+    end
+  end
+  local staging = destination .. '/' .. top
   if not fs.isDir(staging) then error('archive does not have a single package root') end
+  return staging
+end
+
+local function smokeUnlocked(options: Options)
+  local staging = extractPackage(options.archive, options.root .. '/work/forge-smoke')
   abi.scanAbi(staging)
   if options.distros == '' then smokeBinaries(staging, options.withQt)
   else multiSmoke(options, staging) end
@@ -503,7 +538,7 @@ local function smoke(options: Options)
 end
 
 return table.freeze {
-  smoke = smoke, smokeBinaries = smokeBinaries, validateHelpResult = validateHelpResult,
+  smoke = smoke, extractPackage = extractPackage, smokeBinaries = smokeBinaries, validateHelpResult = validateHelpResult,
   validateBoundedResult = validateBoundedResult, imageDockerfile = imageDockerfile,
   runDistroCommand = runDistroCommand, smokeInvocationArgs = smokeInvocationArgs,
   closureEntries = closureEntries, closureProblems = closureProblems,

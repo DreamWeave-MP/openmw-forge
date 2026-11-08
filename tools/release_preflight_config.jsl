@@ -2,11 +2,12 @@
 --!strict
 local fs = require '@dream/fs'
 local process = require '@dream/process'
+local json = require '@jess/json'
 local source = require '@forge/source'
 local uber = require '@forge/uberbranch'
 local root, failure = fs.cwd()
 if not root then error(failure or 'cannot determine repository root') end
-local requestedProfile = process.env('FORGE_RELEASE_PROFILE') or 'upstream'
+local requestedProfile = process.env('FORGE_RELEASE_PROFILE') or 'clockwork'
 local profilesValid, profilesFailure = uber.validateProfiles()
 if not profilesValid then error(profilesFailure or 'invalid configured release profiles') end
 local selected = uber.profile(requestedProfile)
@@ -15,34 +16,37 @@ if not valid or not source.validRepo(selected.repository) or not source.validRef
   error(reason or ('invalid configured release source for profile ' .. requestedProfile))
 end
 
-local settingsArgs = {
-  '-cnS', '--arg', 'profile', selected.id,
-  '--arg', 'repository', selected.repository,
-  '--arg', 'ref', selected.ref,
-  '--arg', 'release_tag', selected.releaseTag,
-  '--arg', 'jobs', tostring(selected.jobs),
-  '--arg', 'distros', selected.distros,
-  '--argjson', 'vulkan', tostring(selected.features.vulkan),
-  '--argjson', 'luau', tostring(selected.features.luau),
-  '--argjson', 'lua_ui', tostring(selected.features.luaUi),
-  '--argjson', 'google_tests', tostring(selected.testPolicy.googleTests),
-  '--argjson', 'package_smoke', tostring(selected.testPolicy.packageSmoke),
-  '--argjson', 'qt_smoke', tostring(selected.testPolicy.qtSmoke),
-  '--args', '{schema:"forge-profile-settings/v1",profile:$profile,repository:$repository,ref:$ref,release_tag:$release_tag,jobs:$jobs,distros:$distros,cmake_args:$ARGS.positional,features:{vulkan:$vulkan,luau:$luau,lua_ui:$lua_ui},test_policy:{google_tests:$google_tests,package_smoke:$package_smoke,qt_smoke:$qt_smoke}}',
-  '--',
+-- Canonical settings: sorted keys, compact. The preflight input fingerprint hashes this
+-- exact text, so its byte layout is a contract.
+local cmakeArgs: { string } = {}
+for _, arg in selected.cmakeArgs do table.insert(cmakeArgs, arg) end
+
+local profileSettingsJson = json.encodeTable {
+  schema = 'forge-profile-settings/v1',
+  profile = selected.id,
+  repository = selected.repository,
+  ref = selected.ref,
+  release_tag = selected.releaseTag,
+  jobs = tostring(selected.jobs),
+  distros = selected.distros,
+  cmake_args = cmakeArgs,
+  features = {
+    vulkan = selected.features.vulkan,
+    luau = selected.features.luau,
+    lua_ui = selected.features.luaUi,
+  },
+  test_policy = {
+    google_tests = selected.testPolicy.googleTests,
+    package_smoke = selected.testPolicy.packageSmoke,
+    qt_smoke = selected.testPolicy.qtSmoke,
+  },
 }
 
-for _, arg in selected.cmakeArgs do table.insert(settingsArgs, arg) end
-local serialized = process.run('jq', settingsArgs, { stdout = 'capture', stderr = 'capture' })
-if not serialized or not serialized.success then
-  error('cannot serialize release profile settings: ' .. (serialized and serialized.stderr or 'jq failed'))
-end
-local profileSettingsJson = (serialized.stdout or ''):gsub('%s+$', '')
 if profileSettingsJson == '' then error('release profile settings serialized to empty JSON') end
 
 local output = process.env('GITHUB_OUTPUT')
 if not output or output == '' then error('GITHUB_OUTPUT is required') end
 local values = 'profile=' .. selected.id .. '\nrepository=' .. selected.repository .. '\nref=' .. selected.ref
-  .. '\nrelease_tag=' .. selected.releaseTag .. '\nprofile_settings_json=' .. profileSettingsJson .. '\n'
+  .. '\nrelease_tag=' .. selected.releaseTag .. '\nartifact_namespace=' .. selected.artifactNamespace .. '\nprofile_settings_json=' .. profileSettingsJson .. '\n'
 local ok, problem = fs.writeFile(output, values, { append = true })
 if not ok then error(problem or 'cannot write release configuration outputs') end
