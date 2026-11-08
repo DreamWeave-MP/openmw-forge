@@ -1040,16 +1040,18 @@ BUILD_OPENMW_TESTS:BOOL=ON
 BUILD_COMPONENTS_TESTS:BOOL=ON
 ]=]
     local compileCommands = [=[
-"file": "/src/components/vulkan/device.cpp"
-"file": "/build/components/devicetable.cpp"
-"file": "/src/components/lua/nativecodegen.cpp"
-"file": "/build/extern/fetched/luau/VM/src/lvmexecute.cpp"
-"file": "/build/extern/fetched/luau/Compiler/src/Compiler.cpp"
-"file": "/build/extern/fetched/luau/CodeGen/src/CodeGen.cpp"
-"file": "/src/components/lua_ui/content.cpp"
-"file": "/src/apps/openmw/mwlua/uibindings.cpp"
-"file": "/src/apps/components_tests/lua/testluaunativecodegen.cpp"
-"file": "/src/apps/components_tests/lua/testuicontent.cpp"
+[
+  {"directory": "/build", "command": "c++ -c /src/components/vulkan/device.cpp", "file": "/src/components/vulkan/device.cpp"},
+  {"directory": "/build", "command": "c++ -c devicetable.cpp", "file": "/build/components/devicetable.cpp"},
+  {"directory": "/build", "command": "c++ -c nativecodegen.cpp", "file": "/src/components/lua/nativecodegen.cpp"},
+  {"directory": "/build", "command": "c++ -c lvmexecute.cpp", "file": "/build/extern/fetched/luau/VM/src/lvmexecute.cpp"},
+  {"directory": "/build", "command": "c++ -c Compiler.cpp", "file": "/build/extern/fetched/luau/Compiler/src/Compiler.cpp"},
+  {"directory": "/build", "command": "c++ -c CodeGen.cpp", "file": "/build/extern/fetched/luau/CodeGen/src/CodeGen.cpp"},
+  {"directory": "/build", "command": "c++ -c content.cpp", "file": "/src/components/lua_ui/content.cpp"},
+  {"directory": "/build", "command": "c++ -c uibindings.cpp", "file": "/src/apps/openmw/mwlua/uibindings.cpp"},
+  {"directory": "/build", "command": "c++ -c testluaunativecodegen.cpp", "file": "/src/apps/components_tests/lua/testluaunativecodegen.cpp"},
+  {"directory": "/build", "command": "c++ -c testuicontent.cpp", "file": "/src/apps/components_tests/lua/testuicontent.cpp"}
+]
 ]=]
     local valid = nativeFeatureGate.validate(cache, compileCommands, { 'vulkan', 'luau', 'lua-ui' }, true)
     test.expect(valid).toBeTruthy()
@@ -1081,6 +1083,22 @@ BUILD_COMPONENTS_TESTS:BOOL=ON
       { 'vulkan', 'luau', 'lua-ui' }, true)
     test.expect(noTests).toBeFalsy()
     test.expect(testsReason).toContain('GoogleTests must be enabled')
+
+    -- The source path in a command or output string is not a compiled unit.
+    local commandOnly = [=[
+[{"command": "c++ -c /src/components/vulkan/device.cpp -o /build/other.o", "file": "/build/other.cpp"}]
+]=]
+    local inCommand, commandReason = nativeFeatureGate.validate(cache, commandOnly,
+      { 'vulkan' }, false)
+    test.expect(inCommand).toBeFalsy()
+    test.expect(commandReason).toContain('components/vulkan/device.cpp')
+
+    -- A sibling directory that only shares the suffix must not satisfy the needle.
+    local sibling = [=[[{"file": "/src/vendored-components/vulkan/device.cpp"}]]=]
+    local siblingOnly, siblingReason = nativeFeatureGate.validate(cache, sibling,
+      { 'vulkan' }, false)
+    test.expect(siblingOnly).toBeFalsy()
+    test.expect(siblingReason).toContain('components/vulkan/device.cpp')
   end)
 
   suite.it('separates verified SDK preparation from release compilation', function()
