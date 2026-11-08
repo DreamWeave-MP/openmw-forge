@@ -2,6 +2,7 @@
 -- CI release orchestrator. Source/ref live in ci/uberbranch-config.jsl.
 local fs = require '@dream/fs'
 local process = require '@dream/process'
+local json = require '@jess/json'
 local util = require '@forge/native-util'
 local source = require '@forge/source'
 type Profile = {
@@ -188,16 +189,18 @@ local function publish(settings: Profile, root: string, files: { string }, notes
   -- focused on the most recently qualified build, not a growing list of old
   -- archives. Prune only Forge-named tarballs, never unrelated release assets.
   local listed, failure = process.run('gh', {
-    'release', 'view', tag, '--json', 'assets', '--jq', '.assets[].name',
+    'release', 'view', tag, '--json', 'assets',
   }, { cwd = root, env = env, stdout = 'capture', stderr = 'capture' })
 
   if not listed or not listed.success then error('cannot list rolling release assets: ' .. (failure or 'unknown')) end
+  local release = json.decode(listed.stdout or '') :: { assets: { { name: string } } }
   local current: { [string]: boolean } = {}
   for _, path in files do
     current[fs.fileName(path) or path] = true
   end
 
-  for name in (listed.stdout or ''):gmatch('[^\r\n]+') do
+  for _, asset in release.assets do
+    local name = asset.name
     if (isMainTarball(name) or name:match('^openmw%-.*%-Linux%-64Bit%-debug%.tar%.gz$'))
       and not current[name] then
       util.stream('gh', { 'release', 'delete-asset', tag, name, '--yes' }, root, env)
@@ -240,17 +243,24 @@ local function publishArtifacts(directory: string, root: string, settings: Profi
   end
 
   if expectedInputs == '' then error('missing canonical preflight input JSON') end
-  local provenance = util.file(provenancePath)
-  local verified = process.run('jq', { '-e', '--arg', 'fingerprint', fingerprint, '--arg', 'sha', revision,
-    '--arg', 'repo', settings.repository, '--arg', 'ref', settings.ref,
-    '--arg', 'profile', expectedProfile, '--arg', 'tag', settings.releaseTag,
-    '--argjson', 'inputs', expectedInputs,
-    '.schema == "forge-qualified-release/v1" and .qualified == true and .input_fingerprint == $fingerprint'
-      .. ' and .source_sha == $sha and .repository == $repo and .requested_ref == $ref and .profile == $profile and .release_tag == $tag and .inputs == $inputs', provenancePath }, {
-    stdout = 'null', stderr = 'capture',
-  })
+  -- Malformed JSON raises from the decoder, which fails the publish closed.
+  local provenanceDocument = json.decode(util.file(provenancePath)) :: {
+    schema: string?, qualified: boolean?, input_fingerprint: string?, source_sha: string?,
+    repository: string?, requested_ref: string?, profile: string?, release_tag: string?,
+    inputs: unknown?,
+  }
+  -- Canonical encodings sort keys, so comparing them is the same as comparing the objects.
+  local verified = provenanceDocument.schema == 'forge-qualified-release/v1'
+    and provenanceDocument.qualified == true
+    and provenanceDocument.input_fingerprint == fingerprint
+    and provenanceDocument.source_sha == revision
+    and provenanceDocument.repository == settings.repository
+    and provenanceDocument.requested_ref == settings.ref
+    and provenanceDocument.profile == expectedProfile
+    and provenanceDocument.release_tag == settings.releaseTag
+    and json.encodeTable(provenanceDocument.inputs) == json.encodeTable(json.decode(expectedInputs))
 
-  if not verified or not verified.success then error('qualified release JSON does not match preflight identity') end
+  if not verified then error('qualified release JSON does not match preflight identity') end
 
   if not main:find('-g' .. revision:sub(1, 12) .. '-', 1, true) then
     error('release tarball filename does not match source provenance')
@@ -263,7 +273,7 @@ local function publishArtifacts(directory: string, root: string, settings: Profi
     if not hash or #hash ~= 64 or not filename or not allowed[filename] or expected[filename] then
       error('invalid or duplicate release checksum entry: ' .. line)
     end
-    local actual = util.checked('sha256sum', { allowed[filename] }):match('^([a-f0-9]+)')
+    local actual = util.sha256(allowed[filename])
     if actual ~= hash then error('release checksum mismatch: ' .. filename) end
     expected[filename] = true
   end
@@ -394,15 +404,22 @@ local function run(argv: { string })
   if resolvedSha and revision ~= resolvedSha then error('built source differs from preflight-resolved SHA') end
   util.write(notes, `Profile: {settings.id}\nGitHub release: {settings.releaseTag}\nOpenMW repository: {settings.repository}\nOpenMW requested ref: {requestedRef}\nOpenMW resolved SHA: {revision}\nBuild input fingerprint: {fingerprint}\nForge CI run: {runId}/{attempt}\n`)
   local provenancePath = output .. '/PROVENANCE.json'
-  local provenance = util.checked('jq', { '-cnS', '--arg', 'fingerprint', fingerprint, '--arg', 'sha', revision,
-    '--arg', 'repo', settings.repository, '--arg', 'ref', requestedRef,
-    '--arg', 'profile', settings.id, '--arg', 'tag', settings.releaseTag, '--argjson', 'inputs', inputs,
-    '{schema:"forge-qualified-release/v1",qualified:true,input_fingerprint:$fingerprint,source_sha:$sha,repository:$repo,requested_ref:$ref,profile:$profile,release_tag:$tag,inputs:$inputs}' })
+  local provenance = json.encodeTable {
+    schema = 'forge-qualified-release/v1',
+    qualified = true,
+    input_fingerprint = fingerprint,
+    source_sha = revision,
+    repository = settings.repository,
+    requested_ref = requestedRef,
+    profile = settings.id,
+    release_tag = settings.releaseTag,
+    inputs = json.decode(inputs),
+  }
   util.write(provenancePath, provenance .. '\n')
   local checksums = output .. '/SHA256SUMS'
   local lines: { string } = {}
   for _, path in { main, debug, notes, provenancePath } do
-    local checksum = util.checked('sha256sum', { path }):match('^([0-9a-f]+)')
+    local checksum = util.sha256(path)
     if not checksum or #checksum ~= 64 then error('failed to compute artifact SHA-256: ' .. path) end
     table.insert(lines, checksum .. '  ' .. (fs.fileName(path) or path))
   end

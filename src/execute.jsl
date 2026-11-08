@@ -109,8 +109,7 @@ local function imageIdentity(options: Options): string
   local directory = options.root .. '/work/forge-assets'
   local digests: { string } = {}
   for _, file in { directory .. '/forge', directory .. '/Dockerfile' } do
-    local stdout = util.checked('sha256sum', { file })
-    local hash = stdout:match('^([a-f0-9]+)')
+    local hash = util.sha256(file)
     if not hash or #hash ~= 64 then error('invalid builder input checksum: ' .. file) end
     table.insert(digests, hash:sub(1, 16))
   end

@@ -1,6 +1,7 @@
 #!/usr/bin/env -S jess run --trusted --package .
 --!strict
 local fs = require '@dream/fs'
+local json = require '@jess/json'
 local process = require '@dream/process'
 local util = require '@forge/native-util'
 local sourceModule = require '@forge/source'
@@ -1181,11 +1182,18 @@ local releaseDebug = releaseDir .. '/' .. releaseName .. '-debug.tar.gz'
 util.copy(valid, releaseMain)
 util.copy(valid, releaseDebug)
 local inputIdentityPath = scratch .. '/release-inputs.json'
-local inputIdentity = util.checked('jq', { '-cnS', '--arg', 'repo', uberConfig.repository,
-  '--arg', 'ref', uberConfig.ref, '--arg', 'tag', uberConfig.releaseTag,
-  '{schema:"forge-release-inputs/v1",profile:"upstream",repository:$repo,requested_ref:$ref,release_tag:$tag,target:"linux-X64",toolchain:"fixture",source_sha:"' .. fakeRevision .. '"}' }):gsub('%s+$', '')
+local inputIdentity = json.encodeTable {
+  schema = 'forge-release-inputs/v1',
+  profile = 'upstream',
+  repository = uberConfig.repository,
+  requested_ref = uberConfig.ref,
+  release_tag = uberConfig.releaseTag,
+  target = 'linux-X64',
+  toolchain = 'fixture',
+  source_sha = fakeRevision,
+}
 util.write(inputIdentityPath, inputIdentity)
-local inputFingerprint = util.checked('sha256sum', { inputIdentityPath }):match('^([0-9a-f]+)')
+local inputFingerprint = util.sha256(inputIdentityPath)
 if not inputFingerprint then error('could not fingerprint release identity fixture') end
 local sourceNotes = releaseDir .. '/SOURCE.txt'
 local sourceText = 'Profile: upstream\nGitHub release: ' .. uberConfig.releaseTag .. '\n'
@@ -1193,15 +1201,21 @@ local sourceText = 'Profile: upstream\nGitHub release: ' .. uberConfig.releaseTa
   .. 'OpenMW requested ref: ' .. uberConfig.ref .. '\nOpenMW resolved SHA: ' .. fakeRevision .. '\n'
   .. 'Build input fingerprint: ' .. inputFingerprint .. '\n'
 util.write(sourceNotes, sourceText)
-local provenance = util.checked('jq', { '-cnS', '--arg', 'fingerprint', inputFingerprint,
-  '--arg', 'sha', fakeRevision, '--arg', 'repo', uberConfig.repository, '--arg', 'ref', uberConfig.ref,
-  '--arg', 'tag', uberConfig.releaseTag,
-  '--argjson', 'inputs', inputIdentity,
-  '{schema:"forge-qualified-release/v1",qualified:true,input_fingerprint:$fingerprint,source_sha:$sha,repository:$repo,requested_ref:$ref,profile:"upstream",release_tag:$tag,inputs:$inputs}' })
-util.write(releaseDir .. '/PROVENANCE.json', provenance)
+local provenance = json.encodeTable {
+  schema = 'forge-qualified-release/v1',
+  qualified = true,
+  input_fingerprint = inputFingerprint,
+  source_sha = fakeRevision,
+  repository = uberConfig.repository,
+  requested_ref = uberConfig.ref,
+  profile = 'upstream',
+  release_tag = uberConfig.releaseTag,
+  inputs = json.decode(inputIdentity),
+}
+util.write(releaseDir .. '/PROVENANCE.json', provenance .. '\n')
 local checksumLines: { string } = {}
 for _, path in { releaseMain, releaseDebug, sourceNotes, releaseDir .. '/PROVENANCE.json' } do
-  local hash = util.checked('sha256sum', { path }):match('^([0-9a-f]+)')
+  local hash = util.sha256(path)
   if not hash then error('could not hash release fixture') end
   table.insert(checksumLines, hash .. '  ' .. (fs.fileName(path) or ''))
 end

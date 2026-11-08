@@ -4,13 +4,14 @@
 -- OCI digest. A missing first-run image is an explicit local-build fallback.
 local process = require '@dream/process'
 local fs = require '@dream/fs'
+local json = require '@jess/json'
 local util = require '@forge/native-util'
 
 local root, failure = fs.cwd()
 if not root then error(failure or 'cannot find repo root') end
 local recipe = root .. '/vendor/builder/Dockerfile'
 if not fs.isFile(recipe) then error('missing canonical builder Dockerfile') end
-local source = util.checked('sha256sum', { recipe }):match('^([a-f0-9]+)')
+local source = util.sha256(recipe)
 if not source or #source ~= 64 then error('cannot identify builder recipe') end
 local repository = process.env('GITHUB_REPOSITORY') or ''
 if not repository:match('^[%w._%-]+/[%w._%-]+$') then
@@ -36,6 +37,53 @@ if runnerOs ~= 'Linux' or architecture == '' then
   error('unsupported OCI toolchain runner platform: ' .. runnerOs .. '/' .. runnerArch)
 end
 
+type Platform = { os: string?, architecture: string? }
+type Descriptor = { digest: string?, platform: Platform? }
+-- docker manifest inspect --verbose prints a list of platform manifests, an index with
+-- manifests, or one manifest; the field spellings vary across Docker releases.
+type Manifest = {
+  Descriptor: Descriptor?, descriptor: Descriptor?,
+  digest: string?, Digest: string?,
+  platform: Platform?, Platform: Platform?,
+  manifests: { Manifest }?,
+}
+
+local function manifestPlatform(manifest: Manifest): Platform
+  local platform = (manifest.Descriptor and manifest.Descriptor.platform)
+    or (manifest.descriptor and manifest.descriptor.platform)
+    or manifest.platform
+    or manifest.Platform
+  return platform or {}
+end
+
+local function entryDigest(manifest: Manifest): string?
+  return (manifest.Descriptor and manifest.Descriptor.digest)
+    or (manifest.descriptor and manifest.descriptor.digest)
+    or manifest.digest
+    or manifest.Digest
+end
+
+local function isSha256Digest(value: string?): boolean
+  return value ~= nil and #value == 71 and value:match('^sha256:[0-9a-f]+$') ~= nil
+end
+
+-- The one distinct valid digest for linux/<architecture>, or '' when there is not exactly one.
+local function platformDigest(manifests: { Manifest }, architecture: string): string
+  local digests: { string } = {}
+  for _, manifest in manifests do
+    local platform = manifestPlatform(manifest)
+    if (platform.os or '') == 'linux' and (platform.architecture or '') == architecture then
+      local digest = entryDigest(manifest)
+      if digest and isSha256Digest(digest) and not table.find(digests, digest) then
+        table.insert(digests, digest)
+      end
+    end
+  end
+
+  if #digests == 1 then return digests[1] end
+  return ''
+end
+
 local function manifestDigest(reference: string): string
   local result = process.run('docker', { 'manifest', 'inspect', '--verbose', reference }, {
     stdout = 'capture', stderr = 'capture',
@@ -43,34 +91,31 @@ local function manifestDigest(reference: string): string
 
   if not result or not result.success then return '' end
 
-  local query = [[
-    def valid_digest: type == "string" and test("^sha256:[0-9a-f]{64}$");
-    def platform: (.Descriptor.platform // .descriptor.platform // .platform // .Platform // {});
-    def entry_digest: (.Descriptor.digest // .descriptor.digest // .digest // .Digest);
-    def platform_digest(entries):
-      [entries[]
-        | select((platform.os // "") == $os and (platform.architecture // "") == $architecture)
-        | entry_digest
-        | select(valid_digest)]
-      | unique
-      | if length == 1 then .[0] else empty end;
-    if type == "array" then platform_digest(.)
-    elif type == "object" and (.manifests? | type) == "array" then platform_digest(.manifests)
-    elif type == "object" and ((platform.os? != null) or (platform.architecture? != null)) then
-      if (platform.os // "") == $os and (platform.architecture // "") == $architecture
-      then entry_digest else empty end
-    elif type == "object" then entry_digest
-    else empty end
-    | select(valid_digest)
-  ]]
-  local parsed = process.run('jq', { '-er', '--arg', 'os', 'linux', '--arg', 'architecture', architecture, query }, {
-    stdin = result.stdout or '', stdout = 'capture', stderr = 'null',
-  })
+  -- json.decode raises on output that is not JSON. Docker then describes no digest we
+  -- can use, so the result is the same as a missing image: the explicit fallback.
+  local decoded, document = pcall(json.decode, result.stdout or '')
+  if not decoded or type(document) ~= 'table' then return '' end
 
-  if not parsed or not parsed.success then return '' end
-  local digest = (parsed.stdout or ''):gsub('%s+$', '')
-  if not digest:match('^sha256:[0-9a-f]+$') or #digest ~= 71 then return '' end
-  return digest
+  local manifests = document :: { Manifest }
+  local digest = ''
+  if #manifests > 0 then
+    digest = platformDigest(manifests, architecture)
+  else
+    local manifest = document :: Manifest
+    if manifest.manifests ~= nil then
+      digest = platformDigest(manifest.manifests, architecture)
+    elseif manifestPlatform(manifest).os ~= nil or manifestPlatform(manifest).architecture ~= nil then
+      local platform = manifestPlatform(manifest)
+      if (platform.os or '') == 'linux' and (platform.architecture or '') == architecture then
+        digest = entryDigest(manifest) or ''
+      end
+    else
+      digest = entryDigest(manifest) or ''
+    end
+  end
+
+  if isSha256Digest(digest) then return digest end
+  return ''
 end
 
 if preflight then
