@@ -33,11 +33,17 @@ available to Clockwork without enabling Vulkan rendering in upstream/master.
 The manifest change invalidates the dependency SDK identity and requires a new
 SDK build; CI does not perform frame capture or renderer verification.
 
-The two profiles currently publish to separate prereleases:
-`das-uberbranch-clockwork` and `das-uberbranch`, respectively. Keeping both
-namespaces distinct avoids overwriting an existing upstream release while the
-Clockwork branch is still under validation. When the upstream branch is merged,
-we can promote the desired source without cloning the build machinery.
+Release tags follow the source identity: **Clockwork** publishes to
+[`das-uberbranch`](https://github.com/DreamWeave-MP/openmw-forge/releases/tag/das-uberbranch)
+and **upstream/master** publishes to
+[`upstream`](https://github.com/DreamWeave-MP/openmw-forge/releases/tag/upstream).
+The two profiles retain independent artifact namespaces and provenance, but share
+the exact same dependency SDK, build and publication machinery. When switching from historical release tags, delete the old GitHub Releases
+before rerunning the publisher. Deleting a release may leave its Git tag behind;
+the standalone integrator safely retargets the historical `das-uberbranch` tag
+to the new Forge `main` when necessary. No old releases or assets are migrated.
+The publisher refuses to overwrite an existing release belonging to a different
+OpenMW source.
 
 Each run resolves its selected source to a full commit SHA and records that
 revision in its archives, `SOURCE.txt`, and `PROVENANCE.json`. `jobs = 'auto'`

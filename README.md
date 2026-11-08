@@ -15,17 +15,19 @@ The site toolchain is pinned independently of Forge's newer Jess runtime.
 The separate `.github/workflows/das-uberbranch.yml` schedules an OpenMW
 **Linux package + detached debug symbols** every four hours (`23 */4 * * *` UTC), running real
 AlmaLinux 9/Docker builds, GoogleTests, archive and launcher verification, and
-a cross-distro smoke gate before updating the `das-uberbranch` prerelease.
+a cross-distro smoke gate before updating the profile-selected prerelease.
 
-**To switch the scheduled fork or branch, edit only**
-[`ci/uberbranch-config.jsl`](ci/uberbranch-config.jsl): its `repository` and
-`ref` initially select official `https://gitlab.com/OpenMW/openmw.git` at
-`master`. The workflow uses ordinary GitHub-hosted `ubuntu-24.04` runners: no custom
+**To select the OpenMW source in CI**, use the workflow's `release_profile`
+input (default `clockwork`; optional `upstream`). Source repository, ref, release
+identity and required CMake flags live in
+[`ci/release-profiles.jsl`](ci/release-profiles.jsl). Both profiles use the same
+Linux SDL2 SDK with Vulkan-capable X11/Wayland windows; only Clockwork enables
+the engine's experimental Vulkan renderer. The workflow uses ordinary GitHub-hosted `ubuntu-24.04` runners: no custom
 runner registration or hardware. It runs AlmaLinux 9 inside Docker and publishes
 releases through a separate, narrowly write-permitted job. The checked-in
 configuration defaults to **`--jobs auto`**, resolving the CPUs available inside the
 AlmaLinux build container at execution time. Use `--jobs N` or set `jobs = N`
-in `ci/uberbranch-config.jsl` to limit concurrency if peak GCC memory demands it. For setup, see [CI](content/home/docs/ci.md), [scheduled releases](content/home/docs/release.md),
+in `ci/release-profiles.jsl` to limit concurrency if peak GCC memory demands it. For setup, see [CI](content/home/docs/ci.md), [scheduled releases](content/home/docs/release.md),
 [CLI examples](content/home/docs/cli.md), [performance](content/home/docs/performance.md),
 [troubleshooting](content/home/docs/troubleshooting.md) and [release qualification](content/home/docs/release-readiness.md).
 The heavy production build **has not been executed in this test sandbox**.
@@ -34,8 +36,9 @@ Before the scheduled job restores caches or starts Docker, it resolves the
 remote ref to a full source SHA and compares the versioned build fingerprint
 with the qualified prerelease. An unchanged qualified release is a cheap
 successful skip; manual `force_rebuild` explicitly requests another compile.
-Clockwork uses a separate experimental prerelease and a manual-only workflow
-until its Vulkan frame, UI/Luau tests, and distribution smoke are qualified.
+The four-hour schedule builds Clockwork by default and publishes it as
+`das-uberbranch`; the optional upstream/master profile publishes as `upstream`.
+CI validates builds and package viability without renderer/frame verification.
 If only release upload failed, operators can provide the prior upstream or
 Clockwork run ID; Forge reuses its candidate only after checking the successful
 build job, current source/fingerprint, provenance, and checksums. See the [release
