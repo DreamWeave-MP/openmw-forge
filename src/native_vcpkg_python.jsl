@@ -24,7 +24,7 @@ local Wheels: { Wheel } = {
 }
 
 local function digest(path: string): string
-  return (util.checked('sha256sum', { path }):match('^([0-9a-f]+)') or '')
+  return util.sha256(path)
 end
 
 local function addEnvironment(env: { [string]: string }, wheelhouse: string): { [string]: string }

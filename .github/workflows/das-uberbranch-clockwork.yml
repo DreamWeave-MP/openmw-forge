@@ -94,7 +94,7 @@ jobs:
           FORGE_TOOLCHAIN_ID: ${{ steps.toolchain.outputs.toolchain_id }}
           RUNNER_ARCH: ${{ runner.arch }}
           FORCE_REBUILD: ${{ inputs.force_rebuild || false }}
-        run: bash tools/release_preflight.sh
+        run: jess run --trusted --package . tools/release_preflight.jsl
 
   recover-candidate:
     name: Verify retained candidate from a prior Clockwork run
@@ -124,7 +124,7 @@ jobs:
           CURRENT_REPOSITORY: ${{ github.repository }}
           CURRENT_REPOSITORY_ID: ${{ github.repository_id }}
         run: |
-          bash tools/release_candidate.sh "$CANDIDATE_RUN_ID" \
+          jess run --trusted --package . tools/release_candidate.jsl "$CANDIDATE_RUN_ID" \
             .github/workflows/das-uberbranch-clockwork.yml \
             'Build and qualify Clockwork on GitHub-hosted Ubuntu (AlmaLinux 9 containers)' \
             openmw-das-uberbranch-clockwork-candidate-

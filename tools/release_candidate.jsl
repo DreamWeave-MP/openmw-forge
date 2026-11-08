@@ -1,0 +1,137 @@
+#!/usr/bin/env -S jess run --trusted --package .
+--!strict
+-- Decides whether a prior workflow run's retained build artifact may stand in for a
+-- fresh build. Every doubt is an unusable candidate: the outputs say so, and the
+-- workflow falls back to a cold build. Only a run of this workflow, in this
+-- repository, with a successful build job and an unexpired artifact of that run,
+-- is reusable.
+local json = require '@jess/json'
+local fs = require '@dream/fs'
+local process = require '@dream/process'
+
+type Run = {
+  path: string?, event: string?,
+  repository: { id: number?, full_name: string? }?,
+  head_repository: { id: number? }?,
+}
+type Job = { name: string?, conclusion: string? }
+type Artifact = {
+  name: string?, expired: boolean?, created_at: string?,
+  workflow_run: { id: number?, repository_id: number?, head_repository_id: number? }?,
+}
+
+local candidateRunId, workflowPath, buildJobName, artifactPrefix = ...
+local githubOutput = process.env('GITHUB_OUTPUT') or ''
+local repository = process.env('CURRENT_REPOSITORY') or ''
+local repositoryIdText = process.env('CURRENT_REPOSITORY_ID') or ''
+if githubOutput == '' or repository == '' or not repositoryIdText:match('^%d+$') then
+  error('candidate inspection requires GitHub Actions outputs and repository identity')
+end
+
+if not candidateRunId or not workflowPath or not buildJobName or not artifactPrefix then
+  error('usage: tools/release_candidate.jsl RUN_ID WORKFLOW_PATH BUILD_JOB_NAME ARTIFACT_PREFIX')
+end
+local repositoryId = tonumber(repositoryIdText) :: number
+
+local function appendOutput(text: string)
+  local written, failure = fs.writeFile(githubOutput, text, { append = true })
+  if not written then error(failure or 'cannot write candidate outputs') end
+end
+
+local function unusable(reason: string)
+  print('Candidate unavailable: ' .. reason .. '; falling back to a cold build.')
+  appendOutput('usable=false\n')
+end
+
+local function decodeOrNil(text: string): unknown?
+  if text == '' then return nil end
+  -- json.decode raises on text that is not JSON; an unreadable API answer makes the
+  -- candidate unusable, so the failure is caught here and nowhere else.
+  local ok, value = pcall(function() return json.decode(text) end)
+  if not ok then return nil end
+  return value
+end
+
+local function api(suffix: string): string
+  local result = process.run('gh', { 'api', 'repos/' .. repository .. '/actions/runs/' .. candidateRunId .. suffix }, {
+    env = { GH_TOKEN = process.env('GH_TOKEN') or '' }, stdout = 'capture', stderr = 'null',
+  })
+
+  if not result or not result.success then return '' end
+  return result.stdout or ''
+end
+
+local function main()
+  if not candidateRunId:match('^%d+$') then
+    unusable('run ID must contain decimal digits only')
+    return
+  end
+
+  local run = decodeOrNil(api(''))
+  local runValid = false
+  if type(run) == 'table' then
+    local document = run :: Run
+    local owner = document.repository
+    local head = document.head_repository
+    runValid = document.path == workflowPath
+      and (document.event == 'workflow_dispatch' or document.event == 'schedule')
+      and owner ~= nil and head ~= nil
+      and owner.full_name == repository and owner.id == repositoryId and head.id == repositoryId
+  end
+
+  if not runValid then
+    unusable('run is unavailable or does not belong to this Clockwork workflow and repository')
+    return
+  end
+
+  local jobs = decodeOrNil(api('/jobs?filter=all&per_page=100'))
+  local buildSucceeded = false
+  if type(jobs) == 'table' and type((jobs :: { jobs: unknown? }).jobs) == 'table' then
+    for _, job in (jobs :: { jobs: { Job } }).jobs do
+      if job.name == buildJobName and job.conclusion == 'success' then buildSucceeded = true end
+    end
+  end
+
+  if not buildSucceeded then
+    unusable('no successful Clockwork build job exists in that run')
+    return
+  end
+
+  local artifacts = decodeOrNil(api('/artifacts?per_page=100'))
+  if type(artifacts) ~= 'table' or type((artifacts :: { artifacts: unknown? }).artifacts) ~= 'table' then
+    unusable('artifact metadata could not be read')
+    return
+  end
+
+  -- The latest created_at wins. A tie goes to the later listing, so the choice is the
+  -- same however the API orders equal timestamps.
+  local runIdNumber = tonumber(candidateRunId) :: number
+  local artifactName: string? = nil
+  local artifactKey = ''
+  for _, artifact in (artifacts :: { artifacts: { Artifact } }).artifacts do
+    local name = artifact.name
+    local origin = artifact.workflow_run
+    local matches = artifact.expired == false
+      and name ~= nil and name:sub(1, #artifactPrefix) == artifactPrefix
+      and name:match('^[A-Za-z0-9_%-]+%-%d+%-%d+$') ~= nil
+      and origin ~= nil and origin.id == runIdNumber
+      and origin.repository_id == repositoryId and origin.head_repository_id == repositoryId
+    if matches and name then
+      local key = artifact.created_at or ''
+      if not artifactName or key >= artifactKey then
+        artifactName = name
+        artifactKey = key
+      end
+    end
+  end
+
+  if not artifactName then
+    unusable('no unexpired candidate artifact is attached to that run')
+    return
+  end
+
+  appendOutput('usable=true\nartifact_name=' .. artifactName .. '\n')
+  print('Candidate artifact is eligible for download: ' .. artifactName)
+end
+
+main()

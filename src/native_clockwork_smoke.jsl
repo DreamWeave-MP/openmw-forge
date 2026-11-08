@@ -3,6 +3,7 @@
 -- Run Clockwork's maintained integration and Vulkan capture tests against a
 -- qualified Forge build. This remains an opt-in post-build qualification.
 local fs = require '@dream/fs'
+local json = require '@jess/json'
 local process = require '@dream/process'
 local util = require '@forge/native-util'
 
@@ -101,9 +102,31 @@ local function command(engine: string, name: string, image: string, sourceRoot: 
   }
 end
 
+-- json.decode raises on text that is not JSON, and util.file raises when the file is missing.
+-- Either is a failed proof rather than a crash, so both are caught here and nowhere else.
+local function decodedEvidence(path: string): { [string]: unknown }?
+  local ok, document = pcall(function() return json.decode(util.file(path)) end)
+  if not ok or type(document) ~= 'table' then return nil end
+  return document :: { [string]: unknown }
+end
+
+local function emptyArray(value: unknown): boolean
+  return type(value) == 'table' and next(value) == nil
+end
+
+local function cleanRun(document: { [string]: unknown }): boolean
+  return document.timed_out == false and document.returncode == 0 and emptyArray(document.errors)
+end
+
+-- The same "digest  path" lines sha256sum prints, one per file, in the given order.
+local function evidenceHashes(paths: { string }): string
+  local lines: { string } = {}
+  for _, path in paths do table.insert(lines, util.sha256(path) .. '  ' .. path .. '\n') end
+  return table.concat(lines)
+end
+
 local function validateEvidence(outputRoot: string, sourceSha: string, suiteSha: string,
-  builderImage: string, checkJson: ((string, string) -> boolean)?,
-  hashEvidence: (({ string }) -> string)?): (boolean, string?)
+  builderImage: string, hashEvidence: (({ string }) -> string)?): (boolean, string?)
   local startup = outputRoot .. '/runner/renderer_startup_output/result.json'
   local capture = outputRoot .. '/vulkan-capture/capture.json'
   local image = outputRoot .. '/vulkan-capture/capture'
@@ -148,21 +171,23 @@ local function validateEvidence(outputRoot: string, sourceSha: string, suiteSha:
 
   if captureCount ~= 1 then return false, 'Clockwork Vulkan capture artifact count differs from one' end
 
-  local startupQuery = '.timed_out == false and .returncode == 0 and .errors == [] and .renderer.entry == "vulkan 1.3" and .renderer.requested == "vulkan 1.3"'
-  local startupValid = if checkJson then checkJson(startup, startupQuery) else (function(): boolean
-    local result = process.run('jq', { '-e', startupQuery, startup }, { stdout = 'null', stderr = 'capture' })
-    return result ~= nil and result.success
-  end)()
+  local startupValid = false
+  local startupDocument = decodedEvidence(startup)
+  if startupDocument and cleanRun(startupDocument) and type(startupDocument.renderer) == 'table' then
+    local renderer = startupDocument.renderer :: { entry: unknown?, requested: unknown? }
+    startupValid = renderer.entry == 'vulkan 1.3' and renderer.requested == 'vulkan 1.3'
+  end
 
   if not startupValid then
     return false, 'renderer-startup evidence does not prove a clean Vulkan 1.3 run'
   end
 
-  local captureQuery = '.timed_out == false and .returncode == 0 and .errors == [] and (.captures | length) == 1 and .icd != null'
-  local captureValid = if checkJson then checkJson(capture, captureQuery) else (function(): boolean
-    local result = process.run('jq', { '-e', captureQuery, capture }, { stdout = 'null', stderr = 'capture' })
-    return result ~= nil and result.success
-  end)()
+  local captureValid = false
+  local captureDocument = decodedEvidence(capture)
+  if captureDocument and cleanRun(captureDocument) and type(captureDocument.captures) == 'table' then
+    local captures = captureDocument.captures :: { unknown }
+    captureValid = #captures == 1 and captureDocument.icd ~= nil and captureDocument.icd ~= json.null
+  end
 
   if not captureValid then
     return false, 'capture evidence does not prove one clean Vulkan scene capture'
@@ -175,7 +200,7 @@ local function validateEvidence(outputRoot: string, sourceSha: string, suiteSha:
   table.insert(evidenceFiles, vulkanInfo)
   table.insert(evidenceFiles, runtimePackages)
   table.insert(evidenceFiles, luauUiTests)
-  local hashes = if hashEvidence then hashEvidence(evidenceFiles) else util.checked('sha256sum', evidenceFiles)
+  local hashes = if hashEvidence then hashEvidence(evidenceFiles) else evidenceHashes(evidenceFiles)
   util.write(outputRoot .. '/CLOCKWORK-VULKAN-QUALIFICATION.txt',
     'Profile: clockwork\nRenderer: vulkan 1.3\nClockwork source SHA: ' .. sourceSha
       .. '\nExample-suite SHA: ' .. suiteSha .. '\nBuilder image: ' .. builderImage
@@ -254,7 +279,7 @@ local function run(sourceRoot: string, buildRoot: string, packageRoot: string, d
       .. '\n' .. log:sub(math.max(1, #log - 12000)))
   end
 
-  local valid, reason = validateEvidence(outputRoot, sourceSha, expectedSuiteSha, image, nil, nil)
+  local valid, reason = validateEvidence(outputRoot, sourceSha, expectedSuiteSha, image, nil)
   if not valid then error(reason or 'Clockwork Vulkan evidence is invalid') end
   print('PASS Clockwork Vulkan integration and frame capture at ' .. outputRoot)
 end

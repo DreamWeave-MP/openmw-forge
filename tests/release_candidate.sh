@@ -27,20 +27,33 @@ export CANDIDATE_JOBS_JSON="$scratch/jobs.json"
 export CANDIDATE_ARTIFACTS_JSON="$scratch/artifacts.json"
 export GITHUB_OUTPUT="$scratch/output"
 
-jq -cn '{path:".github/workflows/das-uberbranch-clockwork.yml",event:"workflow_dispatch",
-  conclusion:"failure",repository:{id:123,full_name:"DreamWeave-MP/openmw-forge"},head_repository:{id:123}}' > "$CANDIDATE_RUN_JSON"
-jq -cn '{jobs:[{name:"Build and qualify Clockwork on GitHub-hosted Ubuntu (AlmaLinux 9 containers)",conclusion:"success"}]}' > "$CANDIDATE_JOBS_JSON"
-jq -cn '{artifacts:[{name:"openmw-das-uberbranch-clockwork-candidate-12345-2",expired:false,
-  created_at:"2026-11-07T00:00:00Z",workflow_run:{id:12345,repository_id:123,head_repository_id:123}}]}' \
-  > "$CANDIDATE_ARTIFACTS_JSON"
+CLOCKWORK_PATH=.github/workflows/das-uberbranch-clockwork.yml
+CLOCKWORK_JOB='Build and qualify Clockwork on GitHub-hosted Ubuntu (AlmaLinux 9 containers)'
+
+# Fixtures are literal GitHub API shapes, one function per document.
+write_run() {
+  printf '{"path":"%s","event":"%s","conclusion":"failure","repository":{"id":123,"full_name":"DreamWeave-MP/openmw-forge"},"head_repository":{"id":123}}\n' \
+    "$1" "$2" > "$CANDIDATE_RUN_JSON"
+}
+write_jobs() {
+  printf '{"jobs":[{"name":"%s","conclusion":"%s"}]}\n' "$1" "$2" > "$CANDIDATE_JOBS_JSON"
+}
+write_artifacts() {
+  printf '{"artifacts":[{"name":"%s","expired":%s,"created_at":"2026-11-07T00:00:00Z","workflow_run":{"id":12345,"repository_id":123,"head_repository_id":123}}]}\n' \
+    "$1" "$2" > "$CANDIDATE_ARTIFACTS_JSON"
+}
 
 run_check() {
   : > "$GITHUB_OUTPUT"
-  bash "$root/tools/release_candidate.sh" "${1:-12345}" \
-    "${2:-.github/workflows/das-uberbranch-clockwork.yml}" \
-    "${3:-Build and qualify Clockwork on GitHub-hosted Ubuntu (AlmaLinux 9 containers)}" \
-    "${4:-openmw-das-uberbranch-clockwork-candidate-}" >/dev/null
+  (cd "$root" && jess run --trusted --package . tools/release_candidate.jsl "${1:-12345}" \
+    "${2:-$CLOCKWORK_PATH}" \
+    "${3:-$CLOCKWORK_JOB}" \
+    "${4:-openmw-das-uberbranch-clockwork-candidate-}") >/dev/null
 }
+
+write_run "$CLOCKWORK_PATH" workflow_dispatch
+write_jobs "$CLOCKWORK_JOB" success
+write_artifacts openmw-das-uberbranch-clockwork-candidate-12345-2 false
 
 run_check
 grep -qx 'usable=true' "$GITHUB_OUTPUT"
@@ -48,24 +61,19 @@ grep -qx 'artifact_name=openmw-das-uberbranch-clockwork-candidate-12345-2' "$GIT
 
 # A failed workflow run is still recoverable when its full build job succeeded
 # and its retained candidate is intact (for example, publication failed).
-jq -e '.conclusion == "failure"' "$CANDIDATE_RUN_JSON" >/dev/null
+grep -q '"conclusion":"failure"' "$CANDIDATE_RUN_JSON"
 
-jq '.path = ".github/workflows/other.yml"' "$CANDIDATE_RUN_JSON" > "$scratch/wrong.json"
-mv "$scratch/wrong.json" "$CANDIDATE_RUN_JSON"
+write_run .github/workflows/other.yml workflow_dispatch
 run_check
 grep -qx 'usable=false' "$GITHUB_OUTPUT"
 
-jq -cn '{jobs:[{name:"Build and qualify Clockwork on GitHub-hosted Ubuntu (AlmaLinux 9 containers)",conclusion:"failure"}]}' \
-  > "$CANDIDATE_JOBS_JSON"
-jq '.path = ".github/workflows/das-uberbranch-clockwork.yml"' "$CANDIDATE_RUN_JSON" > "$scratch/run.json.tmp"
-mv "$scratch/run.json.tmp" "$CANDIDATE_RUN_JSON"
+write_run "$CLOCKWORK_PATH" workflow_dispatch
+write_jobs "$CLOCKWORK_JOB" failure
 run_check
 grep -qx 'usable=false' "$GITHUB_OUTPUT"
 
-jq '.jobs[0].conclusion = "success"' "$CANDIDATE_JOBS_JSON" > "$scratch/jobs.json.tmp"
-mv "$scratch/jobs.json.tmp" "$CANDIDATE_JOBS_JSON"
-jq '.artifacts[0].expired = true' "$CANDIDATE_ARTIFACTS_JSON" > "$scratch/artifacts.json.tmp"
-mv "$scratch/artifacts.json.tmp" "$CANDIDATE_ARTIFACTS_JSON"
+write_jobs "$CLOCKWORK_JOB" success
+write_artifacts openmw-das-uberbranch-clockwork-candidate-12345-2 true
 run_check
 grep -qx 'usable=false' "$GITHUB_OUTPUT"
 
@@ -74,13 +82,10 @@ grep -qx 'usable=false' "$GITHUB_OUTPUT"
 
 # Upstream scheduled candidates use the same validator and can be recovered
 # from an overall failed schedule run if the successful build job is retained.
-jq '.path = ".github/workflows/das-uberbranch.yml" | .event = "schedule"' "$CANDIDATE_RUN_JSON" > "$scratch/run.json.tmp"
-mv "$scratch/run.json.tmp" "$CANDIDATE_RUN_JSON"
-jq '.jobs[0].name = "Build OpenMW on GitHub-hosted Ubuntu (AlmaLinux 9 containers)"' "$CANDIDATE_JOBS_JSON" > "$scratch/jobs.json.tmp"
-mv "$scratch/jobs.json.tmp" "$CANDIDATE_JOBS_JSON"
-jq '.artifacts[0].name = "openmw-das-uberbranch-candidate-12345-1" | .artifacts[0].expired = false' "$CANDIDATE_ARTIFACTS_JSON" > "$scratch/artifacts.json.tmp"
-mv "$scratch/artifacts.json.tmp" "$CANDIDATE_ARTIFACTS_JSON"
-run_check 12345 .github/workflows/das-uberbranch.yml \
-  'Build OpenMW on GitHub-hosted Ubuntu (AlmaLinux 9 containers)' openmw-das-uberbranch-candidate-
+UPSTREAM_JOB='Build OpenMW on GitHub-hosted Ubuntu (AlmaLinux 9 containers)'
+write_run .github/workflows/das-uberbranch.yml schedule
+write_jobs "$UPSTREAM_JOB" success
+write_artifacts openmw-das-uberbranch-candidate-12345-1 false
+run_check 12345 .github/workflows/das-uberbranch.yml "$UPSTREAM_JOB" openmw-das-uberbranch-candidate-
 grep -qx 'usable=true' "$GITHUB_OUTPUT"
 echo 'PASS candidate recovery fixtures: prior publish failure with successful build, wrong workflow, failed build, expired artifact, malformed run ID'

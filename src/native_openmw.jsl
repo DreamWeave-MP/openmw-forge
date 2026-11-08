@@ -52,7 +52,7 @@ local function extractDeps(options: Options)
       local tempDownload = dest .. '.incomplete'
       util.remove(tempDownload)
       util.stream('curl', { '--fail', '--location', '--retry', '3', '--output', tempDownload, archive })
-      local digest = util.checked('sha256sum', { tempDownload }):match('^([0-9a-fA-F]+)')
+      local digest = util.sha256(tempDownload)
       if not digest or digest:lower() ~= options.depsSha256:lower() then
         util.remove(tempDownload)
         error('downloaded dependency archive SHA-256 mismatch')
@@ -66,12 +66,12 @@ local function extractDeps(options: Options)
   if not fs.isFile(archive) then error('missing AlmaLinux 9 dependencies archive: ' .. archive) end
 
   if options.depsSha256 ~= '' then
-    local digest = util.checked('sha256sum', { archive }):match('^([0-9a-fA-F]+)')
+    local digest = util.sha256(archive)
     if not digest or digest:lower() ~= options.depsSha256:lower() then
       error('dependency archive SHA-256 mismatch: ' .. archive)
     end
   end
-  local digest = util.checked('sha256sum', { archive }):match('^([0-9a-fA-F]+)')
+  local digest = util.sha256(archive)
   if not digest then error('could not fingerprint dependency archive') end
   local final = options.deps .. '/openmw-deps'
   util.recoverManagedDirectory(final)

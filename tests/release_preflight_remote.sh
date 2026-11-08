@@ -23,7 +23,7 @@ export OPENMW_REPOSITORY=https://gitlab.com/OpenMW/openmw.git OPENMW_REF=master
 export OPENMW_RELEASE_TAG=das-uberbranch OPENMW_PROFILE=upstream RUNNER_ARCH=X64
 export FORGE_TOOLCHAIN_ID="fallback:$(printf 'a%.0s' {1..64}):$(printf 'b%.0s' {1..64})"
 
-bash "$root/tools/release_preflight.sh"
+(cd "$root" && jess run --trusted --package . tools/release_preflight.jsl)
 resolved=$(sed -n 's/^source_sha=//p' "$GITHUB_OUTPUT")
 [[ "$resolved" =~ ^[0-9a-f]{40}$ ]] || { echo 'preflight did not return a full source SHA' >&2; exit 1; }
 [[ "$(sed -n 's/^reason=//p' "$GITHUB_OUTPUT")" == release-missing ]] || exit 1

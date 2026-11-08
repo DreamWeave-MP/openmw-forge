@@ -1,6 +1,28 @@
 --!strict
+local bytes = require '@dream/bytes'
 local fs = require '@dream/fs'
 local process = require '@dream/process'
+
+-- Streams the file in fixed chunks, so multi-gigabyte archives never sit in memory.
+local HashChunkSize = 1048576
+
+-- Lowercase hex SHA-256 of a file, the same digest sha256sum prints.
+local function sha256(path: string): string
+  local reader, problem = fs.open(path)
+  if not reader then error(`hash {path}: {problem or ''}`) end
+  local hasher = bytes.hasher('sha256')
+  local size = reader:size()
+  local position = 0
+  while position < size do
+    local chunk, readProblem = reader:readAt(position, HashChunkSize)
+    if not chunk then error(`hash {path}: {readProblem or ''}`) end
+    local length = buffer.len(chunk)
+    if length == 0 then error(`hash {path}: file shrank while it was read`) end
+    hasher:update(chunk)
+    position += length
+  end
+  return hasher:finish()
+end
 
 local function checked(program: string, argv: { string }, cwd: string?, env: { [string]: string }?): string
   local result, failure = process.run(program, argv, { cwd = cwd, env = env, stdout = 'capture', stderr = 'capture' })
@@ -200,7 +222,7 @@ local function tool(names: { string }): string
 end
 
 return table.freeze {
-  checked = checked, stream = stream, mkdir = mkdir, remove = remove,
+  checked = checked, sha256 = sha256, stream = stream, mkdir = mkdir, remove = remove,
   write = write, copy = copy, tree = tree, list = list, file = file, tool = tool,
   resolveJobs = resolveJobs, prepareBuildRoot = prepareBuildRoot,
   resetManaged = resetManaged, managed = managed,
