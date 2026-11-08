@@ -916,7 +916,7 @@ check(not fs.exists(pendingPair), 'archive recovery must retire its transaction 
 -- A valid tarball from the staged tree should pass the actual compiled smoke CLI.
 -- Smoke requires every packaged tool, so the valid package carries all of them.
 -- Legacy tools must print their help banner to pass; the others need only exit 0.
-local LegacyBanners = {
+local LegacyBanners: { [string]: string } = {
   bsatool = 'Inspect and extract files from Bethesda BSA archives',
   esmtool = 'Inspect and extract from Morrowind ES files',
   niftest = 'Ensure that OpenMW can use the provided NIF',
@@ -924,7 +924,8 @@ local LegacyBanners = {
 
 for _, tool in { 'openmw-iniimporter', 'openmw-essimporter', 'openmw-navmeshtool', 'openmw-bulletobjecttool', 'bsatool', 'esmtool', 'niftest' } do
   local banner = LegacyBanners[tool]
-  local body = if banner then 'printf "%s\\n" "' .. banner .. '"\n' else ''
+  local body = ''
+  if banner then body = 'printf "%s\\n" "' .. banner .. '"\n' end
   util.write(stage .. '/' .. tool .. '.x86_64', '#!/bin/sh\n' .. body .. 'exit 0\n')
   util.write(stage .. '/' .. tool, '#!/bin/sh\nexec "$(dirname "$0")/' .. tool .. '.x86_64" "$@"\n')
   util.stream('chmod', { '+x', stage .. '/' .. tool .. '.x86_64', stage .. '/' .. tool })
