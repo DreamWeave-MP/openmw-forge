@@ -18,17 +18,8 @@ local function fingerprint(root: string): string
 
   local function flush()
     if #files == 0 then return end
-    local argv = { '-z', '--' }
-    for _, path in files do table.insert(argv, path) end
-    local output = util.checked('sha256sum', argv)
     local hashes: { string } = {}
-    for entry in output:gmatch('([^%z]+)%z') do
-      local sha, path = entry:match('^([0-9a-f]+)  (.+)$')
-      if not sha or #sha ~= 64 or path ~= files[#hashes + 1] then
-        error('unexpected SDK tree hashing result')
-      end
-      table.insert(hashes, sha)
-    end
+    for _, path in files do table.insert(hashes, util.sha256(path)) end
 
     if #hashes ~= #files then error('incomplete SDK tree hashing result') end
 

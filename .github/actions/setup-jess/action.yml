@@ -25,9 +25,10 @@ runs:
           echo "Missing tested Jess release tag: set repository variable JESS_RELEASE_TAG" >&2
           exit 1
         fi
-        release=$(gh api "repos/DreamWeave-MP/jess/releases/tags/$JESS_TAG")
-        tag=$(jq -r '.tag_name // empty' <<<"$release")
-        digest=$(jq -r '.assets[] | select(.name == "jess-Linux-X64.zip") | .digest // empty' <<<"$release")
+        # gh's Go templates read the release record; a missing field prints nothing and fails the check below.
+        tag=$(gh api "repos/DreamWeave-MP/jess/releases/tags/$JESS_TAG" --template '{{.tag_name}}')
+        digest=$(gh api "repos/DreamWeave-MP/jess/releases/tags/$JESS_TAG" \
+          --template '{{range .assets}}{{if eq .name "jess-Linux-X64.zip"}}{{.digest}}{{end}}{{end}}')
         if [[ "$tag" != "$JESS_TAG" || ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
           echo "Cannot resolve immutable Jess asset for release $JESS_TAG" >&2
           exit 1
