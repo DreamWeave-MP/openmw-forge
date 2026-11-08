@@ -95,29 +95,13 @@ suite.describe('Clockwork Vulkan frame qualification', function()
       '[       OK ] LuaUiLayout.ResolvesRelativeChildSizeAndAnchoredPosition',
     }, '\n') .. '\n')
 
-    local function fixtureJson(path: string, query: string): boolean
-      local data = util.file(path)
-      if path:find('renderer_startup_output', 1, true) then
-        return query:find('.renderer.entry', 1, true) ~= nil
-          and data:find('"timed_out":false', 1, true) ~= nil
-          and data:find('"errors":[]', 1, true) ~= nil
-          and data:find('"entry":"vulkan 1.3"', 1, true) ~= nil
-          and data:find('"requested":"vulkan 1.3"', 1, true) ~= nil
-      end
-      return query:find('.captures | length', 1, true) ~= nil
-        and data:find('"timed_out":false', 1, true) ~= nil
-        and data:find('"errors":[]', 1, true) ~= nil
-        and data:find('"captures":["capture.omwcap"]', 1, true) ~= nil
-        and data:find('"icd":"lvp_icd', 1, true) ~= nil
-    end
-
     local function fixtureHashes(paths: { string }): string
       test.expect(#paths).toBe(6)
       return 'fixture-evidence-sha256\n'
     end
     local valid, reason = clockworkSmoke.validateEvidence(root,
       'c5e5a9a6362c35512823884753d2d5284af204fa', 'a1ba6fc9d7315c2158ef4c60349fc4e71b7ca343',
-      'ghcr.io/example/forge-builder@sha256:' .. string.rep('b', 64), fixtureJson, fixtureHashes)
+      'ghcr.io/example/forge-builder@sha256:' .. string.rep('b', 64), fixtureHashes)
     test.expect(valid).toBeTruthy()
     test.expect(reason).toBeNil()
     test.expect(util.file(root .. '/CLOCKWORK-VULKAN-QUALIFICATION.txt')).toContain('Renderer: vulkan 1.3')
@@ -130,7 +114,7 @@ suite.describe('Clockwork Vulkan frame qualification', function()
       '{"timed_out":false,"returncode":0,"errors":[],"renderer":{"entry":"opengl","requested":"vulkan 1.3"}}\n')
     local rejected, failure = clockworkSmoke.validateEvidence(root,
       'c5e5a9a6362c35512823884753d2d5284af204fa', 'a1ba6fc9d7315c2158ef4c60349fc4e71b7ca343',
-      'ghcr.io/example/forge-builder@sha256:' .. string.rep('b', 64), fixtureJson, fixtureHashes)
+      'ghcr.io/example/forge-builder@sha256:' .. string.rep('b', 64), fixtureHashes)
     test.expect(rejected).toBeFalsy()
     test.expect(failure).toContain('clean Vulkan 1.3 run')
   end)
