@@ -1263,7 +1263,9 @@ suite.describe('scheduled das-uberbranch release contract', function()
     end
     test.expect(orchestrator).toContain('if settings.features.vulkan then')
     test.expect(orchestrator).toContain('FORGE_CLOCKWORK_EXAMPLE_SUITE')
-    test.expect(orchestrator).toContain("error('Clockwork runtime smoke requires exactly one staged OpenMW package')")
+    test.expect(orchestrator).toContain('nativeSmoke.extractPackage(main,')
+    test.expect(orchestrator).toContain('qualified Clockwork release archive is missing required runtime contents')
+    test.expect(orchestrator:find("root .. '/work/build/package-staging'", 1, true) == nil).toBeTruthy()
     test.expect(orchestrator).toContain('clockworkSmoke.run(checkout, root .. \'/work/build\'')
   end)
 

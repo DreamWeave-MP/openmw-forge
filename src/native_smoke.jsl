@@ -473,29 +473,49 @@ local function multiSmoke(options: Options, staging: string)
   end
 end
 
-local function smokeUnlocked(options: Options)
-  archive.listTar(options.archive)
-  local root = options.root .. '/work/forge-smoke'
-  util.resetManaged(root)
-  util.stream('tar', { 'xzf', options.archive, '-C', root })
-  -- Inspect every link after extraction; never follow a link outside this root.
-  local walk, problem = fs.walk(root, { include = 'all', sort = true })
-  if not walk then error(problem or 'cannot inspect extracted archive') end
-
-  for index, name in walk.paths do
-    if walk.kinds[index] ~= 'symlink' then continue end
-
-    local target = root .. '/' .. name
-      local resolved = fs.canonicalize(target)
-      if not resolved or (resolved ~= root and resolved:sub(1, #root + 1) ~= root .. '/') then
-        error('archive has escaping or dangling symbolic link: ' .. name)
-      end
-  end
-  local first = archive.listTar(options.archive)[1]
-  local top = first:match('^[^/]+') or ''
+-- Extract a published release archive into an independently owned directory.
+-- Unlike the native builder's package-staging tree, this directory survives
+-- the build process. Its contents and symlinks are inspected before use.
+local function extractPackage(archivePath: string, destination: string): string
+  local paths = archive.listTar(archivePath)
+  local top = paths[1]:match('^[^/]+') or ''
   if not archive.isSafeName(top) then error('unsafe archive root') end
-  local staging = root .. '/' .. top
+
+  for _, path in paths do
+    if path ~= top and path:sub(1, #top + 1) ~= top .. '/' then
+      error('archive contains more than one package root: ' .. path)
+    end
+  end
+
+  util.resetManaged(destination)
+  util.stream('tar', { 'xzf', archivePath, '-C', destination })
+  -- No other top-level directory or file may appear after extraction. The
+  -- only permitted extra file is the Forge-managed ownership marker.
+  for _, name in util.list(destination) do
+    if name ~= '.openmw-forge-managed' and name ~= top then
+      error('archive extracted an unexpected top-level entry: ' .. name)
+    end
+  end
+
+  local walk, problem = fs.walk(destination, { include = 'all', sort = true })
+  if not walk then error(problem or 'cannot inspect extracted archive') end
+  local canonical = fs.canonicalize(destination)
+  if not canonical then error('cannot resolve package extraction directory') end
+
+  for index, relative in walk.paths do
+    if walk.kinds[index] ~= 'symlink' then continue end
+    local resolved = fs.canonicalize(destination .. '/' .. relative)
+    if not resolved or (resolved ~= canonical and resolved:sub(1, #canonical + 1) ~= canonical .. '/') then
+      error('archive has escaping or dangling symbolic link: ' .. relative)
+    end
+  end
+  local staging = destination .. '/' .. top
   if not fs.isDir(staging) then error('archive does not have a single package root') end
+  return staging
+end
+
+local function smokeUnlocked(options: Options)
+  local staging = extractPackage(options.archive, options.root .. '/work/forge-smoke')
   abi.scanAbi(staging)
   if options.distros == '' then smokeBinaries(staging, options.withQt)
   else multiSmoke(options, staging) end
@@ -518,7 +538,7 @@ local function smoke(options: Options)
 end
 
 return table.freeze {
-  smoke = smoke, smokeBinaries = smokeBinaries, validateHelpResult = validateHelpResult,
+  smoke = smoke, extractPackage = extractPackage, smokeBinaries = smokeBinaries, validateHelpResult = validateHelpResult,
   validateBoundedResult = validateBoundedResult, imageDockerfile = imageDockerfile,
   runDistroCommand = runDistroCommand, smokeInvocationArgs = smokeInvocationArgs,
   closureEntries = closureEntries, closureProblems = closureProblems,

@@ -6,6 +6,7 @@ local json = require '@jess/json'
 local util = require '@forge/native-util'
 local source = require '@forge/source'
 local clockworkSmoke = require '@forge/native-clockwork-smoke'
+local nativeSmoke = require '@forge/native-smoke'
 type Profile = {
   read id: string, read repository: string, read ref: string, read releaseTag: string,
   read releaseTitle: string, read jobs: number | string, read cmakeArgs: { string },
@@ -476,16 +477,24 @@ local function run(argv: { string })
   if settings.features.vulkan then
     local suiteRoot = process.env('FORGE_CLOCKWORK_EXAMPLE_SUITE') or ''
     if suiteRoot == '' then error('Clockwork profile requires FORGE_CLOCKWORK_EXAMPLE_SUITE for Vulkan runtime smoke') end
-    local staging = root .. '/work/build/package-staging'
-    local packageRoots: { string } = {}
-    for _, name in util.list(staging) do
-      if fs.isDir(staging .. '/' .. name) then table.insert(packageRoots, staging .. '/' .. name) end
+    -- Native package staging is transient and is removed after export. Vulkan
+    -- qualification must consume the exact release archive that passed distro
+    -- smoke, never a build-internal directory that may no longer exist.
+    local packageName = (fs.fileName(main) or ''):gsub('%.tar%.gz$', '')
+    local packageRoot = nativeSmoke.extractPackage(main,
+      root .. '/work/clockwork-runtime-package/' .. runId .. '-' .. attempt)
+    if fs.fileName(packageRoot) ~= packageName then
+      error('Clockwork runtime package root does not match the qualified archive')
     end
 
-    if #packageRoots ~= 1 then error('Clockwork runtime smoke requires exactly one staged OpenMW package') end
+    if not fs.isFile(packageRoot .. '/openmw.x86_64')
+      or not fs.isFile(packageRoot .. '/openmw')
+      or not fs.isDir(packageRoot .. '/resources/vfs') then
+      error('qualified Clockwork release archive is missing required runtime contents')
+    end
 
     local evidence = root .. '/work/vulkan-runtime-evidence/' .. runId .. '-' .. attempt
-    clockworkSmoke.run(checkout, root .. '/work/build', packageRoots[1], root .. '/work/deps',
+    clockworkSmoke.run(checkout, root .. '/work/build', packageRoot, root .. '/work/deps',
       suiteRoot, evidence, revision, process.env('FORGE_TOOLCHAIN_IMAGE') or '',
       process.env('FORGE_CONTAINER_ENGINE') or 'docker', runId)
     local qualification = evidence .. '/CLOCKWORK-VULKAN-QUALIFICATION.txt'
