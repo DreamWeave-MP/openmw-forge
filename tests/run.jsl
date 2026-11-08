@@ -281,11 +281,25 @@ suite.describe('packaged executable smoke contracts', function()
       local baseImage = nativeSmoke.imageDockerfile(distro)
       local vulkanImage = nativeSmoke.imageDockerfile(distro, true)
       test.expect(vulkanImage).toContain(loaderPackage)
-      local loaderInBaseImage = string.find(baseImage, loaderPackage)
+      local loaderInBaseImage = string.find(baseImage, loaderPackage, 1, true)
       test.expect(loaderInBaseImage).toBeNil()
     end
     test.expect(nativePackage.VulkanRuntimePolicy).toContain('does not bundle libvulkan.so.1')
     test.expect(nativePackage.VulkanRuntimePolicy).toContain('vendor driver/ICD')
+  end)
+
+  suite.it('installs the AlmaLinux 9 runtime loader RPM, never the devel package', function()
+    -- AlmaLinux 9's vulkan-loader RPM supplies libvulkan.so.1. The -devel package
+    -- only adds headers and link stubs; a smoke image must not need it.
+    local dockerfile = nativeSmoke.imageDockerfile('almalinux-9', true)
+    test.expect(dockerfile).toBe('FROM almalinux:9\n'
+      .. 'RUN dnf install -y mesa-libGL libglvnd-egl glib2 krb5-libs libwayland-cursor '
+      .. 'libwayland-egl vulkan-loader\n')
+    test.expect((string.find(dockerfile, 'vulkan-loader-devel', 1, true))).toBeNil()
+    test.expect((string.find(dockerfile, 'mesa-vulkan-drivers', 1, true))).toBeNil()
+
+    local base = nativeSmoke.imageDockerfile('almalinux-9')
+    test.expect((string.find(base, 'vulkan', 1, true))).toBeNil()
   end)
 
   suite.it('requires Clockwork Vulkan, Luau UI resources and all dependency licenses', function()
