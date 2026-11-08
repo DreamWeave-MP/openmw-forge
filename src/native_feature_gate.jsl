@@ -1,5 +1,7 @@
 --!strict
 -- Fail a requested feature qualification if CMake silently omitted its sources.
+local json = require '@jess/json'
+
 local function cacheValues(content: string): { [string]: string }
   local values: { [string]: string } = {}
   for line in content:gmatch('[^\r\n]+') do
@@ -9,9 +11,40 @@ local function cacheValues(content: string): { [string]: string }
   return values
 end
 
+-- Only the "file" value of an entry names a compiled translation unit. A needle
+-- found in a command, output or directory string does not prove the source built.
+-- A malformed compile_commands.json raises from the decoder, which fails closed.
+local function compileUnits(content: string): { string }
+  local entries = json.decode(content) :: { { file: string? } }
+  local units: { string } = {}
+  for _, entry in entries do
+    if type(entry.file) == 'string' then table.insert(units, entry.file) end
+  end
+  return units
+end
+
+-- A needle matches a whole path suffix: 'components/x.cpp' must be the file or
+-- follow a '/', so a sibling such as 'vendored-components/x.cpp' does not count.
+local function unitMatches(unit: string, needle: string): boolean
+  if unit == needle then return true end
+  local start = #unit - #needle
+  if start < 1 or unit:sub(start + 1) ~= needle then return false end
+  return needle:sub(1, 1) == '/' or unit:sub(start, start) == '/'
+end
+
 local function containsAll(content: string, needles: { string }, context: string): (boolean, string?)
+  if #needles == 0 then return true, nil end
+  local units = compileUnits(content)
   for _, needle in needles do
-    if not content:find(needle, 1, true) then
+    local found = false
+    for _, unit in units do
+      if unitMatches(unit, needle) then
+        found = true
+        break
+      end
+    end
+
+    if not found then
       return false, context .. ' is missing required source or option: ' .. needle
     end
   end
