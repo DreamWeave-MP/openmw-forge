@@ -136,7 +136,8 @@ local function smokeBinaries(stage: string, withQt: boolean?)
   local ran = 0
   for _, name in names do
     local binary = stage .. '/' .. name .. '.x86_64'
-    if not fs.isFile(binary) then continue end
+    -- Every listed tool must be packaged; a silent skip would let a missing tool pass.
+    if not fs.isFile(binary) then error('smoke tool missing from package: ' .. name) end
     local wrapper = stage .. '/' .. name
     if not fs.isFile(wrapper) then error('missing installed launcher: ' .. name) end
     local env = { LD_LIBRARY_PATH = stage .. '/lib', QT_PLUGIN_PATH = stage .. '/plugins' }
@@ -458,7 +459,7 @@ local function multiSmoke(options: Options, staging: string)
     end
 
     for _, name in names do
-      if not fs.isFile(staging .. '/' .. name .. '.x86_64') then continue end
+      if not fs.isFile(staging .. '/' .. name .. '.x86_64') then error('smoke tool missing from package: ' .. name) end
       if not fs.isFile(staging .. '/' .. name) then error('missing installed launcher: ' .. name) end
       count += 1
       -- Run both entry points; a distro-specific wrapper failure is a release failure.

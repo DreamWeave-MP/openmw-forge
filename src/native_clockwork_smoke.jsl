@@ -83,8 +83,10 @@ local function command(engine: string, name: string, image: string, sourceRoot: 
     'export XDG_RUNTIME_DIR=/tmp/forge-xdg-runtime',
     'rpm -q mesa-vulkan-drivers python3-pillow vulkan-tools > /output/vulkan-runtime-packages.txt',
     'export VK_DRIVER_FILES="$(python3 /source/CI/vulkan_ci.py)"',
+    'test -n "$VK_DRIVER_FILES"',
     'vulkaninfo --summary > /output/vulkaninfo.txt 2>&1',
-    'grep -Eiq "llvmpipe|lavapipe" /output/vulkaninfo.txt',
+    -- Only the device name proves the renderer: a warning that mentions lavapipe does not.
+    'grep -Eq "^[[:space:]]*deviceName[[:space:]]*=[[:space:]]*(llvmpipe|lavapipe)" /output/vulkaninfo.txt',
     '(cd /build && ./components-tests --gtest_filter="NativeCodeGenTest.DisabledOrUnavailableCodegenRunsInterpreted:NativeCodeGenTest.CompilesAndReusesNativeModules:LuaUiContentTest.NestedContentChangesInvalidateParentContent:LuaUiLayout.NestedContentChangesUpdateTheRetainedDescendant:LuaUiLayout.ResolvesRelativeChildSizeAndAnchoredPosition") > /output/luau-ui-tests.txt 2>&1',
     'python3 /source/CI/run_renderer_startup.py --openmw /package/openmw.x86_64 --example-suite /example-suite --helper /build/libopenmw-renderer-gl-probe.so --resources /package/resources --output /output/runner/renderer_startup_output --entry "vulkan 1.3" --icd "$VK_DRIVER_FILES" --headless --timeout 180',
     'python3 /source/CI/run_vulkan_capture.py --openmw /package/openmw.x86_64 --example-suite /example-suite --resources /package/resources --output /output/vulkan-capture --cache /output/vulkan-cache --entry "vulkan 1.3" --icd "$VK_DRIVER_FILES" --headless --timeout 600',
