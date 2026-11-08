@@ -30,6 +30,17 @@ in `ci/uberbranch-config.jsl` to limit concurrency if peak GCC memory demands it
 [troubleshooting](content/home/docs/troubleshooting.md) and [release qualification](content/home/docs/release-readiness.md).
 The heavy production build **has not been executed in this test sandbox**.
 
+Before the scheduled job restores caches or starts Docker, it resolves the
+remote ref to a full source SHA and compares the versioned build fingerprint
+with the qualified prerelease. An unchanged qualified release is a cheap
+successful skip; manual `force_rebuild` explicitly requests another compile.
+Clockwork uses a separate experimental prerelease and a manual-only workflow
+until its Vulkan frame, UI/Luau tests, and distribution smoke are qualified.
+If only release upload failed, operators can provide the prior upstream or
+Clockwork run ID; Forge reuses its candidate only after checking the successful
+build job, current source/fingerprint, provenance, and checksums. See the [release
+runbook](content/home/docs/release.md) for recovery and verification.
+
 ## Quick start: compiled binary
 
 ```sh

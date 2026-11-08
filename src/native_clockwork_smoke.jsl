@@ -120,6 +120,13 @@ local function cleanRun(document: { [string]: unknown }): boolean
   return document.timed_out == false and document.returncode == 0 and emptyArray(document.errors)
 end
 
+-- The same "digest  path" lines sha256sum prints, one per file, in the given order.
+local function evidenceHashes(paths: { string }): string
+  local lines: { string } = {}
+  for _, path in paths do table.insert(lines, util.sha256(path) .. '  ' .. path .. '\n') end
+  return table.concat(lines)
+end
+
 local function validateEvidence(outputRoot: string, sourceSha: string, suiteSha: string,
   builderImage: string, hashEvidence: (({ string }) -> string)?): (boolean, string?)
   local startup = outputRoot .. '/runner/renderer_startup_output/result.json'
@@ -195,7 +202,7 @@ local function validateEvidence(outputRoot: string, sourceSha: string, suiteSha:
   table.insert(evidenceFiles, vulkanInfo)
   table.insert(evidenceFiles, runtimePackages)
   table.insert(evidenceFiles, luauUiTests)
-  local hashes = if hashEvidence then hashEvidence(evidenceFiles) else util.checked('sha256sum', evidenceFiles)
+  local hashes = if hashEvidence then hashEvidence(evidenceFiles) else evidenceHashes(evidenceFiles)
   util.write(outputRoot .. '/CLOCKWORK-VULKAN-QUALIFICATION.txt',
     'Profile: clockwork\nRenderer: vulkan 1.3\nClockwork source SHA: ' .. sourceSha
       .. '\nExample-suite SHA: ' .. suiteSha .. '\nBuilder image: ' .. builderImage
